@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
+  "productName": "AgentBro",
+  "identifier": "com.agentbro.desktop",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1423",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "notch",
+        "title": "AgentBro",
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "width": 420,
+        "height": 52,
+        "x": null,
+        "y": 0,
+        "visible": true,
+        "backgroundColor": "#00000000"
+      },
+      {
+        "label": "settings",
+        "title": "AgentBro",
+        "visible": false,
+        "width": 1280,
+        "height": 840,
+        "center": true,
+        "backgroundColor": "#00000000"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/shirenchuang/agentbro/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2QjhGMjZCNDJFNzZGMQpSV1R4ZGk2MEpvOXJDUWVCSkhuMXZGV0VNNzlmL1dSa1JyUHlhZzF1djVFdzFPY0JLb21xVTlPTAo="
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["agentbro", "ccswitch"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "../src/themes/**/*"
+    ]
+  }
+}

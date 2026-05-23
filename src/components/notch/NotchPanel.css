@@ -1,0 +1,414 @@
+/* Notch Panel — AgentBro-style macOS notch shell */
+
+.notch-container {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  z-index: 9999;
+  display: flex;
+  width: var(--notch-host-width, var(--notch-hitbox-width, auto));
+  height: var(--notch-host-height, var(--notch-hitbox-height, auto));
+  justify-content: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.notch-hitbox {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: var(--notch-hitbox-width, auto);
+  height: var(--notch-hitbox-height, auto);
+  padding: 0 var(--notch-hitbox-pad-x, 0);
+  box-sizing: border-box;
+  pointer-events: auto;
+  /*
+   * Transparent Tauri/WebKit windows can be flaky when the only hit target
+   * is a clipped, animated child. This imperceptible paint gives macOS a
+   * stable rectangular hover surface while the visible shell stays clipped.
+   */
+  background: rgba(0, 0, 0, 0.001);
+}
+
+.notch-hitbox[data-island-hidden="true"] .notch-panel {
+  pointer-events: none;
+}
+
+.notch-hitbox[data-island-hidden="true"] {
+  pointer-events: auto;
+  background: transparent;
+}
+
+.notch-panel {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  color: var(--island-text);
+  background:
+    radial-gradient(120% 90% at 50% -42%, rgba(255, 255, 255, 0.08), transparent 54%),
+    linear-gradient(180deg, var(--island-card) 0%, var(--island-bg) 44%, var(--island-bg) 100%);
+  border: 1px solid var(--island-border);
+  border-top-width: 0;
+  border-radius: 0 0 22px 22px;
+  box-shadow:
+    var(--island-shadow),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+  clip-path: var(--notch-shell-path, inset(0 round 0 0 22px 22px));
+  -webkit-clip-path: var(--notch-shell-path, inset(0 round 0 0 22px 22px));
+  will-change: width, height, border-radius, transform;
+  transform: translateZ(0);
+  transform-origin: top center;
+  -webkit-font-smoothing: antialiased;
+  transition:
+    border-color 0.25s ease-out,
+    box-shadow 0.25s ease-out;
+}
+
+.notch-panel::after {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  background:
+    radial-gradient(80% 110% at 50% 100%, rgba(255, 255, 255, 0.04), transparent 62%);
+  opacity: 0.42;
+}
+
+.notch-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+.notch-panel[data-island-state="micro"],
+.notch-panel[data-island-state="compact"] {
+  border-radius: 0 0 22px 22px;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10);
+}
+
+.notch-panel[data-island-state="micro"]::after,
+.notch-panel[data-island-state="compact"]::after {
+  opacity: 0.38;
+}
+
+.notch-panel[data-island-state="micro"] {
+  background: var(--island-bg);
+}
+
+html[data-island-color-theme="midnight"] .notch-panel,
+html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"] {
+  background: var(--island-bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-island-color-theme="system"] .notch-panel,
+  html[data-island-color-theme="system"] .notch-panel[data-island-state="micro"] {
+    background: var(--island-bg);
+  }
+}
+
+.notch-panel[data-island-state="hover"],
+.notch-panel[data-island-state="expanded"],
+.notch-panel[data-island-state="feedback"] {
+  border-radius: 0 0 22px 22px !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="alert_permission"] {
+  border-color: rgba(245, 158, 11, 0.36);
+  box-shadow:
+    var(--island-shadow),
+    0 0 34px rgba(245, 158, 11, 0.14),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="alert_question"],
+.notch-panel[data-island-state="alert_plan"] {
+  border-color: rgba(96, 165, 250, 0.34);
+  box-shadow:
+    var(--island-shadow),
+    0 0 34px rgba(96, 165, 250, 0.13),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="feedback"] {
+  border-color: rgba(74, 222, 128, 0.28);
+  box-shadow:
+    var(--island-shadow),
+    0 0 30px rgba(74, 222, 128, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="pet"] {
+  overflow: visible !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  clip-path: none;
+  -webkit-clip-path: none;
+}
+
+.notch-panel[data-island-state="pet"]::after {
+  content: none;
+}
+
+.notch-panel[data-dragging="true"] {
+  cursor: grabbing;
+  transition: none;
+}
+
+.notch-panel__drag-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  height: 8px;
+  cursor: grab;
+}
+
+.notch-panel[data-dragging="true"] .notch-panel__drag-handle {
+  cursor: grabbing;
+}
+
+.notch-panel[data-dragging="true"]::before {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  content: "";
+  background:
+    radial-gradient(circle at 50% 50%, var(--island-text-secondary) 1.5px, transparent 2px)
+    center / 10px 10px;
+  opacity: 0.22;
+}
+
+/* Overlay layer — floats above base content */
+.notch-panel__alert-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  padding: 12px 14px 14px;
+  box-sizing: border-box;
+}
+
+.notch-panel__alert-content > .overlay-card {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card,
+.notch-panel__alert-content[data-overlay-type="question"] > .overlay-card {
+  min-height: 0;
+}
+
+.notch-panel__alert-content[data-overlay-type="permission"] {
+  justify-content: stretch;
+}
+
+.notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card {
+  flex: 1 1 auto;
+}
+
+.notch-panel__feedback-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+}
+
+.notch-panel__feedback-content > .overlay-feedback {
+  height: 100%;
+  flex: 1 1 auto;
+}
+
+.notch-panel__hover-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.notch-panel__detail-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.notch-panel__detail-content .chat-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.notch-panel__detail-content .chat-view__messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.notch-panel__detail-content .chat-view__empty {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.notch-panel__outside-dismiss {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  padding: 0;
+  cursor: default;
+  background: transparent;
+  border: 0;
+}
+
+.notch-panel__overlay {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 10;
+}
+
+.notch-panel__overlay-card {
+  padding: 10px 12px;
+  color: var(--island-text);
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--island-shadow);
+  backdrop-filter: blur(20px);
+}
+
+.notch-panel__overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notch-panel__overlay-type {
+  color: var(--island-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.notch-panel__overlay-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--island-text-secondary);
+  cursor: pointer;
+  background: var(--island-subtle-hover, rgba(255, 255, 255, 0.08));
+  border: none;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.notch-panel__overlay-close:hover {
+  color: var(--island-text);
+  background: var(--island-scrollbar, rgba(255, 255, 255, 0.15));
+}
+
+.layout-preview {
+  margin: 6px 10px 10px;
+  color: var(--island-text);
+}
+
+.layout-preview--completion {
+  display: grid;
+  min-height: 128px;
+  align-content: center;
+  gap: 7px;
+  padding: 18px;
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 14px;
+}
+
+.layout-preview__eyebrow {
+  color: var(--island-accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.layout-preview__title {
+  font-size: var(--preview-content-font-size, 14px);
+  font-weight: 700;
+}
+
+.layout-preview__meta {
+  color: var(--island-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: calc(var(--preview-content-font-size, 13px) * 0.85);
+}
+
+.layout-preview--expanded {
+  display: grid;
+  gap: 8px;
+  max-height: calc(100% - 48px);
+  overflow: hidden;
+  padding: 4px 0;
+}
+
+.layout-preview__row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 10px;
+}
+
+.layout-preview__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--island-accent);
+  border-radius: 999px;
+}
+
+.layout-preview__copy {
+  min-width: 0;
+}
+
+.layout-preview__copy strong,
+.layout-preview__copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-preview__copy strong {
+  font-size: var(--preview-content-font-size, 12px);
+}
+
+.layout-preview__copy span,
+.layout-preview__row code {
+  color: var(--island-text-secondary);
+  font-size: calc(var(--preview-content-font-size, 12px) * 0.84);
+}

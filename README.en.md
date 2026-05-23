@@ -1,0 +1,166 @@
+<div align="center">
+  <img src="public/agentbro-logo.png" alt="AgentBro Logo" width="148" />
+
+  <h1>AgentBro</h1>
+
+  <p><strong>Make Agents Easier to Use</strong></p>
+
+  <p>
+    A native macOS Dynamic Island for AI coding agents.<br />
+    Bring permissions, questions, plans, quick replies, remote sessions, tool activity, and completions into one lightweight desktop island.
+  </p>
+
+  <p>
+    <a href="https://www.agentbro.net">Website</a>
+    ·
+    <a href="https://github.com/shirenchuang/agentbro/releases">Download</a>
+    ·
+    <a href="README.md">中文</a>
+  </p>
+
+  <p>
+    <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111820" />
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-f5b84b" />
+    <img alt="Built with Tauri" src="https://img.shields.io/badge/Tauri-React%20%2B%20Rust-0c6b63" />
+  </p>
+</div>
+
+## What Is AgentBro?
+
+AgentBro is a native macOS app that floats above your editor and terminal. It watches active sessions from AI coding agents such as Claude Code, Codex, and Gemini CLI, then collects the flow-breaking moments into a small Dynamic Island. You can approve permissions, answer questions, send quick replies, and forward agent events from remote SSH machines back to your local desktop.
+
+The first open-source release focuses on the **Dynamic Island module**. Larger modules such as Agent Monitor, Agent Switch, and Skills management are not exposed in the public app menu yet. Future modules will evolve gradually based on real usage and community feedback.
+
+## Logo Meaning
+
+The center of the AgentBro logo is shaped like a handshake. It represents the collaboration between humans and AI agents: not replacement, not remote control, but a bro-like companion that helps, nudges, and catches the moments that need attention. The outer `A` / `B` structure comes from the AgentBro initials and also resembles two connected agent nodes.
+
+## Screenshots
+
+![AgentBro Dynamic Island expanded with session status, task progress, a permission approval bar, and a plan card](docs/assets/screenshots/island-expanded.png)
+
+| Permission card | Detail mode |
+| --- | --- |
+| ![AgentBro permission card with deny, allow once, and always allow actions](docs/assets/screenshots/island-permission.png) | ![AgentBro detail mode with chat context and approval controls](docs/assets/screenshots/island-detail.png) |
+
+## Main Features
+
+| Feature | Description |
+| --- | --- |
+| Dynamic Island | Compact, hover, expanded, and detail views for active agent sessions. |
+| Instant actions | Handle permission requests, questions, plan approvals, completions, and response cards in the island. |
+| Quick replies | Type a message directly in the island without switching back to the terminal. |
+| Task awareness | Show tool activity, subagent progress, task summaries, and token/rate-limit data where supported. |
+| Hook integration | One-click hook installation, Hook Doctor diagnostics, and custom CLI hook templates. |
+| Desktop controls | Global shortcuts, sounds, notifications, themes, display placement, and terminal-focus suppression. |
+| Local-first | The hook server runs locally through `/tmp/agentbro.sock` or `127.0.0.1:17892`. |
+| SSH Remote | Forward agent events from remote SSH machines back to your local island for remote development. |
+| Webhook notifications | Send notifications to DingTalk / Feishu webhooks. |
+
+## Supported Agents
+
+AgentBro includes adapters and hook management for:
+
+- Claude Code
+- Codex
+- Gemini CLI
+- Cursor / Cursor CLI
+- GitHub Copilot
+- Trae / Trae CN
+- Qoder / Qoder CLI
+- CodeBuddy / CodeBuddy CN
+- Qwen, Kimi, OpenCode, Droid, Factory, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, and Kiro
+
+## Roadmap
+
+AgentBro stays local-first. The first public release focuses on making the island, hook integration, quick actions, and SSH Remote reliable. Future directions we want to explore include:
+
+- Remote sync: sync settings, hooks, themes, prompts, skills, and remote host configuration across devices.
+- Skills community: discover, install, share, and update Skill Packs for different agents.
+- Team collaboration: shared configuration, team Skill Packs, access control, and clearer collaboration views.
+
+## Join The Community
+
+If you use AgentBro or want to discuss upcoming Windows support, Agent Monitor, Agent Switch, or Skills management, scan the QR code and mention **AgentBro community**.
+
+<div align="center">
+  <img src="public/agentbro-wechat-qr.jpg" alt="AgentBro WeChat community QR code" width="260" />
+</div>
+
+## Platform Support
+
+AgentBro is currently developed, tested, and released for **macOS** first.
+
+Windows support is planned. The Tauri + React + Rust foundation is portable, but a good Windows release still needs dedicated work for floating window behavior, tray integration, shortcuts, terminal/editor focus detection, hook paths, installers, signing, and release automation.
+
+Linux support is possible later, but it is not part of the first public release target.
+
+## Local Development
+
+### Prerequisites
+
+- macOS
+- Node.js
+- pnpm
+- Rust toolchain + Cargo
+- Tauri CLI: `cargo tauri --version`
+
+### Start The Project
+
+```bash
+git clone https://github.com/shirenchuang/agentbro.git
+cd agentbro
+pnpm install
+pnpm tauri:dev
+```
+
+`pnpm tauri:dev` starts the Vite dev server on `http://localhost:1423` and opens the native AgentBro windows.
+
+### Browser-Only UI Development
+
+```bash
+pnpm dev
+```
+
+Open:
+
+- Island UI: `http://localhost:1423`
+- Settings UI: `http://localhost:1423/#settings`
+
+The browser development view includes the Claude Hook UI Lab for testing static island states such as permission requests, plan approval, questions, completion, compact mode, list mode, and detail mode.
+
+### Common Commands
+
+```bash
+pnpm test:run      # Run tests once
+pnpm test          # Run tests in watch mode
+pnpm lint          # ESLint
+pnpm build         # Type-check and build frontend
+cargo check        # Check Rust backend
+pnpm tauri:build   # Build the Tauri app
+./build.sh         # Build universal macOS DMG
+```
+
+## Use With An Agent
+
+1. Open AgentBro settings.
+2. Go to **Island -> Integration**.
+3. Run **Hook Doctor**.
+4. Click **Install All Hooks**, or install the hook for the agent you use.
+5. Restart the corresponding CLI session.
+6. Start Claude Code, Codex, Gemini CLI, or another supported agent.
+
+AgentBro will then show session state, tool activity, approvals, questions, plans, and completions in the island.
+
+## Release
+
+Release notes and signing requirements live in [`docs/release.md`](docs/release.md).
+
+- Website: [www.agentbro.net](https://www.agentbro.net)
+- GitHub releases: `https://github.com/shirenchuang/agentbro/releases`
+
+## License
+
+AgentBro source code is licensed under the [Apache License 2.0](LICENSE).
+
+The AgentBro name, logo, app icon, website design, and other brand assets are not licensed with the source code. Modified builds and redistributions should use a different name to avoid confusion with the official project and follow [NOTICE](NOTICE) and [TRADEMARKS.md](TRADEMARKS.md).

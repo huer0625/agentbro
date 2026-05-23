@@ -1,0 +1,103 @@
+/* AgentBro — CSS Custom Properties (Dynamic Island Design System) */
+/* Colors are driven by island-color-theme.css via --island-* variables */
+
+:root {
+  /* ── Dynamic Island Core Palette (mapped to island theme tokens) ── */
+  --vi-bg: var(--island-bg);
+  --vi-card: var(--island-card);
+  --vi-card-border: var(--island-border);
+  --vi-text-primary: var(--island-text);
+  --vi-text-secondary: var(--island-text-secondary);
+  --vi-text-tertiary: var(--island-text-muted);
+  --vi-accent-green: #30D158;
+  --vi-accent-blue: #F8A400;
+  --vi-accent-orange: #FF9500;
+  --vi-accent-red: #FF3B30;
+  --vi-accent-coral: #E8654A;
+  --vi-badge-dark: var(--island-btn-bg);
+  --vi-tool-green: #30D158;
+  --vi-warning-orange: #FF9500;
+
+  /* ── Glass backgrounds (mapped to island tokens) ── */
+  --glass-bg-light: rgba(255, 255, 255, 0.45);
+  --glass-bg-medium: rgba(255, 255, 255, 0.35);
+  --glass-bg-heavy: rgba(255, 255, 255, 0.25);
+
+  --glass-bg-dark: var(--island-bg);
+  --glass-bg-dark-medium: var(--island-bg);
+  --glass-bg-dark-heavy: var(--island-bg);
+
+  /* Borders */
+  --glass-border-light: rgba(255, 255, 255, 0.3);
+  --glass-border-dark: var(--island-border);
+
+  /* Text */
+  --text-primary: var(--vi-text-primary);
+  --text-secondary: var(--vi-text-secondary);
+  --text-tertiary: var(--vi-text-tertiary);
+
+  /* Accent */
+  --accent: var(--island-accent);
+  --accent-hover: #ffb21a;
+  --accent-glass: rgba(248, 164, 0, 0.28);
+
+  /* Status colors */
+  --status-active: var(--vi-accent-green);
+  --status-waiting: var(--vi-accent-orange);
+  --status-idle: var(--island-text-muted);
+  --status-working: #06b6d4;
+  --status-approval: #f59e0b;
+  --status-error: #ef4444;
+  --status-done: #22c55e;
+  --status-thinking: #a855f7;
+  --status-warning: #f97316;
+
+  /* Shadows */
+  --shadow-light: var(--island-pill-shadow);
+  --shadow-dark: var(--island-shadow);
+  --shadow-elevated: var(--island-shadow);
+
+  /* Blur */
+  --blur-light: 12px;
+  --blur-medium: 24px;
+  --blur-heavy: 32px;
+
+  /* Border radius */
+  --radius-pill: 999px;
+  --radius-xl: 20px;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Typography */
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
+  --font-size-xs: 10px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+
+  /* Animation */
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1.0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+
+  /* Panel dimensions — Dynamic Island responsive sizing */
+  --panel-width: min(620px, 32vw);
+  --panel-max-height: 560px;
+  --collapsed-width: min(340px, 18vw);
+  --collapsed-height: 36px;
+}

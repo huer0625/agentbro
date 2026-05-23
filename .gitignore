@@ -1,0 +1,52 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+tmp/
+.claude/
+.codex/
+.superpowers/
+prototypes/
+*.local
+.env
+.env.*
+!.env.example
+.playwright-cli/
+output/
+__pycache__/
+*.py[cod]
+
+# Signing keys and release secrets
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.mobileprovision
+*.tsbuildinfo
+
+# Tauri
+src-tauri/target/
+
+# oh-my-claudecode state
+**/.omc
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
