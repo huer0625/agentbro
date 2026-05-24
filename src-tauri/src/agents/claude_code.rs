@@ -986,6 +986,7 @@ pub fn send_message_to_terminal(
             cwd: None,
             tty_path: Some(tty.to_string()),
             terminal_app: Some(terminal_app.clone()),
+            term_program: None,
             term_bundle_id: term_bundle_id.map(ToString::to_string),
             agent_type: Some("claude-code".to_string()),
         };

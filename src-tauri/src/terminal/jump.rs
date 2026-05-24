@@ -45,6 +45,8 @@ pub struct JumpContext {
     pub tty_path: Option<String>,
     /// App name saved by the hook payload.
     pub terminal_app: Option<String>,
+    /// TERM_PROGRAM saved by the hook payload.
+    pub term_program: Option<String>,
     /// Frontmost bundle identifier saved by the hook payload.
     pub term_bundle_id: Option<String>,
     /// Agent source, used for native app fallback.
@@ -116,12 +118,6 @@ pub fn jump_to_terminal(pid: u32) -> JumpResult {
 pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
     let tree = process_tree::build_tree();
 
-    if let Some(bundle_id) = native_bundle_for_context(ctx) {
-        if activate_bundle(bundle_id).is_ok() {
-            return JumpResult::Success;
-        }
-    }
-
     if ctx
         .cmux_surface_id
         .as_deref()
@@ -149,7 +145,7 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
         if !pane.is_empty() {
             let res = jump_via_tmux_pane(pane, ctx.tmux_env.as_deref());
             // Also activate the outer terminal app hosting tmux
-            if let Some(term) = process_tree::find_terminal_app_name(ctx.pid, &tree) {
+            if let Some(term) = outer_terminal_app(ctx, &tree) {
                 let _ = activate_app(&term);
             }
             return res;
@@ -158,7 +154,7 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
 
     if process_tree::is_in_tmux(ctx.pid, &tree) {
         let res = jump_via_tmux_pid(ctx.pid);
-        if let Some(term) = process_tree::find_terminal_app_name(ctx.pid, &tree) {
+        if let Some(term) = outer_terminal_app(ctx, &tree) {
             let _ = activate_app(&term);
         }
         return res;
@@ -167,6 +163,11 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
     let terminal_app = outer_terminal_app(ctx, &tree);
 
     let Some(term_app) = terminal_app else {
+        if let Some(bundle_id) = native_bundle_for_context(ctx) {
+            if activate_bundle(bundle_id).is_ok() {
+                return JumpResult::Success;
+            }
+        }
         return JumpResult::TerminalNotFound;
     };
 
@@ -270,7 +271,7 @@ fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult 
             let dev = tty_to_dev_path(t);
             format!(
                 r#"try
-                    if tty of aSession is "{dev}" then
+                    if tty of aSession contains "{dev}" then
                         select aSession
                         select aWindow
                         return
@@ -916,13 +917,87 @@ fn outer_terminal_app(
     ctx: &JumpContext,
     tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
 ) -> Option<String> {
-    process_tree::find_terminal_app_name(ctx.pid, tree)
-        .or_else(|| ctx.terminal_app.clone())
+    ctx.term_bundle_id
+        .as_deref()
+        .and_then(terminal_app_from_bundle_id)
+        .map(ToString::to_string)
+        .or_else(|| {
+            ctx.term_program
+                .as_deref()
+                .and_then(terminal_app_from_term_program)
+                .map(ToString::to_string)
+        })
+        .or_else(|| process_tree::find_terminal_app_name(ctx.pid, tree))
+        .or_else(|| {
+            ctx.terminal_app
+                .as_deref()
+                .filter(|app| registry::is_terminal(app))
+                .map(normalized_app_name)
+                .map(ToString::to_string)
+        })
         .or_else(|| {
             ctx.tty_path
                 .as_ref()
                 .and_then(|tty| find_terminal_app_for_tty(tty))
         })
+}
+
+fn terminal_app_from_bundle_id(bundle_id: &str) -> Option<&'static str> {
+    let lower = bundle_id.to_ascii_lowercase();
+    if lower.contains("iterm") {
+        Some("iTerm2")
+    } else if lower.contains("apple.terminal") {
+        Some("Terminal")
+    } else if lower.contains("ghostty") {
+        Some("Ghostty")
+    } else if lower.contains("wezterm") {
+        Some("WezTerm")
+    } else if lower.contains("kitty") {
+        Some("kitty")
+    } else if lower.contains("kaku") {
+        Some("Kaku")
+    } else if lower.contains("cmux") {
+        Some("cmux")
+    } else if lower.contains("warp") {
+        Some("Warp")
+    } else if lower.contains("alacritty") {
+        Some("Alacritty")
+    } else if lower.contains("vscode") || lower.contains("microsoft.vscode") {
+        Some("Code")
+    } else if lower.contains("cursor") || lower.contains("todesktop.230313mzl4w4u92") {
+        Some("Cursor")
+    } else if lower.contains("windsurf") {
+        Some("Windsurf")
+    } else if lower.contains("zed") {
+        Some("zed")
+    } else {
+        None
+    }
+}
+
+fn terminal_app_from_term_program(term_program: &str) -> Option<&'static str> {
+    let lower = term_program.to_ascii_lowercase();
+    if lower.contains("iterm") {
+        Some("iTerm2")
+    } else if lower.contains("apple_terminal") || lower == "terminal" {
+        Some("Terminal")
+    } else if lower.contains("ghostty") {
+        Some("Ghostty")
+    } else if lower.contains("wezterm") {
+        Some("WezTerm")
+    } else if lower.contains("kitty") {
+        Some("kitty")
+    } else if lower.contains("warp") {
+        Some("Warp")
+    } else if lower.contains("alacritty") {
+        Some("Alacritty")
+    } else if lower.contains("vscode") {
+        Some("Code")
+    } else if lower.contains("cursor") {
+        Some("Cursor")
+    } else {
+        None
+    }
 }
 
 fn normalized_app_name(name: &str) -> &str {
@@ -1146,7 +1221,13 @@ fn tty_to_dev_path(tty: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_app_name;
+    use crate::terminal::process_tree;
+
+    use super::{
+        normalized_app_name, outer_terminal_app, terminal_app_from_bundle_id,
+        terminal_app_from_term_program, JumpContext,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn normalizes_session_terminal_labels_for_app_activation() {
@@ -1155,5 +1236,77 @@ mod tests {
         assert_eq!(normalized_app_name("WezTerm CLI"), "WezTerm");
         assert_eq!(normalized_app_name("Ghostty"), "Ghostty");
         assert_eq!(normalized_app_name("custom-term"), "custom-term");
+    }
+
+    #[test]
+    fn resolves_terminal_app_from_bundle_and_term_program_metadata() {
+        assert_eq!(
+            terminal_app_from_bundle_id("com.googlecode.iterm2"),
+            Some("iTerm2")
+        );
+        assert_eq!(terminal_app_from_term_program("iTerm.app"), Some("iTerm2"));
+        assert_eq!(terminal_app_from_bundle_id("com.anthropic.claude"), None);
+    }
+
+    #[test]
+    fn outer_terminal_uses_terminal_metadata_before_non_terminal_labels() {
+        let ctx = JumpContext {
+            pid: 0,
+            terminal_app: Some("Claude".to_string()),
+            term_bundle_id: Some("com.googlecode.iterm2".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            outer_terminal_app(&ctx, &HashMap::new()).as_deref(),
+            Some("iTerm2")
+        );
+    }
+
+    #[test]
+    fn outer_terminal_uses_host_metadata_before_native_agent_fallbacks() {
+        let ctx = JumpContext {
+            pid: 0,
+            agent_type: Some("opencode".to_string()),
+            term_program: Some("iTerm.app".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            outer_terminal_app(&ctx, &HashMap::new()).as_deref(),
+            Some("iTerm2")
+        );
+    }
+
+    #[test]
+    fn outer_terminal_ignores_non_terminal_labels_without_host_metadata() {
+        let ctx = JumpContext {
+            pid: 0,
+            terminal_app: Some("AntCC".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(outer_terminal_app(&ctx, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn outer_terminal_prefers_host_metadata_over_process_tree_guess() {
+        let mut tree = HashMap::new();
+        tree.insert(
+            42,
+            process_tree::ProcessInfo {
+                pid: 42,
+                ppid: 1,
+                command: "Cursor".to_string(),
+                tty: None,
+            },
+        );
+        let ctx = JumpContext {
+            pid: 42,
+            term_program: Some("iTerm.app".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(outer_terminal_app(&ctx, &tree).as_deref(), Some("iTerm2"));
     }
 }

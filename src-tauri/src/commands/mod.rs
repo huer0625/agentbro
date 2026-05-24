@@ -1821,6 +1821,7 @@ pub async fn jump_to_terminal(
         cwd: Some(session.cwd.clone()).filter(|cwd| !cwd.is_empty()),
         tty_path: session.tty.clone(),
         terminal_app: Some(session.terminal.clone()).filter(|terminal| !terminal.is_empty()),
+        term_program: session.term_program.or(terminal_env.term_program),
         term_bundle_id: session.term_bundle_id.or(terminal_env.cf_bundle_identifier),
         agent_type: Some(session.agent_type.clone()),
     };

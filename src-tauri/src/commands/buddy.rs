@@ -319,6 +319,7 @@ fn jump_session_from_store(store: &Arc<SessionStore>, session_id: &str) -> Resul
         cwd: Some(session.cwd).filter(|cwd| !cwd.is_empty()),
         tty_path: session.tty,
         terminal_app: Some(session.terminal).filter(|terminal| !terminal.is_empty()),
+        term_program: session.term_program.or(terminal_env.term_program),
         term_bundle_id: session.term_bundle_id.or(terminal_env.cf_bundle_identifier),
         agent_type: Some(session.agent_type),
     };

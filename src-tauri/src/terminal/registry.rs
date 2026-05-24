@@ -53,20 +53,22 @@ const TERMINAL_BUNDLE_IDS: &[&str] = &[
 
 /// Check if a command/app name belongs to a known terminal
 pub fn is_terminal(app_name_or_command: &str) -> bool {
-    let lower = app_name_or_command.to_lowercase();
+    let lower = app_name_or_command.to_ascii_lowercase();
 
     for name in TERMINAL_APP_NAMES {
-        if lower.contains(&name.to_lowercase()) {
+        if contains_app_name(&lower, &name.to_ascii_lowercase()) {
             return true;
         }
     }
 
-    lower.contains("terminal") || lower.contains("iterm")
+    false
 }
 
 /// Check if a bundle identifier is a known terminal
 pub fn is_terminal_bundle(bundle_id: &str) -> bool {
-    TERMINAL_BUNDLE_IDS.contains(&bundle_id)
+    TERMINAL_BUNDLE_IDS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(bundle_id))
 }
 
 /// Get the app name to use in AppleScript for a given terminal command
@@ -79,5 +81,53 @@ pub fn applescript_app_name(command: &str) -> Option<&'static str> {
         Some("Terminal")
     } else {
         None
+    }
+}
+
+fn contains_app_name(haystack: &str, needle: &str) -> bool {
+    if haystack == needle {
+        return true;
+    }
+
+    let mut search_start = 0;
+    while let Some(relative_index) = haystack[search_start..].find(needle) {
+        let start = search_start + relative_index;
+        let end = start + needle.len();
+        if is_name_boundary(haystack[..start].chars().next_back())
+            && is_name_boundary(haystack[end..].chars().next())
+        {
+            return true;
+        }
+        search_start = end;
+    }
+
+    false
+}
+
+fn is_name_boundary(ch: Option<char>) -> bool {
+    ch.map_or(true, |c| !c.is_ascii_alphanumeric())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_terminal;
+
+    #[test]
+    fn detects_terminal_app_names_with_boundaries() {
+        assert!(is_terminal("/Applications/iTerm.app/Contents/MacOS/iTerm2"));
+        assert!(is_terminal(
+            "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
+        ));
+        assert!(is_terminal("iTerm·tmux"));
+        assert!(is_terminal("Apple_Terminal"));
+    }
+
+    #[test]
+    fn does_not_treat_agent_binary_paths_as_terminal_apps() {
+        assert!(!is_terminal(
+            "/Users/me/.codefuse/fuse/engine/bin/claude/2.1.139/claude"
+        ));
+        assert!(!is_terminal("claude"));
+        assert!(!is_terminal("AntCC"));
     }
 }

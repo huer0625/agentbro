@@ -455,3 +455,55 @@ pub fn is_descendant(target_pid: u32, ancestor_pid: u32, tree: &HashMap<u32, Pro
 pub fn get_tty(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Option<String> {
     tree.get(&pid).and_then(|info| info.tty.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{find_terminal_app_name, ProcessInfo};
+    use std::collections::HashMap;
+
+    #[test]
+    fn find_terminal_app_name_skips_codefuse_claude_path() {
+        let mut tree = HashMap::new();
+        tree.insert(
+            10,
+            ProcessInfo {
+                pid: 10,
+                ppid: 9,
+                command: "/Users/me/.codefuse/fuse/engine/bin/claude/2.1.139/claude".to_string(),
+                tty: Some("ttys006".to_string()),
+            },
+        );
+        tree.insert(
+            9,
+            ProcessInfo {
+                pid: 9,
+                ppid: 8,
+                command: "cfuse".to_string(),
+                tty: Some("ttys006".to_string()),
+            },
+        );
+        tree.insert(
+            8,
+            ProcessInfo {
+                pid: 8,
+                ppid: 7,
+                command: "-zsh".to_string(),
+                tty: Some("ttys006".to_string()),
+            },
+        );
+        tree.insert(
+            7,
+            ProcessInfo {
+                pid: 7,
+                ppid: 1,
+                command: "/Applications/iTerm.app/Contents/MacOS/iTerm2".to_string(),
+                tty: None,
+            },
+        );
+
+        assert_eq!(
+            find_terminal_app_name(10, &tree).as_deref(),
+            Some("/Applications/iTerm.app/Contents/MacOS/iTerm2")
+        );
+    }
+}
