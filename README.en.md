@@ -35,13 +35,15 @@ The first open-source release focuses on the **Dynamic Island module**. Larger m
 
 The center of the AgentBro logo is shaped like a handshake. It represents the collaboration between humans and AI agents: not replacement, not remote control, but a bro-like companion that helps, nudges, and catches the moments that need attention. The outer `A` / `B` structure comes from the AgentBro initials and also resembles two connected agent nodes.
 
-## Screenshots
+## Demo Videos
 
-![AgentBro Dynamic Island expanded with session status, task progress, a permission approval bar, and a plan card](docs/assets/screenshots/island-expanded.png)
+### Interaction Demo
 
-| Permission card | Detail mode |
-| --- | --- |
-| ![AgentBro permission card with deny, allow once, and always allow actions](docs/assets/screenshots/island-permission.png) | ![AgentBro detail mode with chat context and approval controls](docs/assets/screenshots/island-detail.png) |
+https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
+
+### Theme Demo
+
+https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
 ## Main Features
 

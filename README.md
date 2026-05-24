@@ -35,13 +35,15 @@ AgentBro 是一个悬浮在编辑器和终端上方的原生 macOS 应用。它�
 
 AgentBro 的 Logo 中间是一个握手造型，代表人和 AI Agent 之间的协作关系：不是替代，也不是遥控，而是像 bro 一样在旁边接力、提醒、兜底。外层的 `A` / `B` 结构来自 AgentBro 的首字母，也像两个 Agent 节点连接在一起。
 
-## 截图
+## 演示视频
 
-![AgentBro 灵动岛展开态，包含会话状态、任务进度、权限操作栏和计划卡片](docs/assets/screenshots/island-expanded.png)
+### 交互演示
 
-| 权限卡片 | 详情模式 |
-| --- | --- |
-| ![AgentBro 权限卡片，包含拒绝、允许一次和总是允许操作](docs/assets/screenshots/island-permission.png) | ![AgentBro 详情模式，包含聊天上下文和审批控制](docs/assets/screenshots/island-detail.png) |
+https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
+
+### 多主题演示
+
+https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
 ## 主要功能
 
