@@ -273,15 +273,86 @@ notarize_app() {
         return
     fi
 
-    echo "==> Notarizing DMG..."
-    xcrun notarytool submit "$DIST_DIR/$DMG_NAME" \
+    local dmg_path="$DIST_DIR/$DMG_NAME"
+    local timeout_seconds="${NOTARY_TIMEOUT_SECONDS:-5400}"
+    local poll_seconds="${NOTARY_POLL_SECONDS:-60}"
+    local submitted_at
+    local submission_output
+    local submission_id
+    submitted_at="$(date +%s)"
+
+    json_field() {
+        node -e '
+const field = process.argv[1];
+let input = "";
+process.stdin.on("data", chunk => input += chunk);
+process.stdin.on("end", () => {
+  const data = JSON.parse(input);
+  const value = field.split(".").reduce((acc, key) => acc && acc[key], data);
+  if (value !== undefined && value !== null) process.stdout.write(String(value));
+});
+' "$1"
+    }
+
+    print_notary_log() {
+        local id="$1"
+        echo "==> Notarization log for $id"
+        xcrun notarytool log "$id" \
+            --apple-id "$apple_id" \
+            --password "$apple_password" \
+            --team-id "$team_id" || true
+    }
+
+    echo "==> Submitting DMG for notarization..."
+    submission_output="$(xcrun notarytool submit "$dmg_path" \
         --apple-id "$apple_id" \
         --password "$apple_password" \
         --team-id "$team_id" \
-        --wait
+        --output-format json)"
+    echo "$submission_output"
+    submission_id="$(printf '%s' "$submission_output" | json_field id)"
+
+    if [ -z "$submission_id" ]; then
+        echo "Unable to read notarization submission id" >&2
+        exit 1
+    fi
+
+    echo "==> Notarization submission id: $submission_id"
+    while true; do
+        local info_output
+        local status
+        info_output="$(xcrun notarytool info "$submission_id" \
+            --apple-id "$apple_id" \
+            --password "$apple_password" \
+            --team-id "$team_id" \
+            --output-format json)"
+        echo "$info_output"
+        status="$(printf '%s' "$info_output" | json_field status)"
+
+        case "$status" in
+            Accepted)
+                break
+                ;;
+            Invalid|Rejected)
+                print_notary_log "$submission_id"
+                exit 1
+                ;;
+            *)
+                local now
+                now="$(date +%s)"
+                if [ $((now - submitted_at)) -ge "$timeout_seconds" ]; then
+                    echo "Timed out waiting for notarization after ${timeout_seconds}s" >&2
+                    print_notary_log "$submission_id"
+                    exit 124
+                fi
+                echo "Current notarization status: ${status:-unknown}; waiting ${poll_seconds}s..."
+                sleep "$poll_seconds"
+                ;;
+        esac
+    done
 
     echo "==> Stapling notarization ticket..."
-    xcrun stapler staple "$DIST_DIR/$DMG_NAME"
+    xcrun stapler staple "$dmg_path"
 }
 
 create_checksums() {

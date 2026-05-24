@@ -13,7 +13,7 @@ jobs:
   build-universal:
     name: Build Universal DMG
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       HAS_APPLE_SECRETS: ${{ secrets.APPLE_ID != '' && '1' || '0' }}
 
@@ -109,7 +109,7 @@ jobs:
           rm certificate.p12
 
       - name: Build universal DMG
-        timeout-minutes: 100
+        timeout-minutes: 115
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -117,6 +117,8 @@ jobs:
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          NOTARY_TIMEOUT_SECONDS: '5400'
+          NOTARY_POLL_SECONDS: '60'
         run: |
           export APP_VERSION="$VERSION"
           export DMG_NAME="AgentBro_${VERSION}_universal.dmg"
