@@ -13,7 +13,7 @@ jobs:
   build-universal:
     name: Build Universal DMG
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       HAS_APPLE_SECRETS: ${{ secrets.APPLE_ID != '' && '1' || '0' }}
 
@@ -109,7 +109,7 @@ jobs:
           rm certificate.p12
 
       - name: Build universal DMG
-        timeout-minutes: 35
+        timeout-minutes: 100
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
