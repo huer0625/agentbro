@@ -45,6 +45,20 @@ https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
 
 https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
+## 支持的主题
+
+| 主题 | ID | 风格 |
+| --- | --- | --- |
+| 午夜 | `midnight` | 默认深色主题，适合长时间编码和夜间使用。 |
+| AgentBro 经典 | `ink-amber` | 品牌经典暖色主题，强调墨色与琥珀色对比。 |
+| 磨砂玻璃 | `frosted-glass` | 轻量浅色玻璃质感，适合明亮桌面环境。 |
+| 苹果 | `apple` | 干净的 macOS 系统风格，低干扰、偏原生。 |
+| 烟灰 | `smoke` | 中性浅色主题，降低色彩刺激，适合持续监控。 |
+| 海雾 | `ocean-mist` | 冷色浅色主题，以蓝色强调状态与操作。 |
+| 暖纸 | `warm-paper` | 温暖纸感主题，适合偏柔和的桌面搭配。 |
+| 柔薰衣草 | `soft-lavender` | 柔和紫色主题，偏轻盈、低对比。 |
+| 跟随系统 | `system` | 跟随系统浅色 / 深色外观自动切换。 |
+
 ## 主要功能
 
 | 功能 | 说明 |
@@ -63,15 +77,27 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
 AgentBro 内置了以下 Agent 的适配器和 Hook 管理能力：
 
-- Claude Code
-- Codex
-- Gemini CLI
-- Cursor / Cursor CLI
-- GitHub Copilot
-- Trae / Trae CN
-- Qoder / Qoder CLI
-- CodeBuddy / CodeBuddy CN
-- Qwen、Kimi、OpenCode、Droid、Factory、StepFun、AntiGravity、WorkBuddy、Hermes、Pi、Kiro
+| Agent | 支持状态 |
+| --- | --- |
+| Claude Code | 完整接入 |
+| Codex | 完整接入 |
+| Gemini CLI | 完整接入 |
+| Cursor / Cursor CLI | 完整接入 |
+| GitHub Copilot | 完整接入 |
+| Trae / Trae CN | 完整接入 |
+| Qoder / Qoder CLI | 支持 |
+| CodeBuddy / CodeBuddy CN | 支持 |
+| Qwen | 支持 |
+| Kimi | 支持 |
+| OpenCode | 支持 |
+| Droid | 支持 |
+| Factory | 支持 |
+| StepFun | 支持 |
+| AntiGravity | 支持 |
+| WorkBuddy | 支持 |
+| Hermes | 支持 |
+| Pi | 支持 |
+| Kiro | 支持 |
 
 ## 路线图
 
