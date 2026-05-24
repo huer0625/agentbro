@@ -35,13 +35,29 @@ The first open-source release focuses on the **Dynamic Island module**. Larger m
 
 The center of the AgentBro logo is shaped like a handshake. It represents the collaboration between humans and AI agents: not replacement, not remote control, but a bro-like companion that helps, nudges, and catches the moments that need attention. The outer `A` / `B` structure comes from the AgentBro initials and also resembles two connected agent nodes.
 
-## Screenshots
+## Demo Videos
 
-![AgentBro Dynamic Island expanded with session status, task progress, a permission approval bar, and a plan card](docs/assets/screenshots/island-expanded.png)
+### Interaction Demo
 
-| Permission card | Detail mode |
-| --- | --- |
-| ![AgentBro permission card with deny, allow once, and always allow actions](docs/assets/screenshots/island-permission.png) | ![AgentBro detail mode with chat context and approval controls](docs/assets/screenshots/island-detail.png) |
+https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
+
+### Theme Demo
+
+https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
+
+## Supported Themes
+
+| Theme | ID | Style |
+| --- | --- | --- |
+| Midnight | `midnight` | Default dark theme for long coding sessions and low-light environments. |
+| AgentBro Classic | `ink-amber` | Warm brand theme with ink and amber contrast. |
+| Frosted Glass | `frosted-glass` | Light glass-style theme for bright desktops. |
+| Apple | `apple` | Clean macOS-style theme with a native, low-distraction feel. |
+| Smoke | `smoke` | Neutral light theme for calmer continuous monitoring. |
+| Ocean Mist | `ocean-mist` | Cool light theme with blue accents for state and actions. |
+| Warm Paper | `warm-paper` | Warm paper-like theme for softer desktop setups. |
+| Soft Lavender | `soft-lavender` | Gentle lavender theme with a lighter, lower-contrast feel. |
+| System | `system` | Follows the system light / dark appearance automatically. |
 
 ## Main Features
 
@@ -61,15 +77,27 @@ The center of the AgentBro logo is shaped like a handshake. It represents the co
 
 AgentBro includes adapters and hook management for:
 
-- Claude Code
-- Codex
-- Gemini CLI
-- Cursor / Cursor CLI
-- GitHub Copilot
-- Trae / Trae CN
-- Qoder / Qoder CLI
-- CodeBuddy / CodeBuddy CN
-- Qwen, Kimi, OpenCode, Droid, Factory, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, and Kiro
+| Agent | Status |
+| --- | --- |
+| Claude Code | Full integration |
+| Codex | Full integration |
+| Gemini CLI | Full integration |
+| Cursor / Cursor CLI | Full integration |
+| GitHub Copilot | Full integration |
+| Trae / Trae CN | Full integration |
+| Qoder / Qoder CLI | Supported |
+| CodeBuddy / CodeBuddy CN | Supported |
+| Qwen | Supported |
+| Kimi | Supported |
+| OpenCode | Supported |
+| Droid | Supported |
+| Factory | Supported |
+| StepFun | Supported |
+| AntiGravity | Supported |
+| WorkBuddy | Supported |
+| Hermes | Supported |
+| Pi | Supported |
+| Kiro | Supported |
 
 ## Roadmap
 
