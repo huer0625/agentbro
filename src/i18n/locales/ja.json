@@ -578,6 +578,7 @@
     "readyTitle": "アップデート準備完了",
     "later": "後で",
     "install": "インストールして再起動",
+    "downloadLatest": "最新版をダウンロード",
     "downloading": "ダウンロード中...",
     "restart": "今すぐ再起動",
     "restartHint": "アップデートのダウンロードが完了しました。アプリを再起動して適用してください。"

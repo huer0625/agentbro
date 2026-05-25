@@ -398,6 +398,7 @@
     "readyTitle": "Güncelleme Hazır",
     "later": "Sonra",
     "install": "Kur ve Yeniden Başlat",
+    "downloadLatest": "En Son Sürümü İndir",
     "downloading": "İndiriliyor...",
     "restart": "Şimdi Yeniden Başlat",
     "restartHint": "Güncelleme indirildi. Uygulamak için uygulamayı yeniden başlatın."

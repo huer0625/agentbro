@@ -110,6 +110,7 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
           notes={updater.notes}
           date={updater.date}
           status={updater.status}
+          manualDownloadUrl={updater.manualDownloadUrl}
           onInstall={updater.installUpdate}
           onDismiss={updater.dismissUpdate}
         />

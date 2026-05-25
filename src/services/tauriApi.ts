@@ -6,6 +6,8 @@ import type { RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
 import { useConfigStore } from '../stores/configStore'
 
+declare const __APP_VERSION__: string
+
 /** Returns true when running inside a Tauri webview. */
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -15,6 +17,18 @@ export function isTauri(): boolean {
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke: tauriInvoke } = await import('@tauri-apps/api/core')
   return tauriInvoke<T>(cmd, args)
+}
+
+export async function getCurrentAppVersion(): Promise<string> {
+  if (!isTauri()) return __APP_VERSION__
+
+  try {
+    const { getVersion } = await import('@tauri-apps/api/app')
+    return await getVersion()
+  } catch (error) {
+    console.warn('[tauriApi] failed to read app version:', error)
+    return __APP_VERSION__
+  }
 }
 
 // ── Backend Types (match Rust serde camelCase output) ────────────
@@ -1012,7 +1026,7 @@ export async function endPetDrag(): Promise<{ x: number; y: number } | null> {
 export async function exportDiagnostics(): Promise<string> {
   if (!isTauri()) {
     return JSON.stringify({
-      appVersion: '0.1.0-alpha',
+      appVersion: await getCurrentAppVersion(),
       os: navigator.platform,
       userAgent: navigator.userAgent,
       timestamp: new Date().toISOString(),

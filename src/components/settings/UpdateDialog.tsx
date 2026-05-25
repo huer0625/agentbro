@@ -6,14 +6,16 @@ interface UpdateDialogProps {
   notes: string | null
   date: string | null
   status: UpdateStatus
+  manualDownloadUrl?: string | null
   onInstall: () => void
   onDismiss: () => void
 }
 
-export function UpdateDialog({ version, notes, date, status, onInstall, onDismiss }: UpdateDialogProps) {
+export function UpdateDialog({ version, notes, date, status, manualDownloadUrl, onInstall, onDismiss }: UpdateDialogProps) {
   const { t } = useTranslation()
   const isDownloading = status === 'downloading'
   const isReady = status === 'ready'
+  const isManualDownload = Boolean(manualDownloadUrl) && !isReady
 
   return (
     <div className="skills-dialog-overlay" onClick={onDismiss}>
@@ -61,7 +63,7 @@ export function UpdateDialog({ version, notes, date, status, onInstall, onDismis
             onClick={onInstall}
             disabled={isDownloading}
           >
-            {isDownloading ? t('update.downloading') : isReady ? t('update.restart') : t('update.install')}
+            {isDownloading ? t('update.downloading') : isReady ? t('update.restart') : isManualDownload ? t('update.downloadLatest') : t('update.install')}
           </button>
         </div>
       </div>

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
-import { quitApp, exportDiagnostics } from '../../../services/tauriApi'
+import { quitApp, exportDiagnostics, getCurrentAppVersion } from '../../../services/tauriApi'
 import type { UpdateStatus } from '../../../hooks/useUpdater'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -55,6 +55,21 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
   const { t } = useTranslation()
   const [diagStatus, setDiagStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
   const [communityOpen, setCommunityOpen] = useState(false)
+  const [appVersion, setAppVersion] = useState<string>('...')
+
+  useEffect(() => {
+    let cancelled = false
+    getCurrentAppVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version)
+      })
+      .catch(() => {
+        if (!cancelled) setAppVersion('dev')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const openExternalLink = (url: string) => {
     open(url).catch((err) => console.warn('[AboutSection] open link:', err))
@@ -75,11 +90,11 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
 
   const updateDescription = (() => {
     switch (updateStatus) {
-      case 'checking': return 'Checking for updates...'
-      case 'available': return `Update ${updateVersion} available`
-      case 'downloading': return `Downloading ${updateVersion}...`
-      case 'ready': return `Update ${updateVersion} ready — restart to apply`
-      case 'error': return updateError ?? 'Update check failed'
+      case 'checking': return t('settings.updateChecking', { defaultValue: '正在检查更新...' })
+      case 'available': return t('settings.updateAvailable', { version: updateVersion, defaultValue: `发现新版本 ${updateVersion}` })
+      case 'downloading': return t('settings.updateDownloading', { version: updateVersion, defaultValue: `正在下载 ${updateVersion}...` })
+      case 'ready': return t('settings.updateReady', { version: updateVersion, defaultValue: `新版本 ${updateVersion} 已就绪，重启后生效` })
+      case 'error': return updateError ?? t('settings.updateCheckFailed', { defaultValue: '无法连接更新服务，请稍后重试，或通过“发布版本”手动下载最新版。' })
       case 'up-to-date': return t('settings.latestVersion')
       default: return t('settings.latestVersion')
     }
@@ -91,7 +106,7 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
         <img className="about-header__icon" src="/agentbro-logo.png" alt="" aria-hidden="true" />
         <div className="about-header__name">AgentBro</div>
         <div className="about-header__slogan">{t('notch.slogan')}</div>
-        <div className="about-header__version">Version 0.1.0-alpha</div>
+        <div className="about-header__version">Version {appVersion}</div>
       </div>
 
       <SettingGroup label={t('settings.logoMeaning', { defaultValue: 'Logo Meaning' })}>
