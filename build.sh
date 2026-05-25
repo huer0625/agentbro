@@ -51,7 +51,7 @@ done
 
 check_deps() {
     local missing=()
-    for cmd in cargo pnpm node tar shasum create-dmg; do
+    for cmd in cargo pnpm node tar shasum create-dmg lipo; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing+=("$cmd")
         fi
@@ -63,96 +63,24 @@ check_deps() {
     fi
 }
 
-build_frontend() {
-    echo "==> Building frontend..."
-    pnpm install --frozen-lockfile
-    pnpm build
-}
-
-build_rust() {
-    echo "==> Building Rust binaries (arm64 + x86_64)..."
-    cd src-tauri
-    cargo build --release --target aarch64-apple-darwin
-    cargo build --release --target x86_64-apple-darwin
-    cd ..
-}
-
-create_universal() {
-    echo "==> Creating universal binaries..."
-    local arm_dir="$BUILD_DIR/aarch64-apple-darwin/release"
-    local x86_dir="$BUILD_DIR/x86_64-apple-darwin/release"
-    local out_dir="$BUILD_DIR/universal/release"
-    mkdir -p "$out_dir"
-
-    lipo -create \
-        "$arm_dir/agentbro" \
-        "$x86_dir/agentbro" \
-        -output "$out_dir/agentbro"
-
-    lipo -create \
-        "$arm_dir/agentbro-bridge" \
-        "$x86_dir/agentbro-bridge" \
-        -output "$out_dir/agentbro-bridge" 2>/dev/null || true
-}
-
 build_app_bundle() {
-    echo "==> Building app bundle..."
-    local bundle_dir="$DIST_DIR/$APP_NAME.app/Contents"
+    echo "==> Building Tauri universal app bundle..."
+    local tauri_app="$BUILD_DIR/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
+
+    cargo tauri build \
+        --target universal-apple-darwin \
+        --bundles app \
+        --no-sign \
+        --ci
+
+    if [ ! -d "$tauri_app" ]; then
+        echo "Tauri app bundle not found: $tauri_app" >&2
+        exit 1
+    fi
+
     rm -rf "$DIST_DIR/$APP_NAME.app"
-    mkdir -p "$bundle_dir/MacOS"
-    mkdir -p "$bundle_dir/Resources"
-    mkdir -p "$bundle_dir/Frameworks"
-
-    cp "$BUILD_DIR/universal/release/agentbro" "$bundle_dir/MacOS/$APP_NAME"
-    chmod +x "$bundle_dir/MacOS/$APP_NAME"
-
-    if [ -f "$BUILD_DIR/universal/release/agentbro-bridge" ]; then
-        cp "$BUILD_DIR/universal/release/agentbro-bridge" "$bundle_dir/Resources/agentbro-bridge"
-        chmod +x "$bundle_dir/Resources/agentbro-bridge"
-    fi
-
-    # Copy Info.plist from tauri bundle if available
-    if [ -f "src-tauri/Info.plist" ]; then
-        cp "src-tauri/Info.plist" "$bundle_dir/Info.plist"
-    else
-        cat > "$bundle_dir/Info.plist" <<PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleDisplayName</key>
-    <string>$APP_NAME</string>
-    <key>CFBundleExecutable</key>
-    <string>$APP_NAME</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>$BUNDLE_ID</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>$APP_NAME</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>$APP_VERSION</string>
-    <key>CFBundleVersion</key>
-    <string>$APP_VERSION</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>
-PLIST_EOF
-    fi
-
-    # Copy icons
-    if [ -f "src-tauri/icons/icon.icns" ]; then
-        cp "src-tauri/icons/icon.icns" "$bundle_dir/Resources/AppIcon.icns"
-    fi
+    mkdir -p "$DIST_DIR"
+    cp -R "$tauri_app" "$DIST_DIR/$APP_NAME.app"
 }
 
 sign_app() {
@@ -170,22 +98,17 @@ sign_app() {
     echo "==> Signing app bundle..."
     local entitlements="src-tauri/Entitlements.plist"
     local app_path="$DIST_DIR/$APP_NAME.app"
-    local app_binary="$app_path/Contents/MacOS/$APP_NAME"
-    local bridge_binary="$app_path/Contents/Resources/agentbro-bridge"
 
-    if [ -f "$bridge_binary" ]; then
-        echo "==> Signing helper binary..."
+    while IFS= read -r binary; do
+        if [ ! -x "$binary" ]; then
+            continue
+        fi
+        echo "==> Signing executable: $binary"
         codesign --force --timestamp --options runtime \
             --entitlements "$entitlements" \
             --sign "$identity" \
-            "$bridge_binary"
-    fi
-
-    echo "==> Signing main binary..."
-    codesign --force --timestamp --options runtime \
-        --entitlements "$entitlements" \
-        --sign "$identity" \
-        "$app_binary"
+            "$binary"
+    done < <(find "$app_path/Contents/MacOS" -type f)
 
     echo "==> Signing app container..."
     codesign --force --timestamp --options runtime \
@@ -366,9 +289,6 @@ create_checksums() {
 
 main() {
     check_deps
-    build_frontend
-    build_rust
-    create_universal
     build_app_bundle
     sign_app
     create_updater_archive

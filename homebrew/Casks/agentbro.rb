@@ -1,5 +1,5 @@
 cask "agentbro" do
-  version "0.1.1"
+  version "0.1.2"
   sha256 :no_check
 
   url "https://github.com/shirenchuang/agentbro/releases/download/v#{version}/AgentBro_#{version}_universal.dmg"
