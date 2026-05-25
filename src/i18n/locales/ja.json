@@ -394,6 +394,8 @@
     "collapseDelayDesc": "カーソルが離れてから折りたたむまでの遅延。",
     "clickToDetail": "クリックで詳細表示",
     "clickToDetailDesc": "オンの場合はセッションカードのクリックでチャット詳細を開き、オフの場合はターミナルへ移動します。",
+    "jumpBeforeSend": "送信前に移動",
+    "jumpBeforeSendDesc": "オンの場合、Codex App セッションは対象ウィンドウへ移動してから送信します。オフの場合は Codex CLI を呼ばず、Codex App のバックグラウンドウィンドウだけを操作します。",
     "tipsEnabled": "ヒントを表示",
     "tipsEnabledDesc": "セッションがない時、またはすべてアイドル時に中央エリアへヒントを表示します。",
     "carouselInterval": "カルーセル間隔",

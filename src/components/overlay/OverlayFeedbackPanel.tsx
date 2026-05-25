@@ -64,6 +64,7 @@ export function OverlayFeedbackPanel({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dismissAfterSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
   const countdownDeadline = countdownStartedAt + dwellMs
   const hasInputDraft = inputValue.trim().length > 0
@@ -124,6 +125,7 @@ export function OverlayFeedbackPanel({
       if (timerRef.current) clearTimeout(timerRef.current)
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
       if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+      if (dismissAfterSendTimerRef.current) clearTimeout(dismissAfterSendTimerRef.current)
     }
   }, [countdownDeadline, dwellMs, scheduleDismiss, updateProgress])
 
@@ -190,6 +192,12 @@ export function OverlayFeedbackPanel({
       })
       setInputValue('')
       inputFocusedRef.current = false
+      dismissAfterSendTimerRef.current = setTimeout(() => {
+        dismissAfterSendTimerRef.current = null
+        onDismissRef.current()
+      }, 500)
+    } catch (error) {
+      console.warn('[OverlayFeedbackPanel] sendMessage:', error)
     } finally {
       setSending(false)
     }

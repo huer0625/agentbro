@@ -224,6 +224,7 @@ interface ConfigState {
 
   // AgentBro parity — interaction timing
   clickToDetail: boolean
+  jumpBeforeSend: boolean
   showCacheTTL: boolean
   hoverExpandDelay: number // ms before expanding on hover (0 = instant)
   microHoverExpandDelay: number // ms before expanding micro pill on hover
@@ -436,6 +437,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     sessionTimeoutMinutes: 30,
     aiMessageLines: 1,
     clickToDetail: true,
+    jumpBeforeSend: true,
     showCacheTTL: true,
     hoverExpandDelay: 50,
     microHoverExpandDelay: 50,
@@ -582,6 +584,7 @@ export const useConfigStore = create<ConfigStore>()(
 
   // AgentBro parity — interaction timing
   clickToDetail: true,
+  jumpBeforeSend: true,
   showCacheTTL: true,
   hoverExpandDelay: 50,
   microHoverExpandDelay: 50,

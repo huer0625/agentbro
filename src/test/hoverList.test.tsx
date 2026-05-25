@@ -304,6 +304,7 @@ describe('HoverList interactions', () => {
           project: 'free-chat',
           cwd: '/Users/me/Library/Application Support/Codex/free-chat',
           terminal: 'Codex',
+          termProgram: 'iTerm.app',
           termBundleId: 'com.openai.codex',
         })]}
         onSessionClick={vi.fn()}
@@ -312,9 +313,28 @@ describe('HoverList interactions', () => {
 
     expect(screen.getByText('Codex App')).toBeInTheDocument()
     expect(screen.getByText('Codex')).toBeInTheDocument()
+    expect(screen.queryByText('iTerm2')).not.toBeInTheDocument()
     expect(screen.queryByText('Free Chat')).not.toBeInTheDocument()
     expect(container.querySelector('.mascot-image')).toHaveAttribute('data-mascot-source', 'codex')
     expect(container.querySelector('.pixel-indicator')).not.toBeInTheDocument()
+  })
+
+  it('labels app-hosted sessions by app bundle and hides stale terminal metadata', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          agentType: 'claude-code',
+          terminal: '/dev/ttys001',
+          termProgram: 'iTerm.app',
+          termBundleId: 'com.example.AgentHost',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Claude')).toBeInTheDocument()
+    expect(screen.getByText('AgentHost')).toBeInTheDocument()
+    expect(screen.queryByText('iTerm2')).not.toBeInTheDocument()
   })
 
   it('infers terminal source from bundle metadata when terminal is a tty', () => {

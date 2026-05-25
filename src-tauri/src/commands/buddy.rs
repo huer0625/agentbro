@@ -119,10 +119,11 @@ pub fn set_buddy_device_config(
 /// Reverse-focus entrypoint used by external Buddy devices.
 #[tauri::command]
 pub async fn buddy_reverse_focus(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    super::jump_to_terminal(state, session_id).await
+    super::jump_to_terminal(app, state, session_id).await
 }
 
 pub fn start_buddy_device_server(config: BuddyDeviceConfig, store: Arc<SessionStore>) {

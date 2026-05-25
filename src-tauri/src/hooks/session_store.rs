@@ -899,13 +899,7 @@ mod tests {
 
     fn seeded_store() -> SessionStore {
         let store = SessionStore::new();
-        store.get_or_create_session(
-            "s1",
-            "claude-code",
-            "agentbro",
-            "/tmp/agentbro",
-            "iTerm",
-        );
+        store.get_or_create_session("s1", "claude-code", "agentbro", "/tmp/agentbro", "iTerm");
         store
     }
 

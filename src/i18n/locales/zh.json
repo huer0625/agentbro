@@ -495,6 +495,8 @@
     "collapseDelayDesc": "鼠标离开展开态后延迟收起，防止误触闪烁。",
     "clickToDetail": "点击进入详情",
     "clickToDetailDesc": "开启后点击会话卡片进入聊天详情；关闭后点击直接跳转到终端。",
+    "jumpBeforeSend": "发送前跳转",
+    "jumpBeforeSendDesc": "开启后 Codex App 会话会先跳转到目标窗口再发送；关闭后只尝试操作 Codex App 的后台窗口，不调用 Codex CLI。",
     "tipsEnabled": "显示 Tips",
     "tipsEnabledDesc": "无会话或全部空闲时，在中间区域显示轮播 Tips。",
     "carouselInterval": "轮播间隔",

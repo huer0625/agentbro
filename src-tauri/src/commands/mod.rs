@@ -25,13 +25,13 @@ use crate::sound::SoundEngine;
 use crate::switch::db::SwitchDatabase;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::io::{BufRead, BufReader as StdBufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::process::{ChildStdin, ChildStdout, Command as TokioCommand};
 
@@ -905,11 +905,14 @@ pub async fn respond_permission(
 
 #[tauri::command]
 pub async fn send_message(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     message: String,
+    activate_before_send: Option<bool>,
 ) -> Result<(), String> {
     log::info!("Send message: session={}, msg={}", session_id, message);
+    release_notch_keyboard_focus(&app);
 
     let session = state
         .session_store
@@ -917,13 +920,19 @@ pub async fn send_message(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     if is_codex_desktop_session(&session) {
-        match send_message_to_codex_desktop(&session, &message) {
-            Ok(()) => return Ok(()),
-            Err(err) if session.tty.is_some() => {
-                log::warn!("Codex Desktop send failed, falling back to TTY: {}", err);
-            }
-            Err(err) => return Err(err),
+        if activate_before_send.unwrap_or(true) {
+            return send_message_to_codex_desktop(&session, &message);
         }
+
+        return send_message_to_codex_desktop_without_activation(&session, &message);
+    }
+
+    if is_qoder_app_session(&session) {
+        return send_message_to_qoder_app(&session, &message, activate_before_send.unwrap_or(true));
+    }
+
+    if let Some(err) = app_host_message_unsupported_error(&session) {
+        return Err(err);
     }
 
     let tty = resolve_session_tty(&session).ok_or_else(|| "Session has no TTY".to_string())?;
@@ -947,13 +956,168 @@ pub async fn send_message(
 fn is_codex_desktop_session(session: &SessionState) -> bool {
     let terminal = session.terminal.trim();
 
-    session.agent_type == "codex"
-        && session
-            .tty
-            .as_deref()
-            .map_or(true, |tty| tty.trim().is_empty())
+    if session.agent_type != "codex" {
+        return false;
+    }
+
+    if session
+        .term_bundle_id
+        .as_deref()
+        .is_some_and(is_codex_app_bundle)
+    {
+        return true;
+    }
+
+    if let Some(meta) = read_codex_session_meta(&session.id) {
+        let originator = meta.originator.unwrap_or_default().to_ascii_lowercase();
+        if originator.contains("desktop") {
+            return true;
+        }
+        if originator.contains("tui") || originator.contains("cli") {
+            return false;
+        }
+
+        let source = meta.source.unwrap_or_default().to_ascii_lowercase();
+        if source == "cli" {
+            return false;
+        }
+        if source == "vscode" || source == "desktop" {
+            return true;
+        }
+    }
+
+    let missing_tty = session
+        .tty
+        .as_deref()
+        .map_or(true, |tty| tty.trim().is_empty());
+    missing_tty
         && !terminal.starts_with("/dev/")
         && (terminal.is_empty() || terminal.to_ascii_lowercase().contains("codex"))
+}
+
+fn is_codex_app_bundle(bundle_id: &str) -> bool {
+    bundle_id.to_ascii_lowercase().contains("openai.codex")
+}
+
+fn is_qoder_app_bundle(bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    lower == "com.qoder.ide" || lower == "com.qoder.ide.helper"
+}
+
+fn is_qoder_app_session(session: &SessionState) -> bool {
+    session.agent_type == "qoder"
+        && (session
+            .term_bundle_id
+            .as_deref()
+            .is_some_and(is_qoder_app_bundle)
+            || session.terminal.to_ascii_lowercase().contains("qoder"))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CodexSessionMeta {
+    originator: Option<String>,
+    source: Option<String>,
+}
+
+fn read_codex_session_meta(session_id: &str) -> Option<CodexSessionMeta> {
+    let path = discover_codex_session_file(session_id)?;
+    read_codex_session_meta_from_path(&path)
+}
+
+fn read_codex_session_meta_from_path(path: &Path) -> Option<CodexSessionMeta> {
+    let file = fs::File::open(path).ok()?;
+    let reader = StdBufReader::new(file);
+
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(payload) = codex_session_meta_payload(&entry) else {
+            continue;
+        };
+
+        return Some(CodexSessionMeta {
+            originator: payload
+                .get("originator")
+                .or_else(|| entry.get("originator"))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            source: payload
+                .get("source")
+                .or_else(|| entry.get("source"))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+        });
+    }
+
+    None
+}
+
+fn codex_session_meta_payload(entry: &serde_json::Value) -> Option<&serde_json::Value> {
+    if entry.get("type").and_then(|value| value.as_str()) == Some("session_meta") {
+        return entry.get("payload").or(Some(entry));
+    }
+
+    let payload = entry.get("payload")?;
+    if payload.get("type").and_then(|value| value.as_str()) == Some("session_meta") {
+        return payload.get("payload").or(Some(payload));
+    }
+
+    None
+}
+
+fn app_host_bundle_id(session: &SessionState) -> Option<&str> {
+    let bundle_id = session.term_bundle_id.as_deref()?.trim();
+    if bundle_id.is_empty() || crate::terminal::registry::is_terminal_bundle(bundle_id) {
+        return None;
+    }
+    Some(bundle_id)
+}
+
+fn app_host_display_name(session: &SessionState) -> &'static str {
+    if session
+        .term_bundle_id
+        .as_deref()
+        .is_some_and(is_codex_app_bundle)
+    {
+        "Codex App"
+    } else if session
+        .term_bundle_id
+        .as_deref()
+        .is_some_and(is_qoder_app_bundle)
+    {
+        "Qoder App"
+    } else {
+        "App-hosted"
+    }
+}
+
+fn app_host_message_unsupported_error(session: &SessionState) -> Option<String> {
+    if app_host_bundle_id(session).is_some()
+        && !is_codex_desktop_session(session)
+        && !is_qoder_app_session(session)
+    {
+        return Some(format!(
+            "{} sessions do not support AgentBro message injection yet. Open the app to continue.",
+            app_host_display_name(session)
+        ));
+    }
+
+    None
+}
+
+fn open_app_host_session(session: &SessionState) -> Result<(), String> {
+    if is_codex_desktop_session(session) {
+        return open_codex_desktop_session(session);
+    }
+
+    let bundle_id = app_host_bundle_id(session)
+        .ok_or_else(|| "Session has no app bundle metadata to jump to".to_string())?;
+    open_bundle_id(bundle_id)
 }
 
 fn resolve_session_tty(session: &SessionState) -> Option<String> {
@@ -985,102 +1149,437 @@ fn normalize_tty_path(tty: &str) -> String {
     }
 }
 
-fn open_codex_desktop_session(session_id: &str) -> Result<(), String> {
+fn open_codex_desktop_session(session: &SessionState) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         return Err("Codex Desktop session jumping is only supported on macOS".to_string());
     }
 
-    let opened_thread = std::process::Command::new("/usr/bin/open")
-        .arg(format!("codex://threads/{}", session_id))
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    let opened_thread = is_uuid_like(&session.id)
+        && std::process::Command::new("/usr/bin/open")
+            .arg(format!("codex://threads/{}", session.id))
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
 
     if opened_thread {
+        let _ = activate_codex_desktop_app(session.pid);
         return Ok(());
     }
 
-    let opened_app = std::process::Command::new("/usr/bin/open")
-        .args(["-a", "Codex"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-
-    if opened_app {
+    if activate_codex_desktop_app(session.pid) {
         Ok(())
     } else {
         Err("Failed to activate Codex Desktop".to_string())
     }
 }
 
-fn send_message_to_codex_desktop(session: &SessionState, message: &str) -> Result<(), String> {
-    send_message_to_codex_background(&session.id, message, &session.cwd)
-}
-
-fn send_message_to_codex_background(
-    session_id: &str,
-    message: &str,
-    cwd: &str,
-) -> Result<(), String> {
-    let codex = resolve_codex_binary()
-        .ok_or_else(|| "Could not find codex CLI for background send".to_string())?;
-
-    let mut command = std::process::Command::new(&codex);
-    command
-        .args(codex_exec_resume_args(session_id))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    if !cwd.trim().is_empty() && Path::new(cwd).is_dir() {
-        command.current_dir(cwd);
+fn activate_codex_desktop_app(pid: Option<u32>) -> bool {
+    if std::process::Command::new("/usr/bin/open")
+        .args(["-a", "Codex"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        return true;
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to start codex background send: {}", e))?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Failed to open codex stdin".to_string())?;
-    stdin
-        .write_all(message.as_bytes())
-        .map_err(|e| format!("Failed to write message to codex: {}", e))?;
-    drop(stdin);
-
-    let session_id = session_id.to_string();
-    std::thread::spawn(move || match child.wait() {
-        Ok(status) if status.success() => {
-            log::debug!("Codex background send completed for {}", session_id);
+    if let Some(pid) = pid {
+        let script = format!(
+            r#"tell application "System Events"
+  set matchingProcesses to application processes whose unix id is {pid}
+  if (count of matchingProcesses) > 0 then
+    set frontmost of item 1 of matchingProcesses to true
+    return "ok"
+  end if
+end tell"#
+        );
+        if osascript_ok(&script) {
+            return true;
         }
-        Ok(status) => {
-            log::warn!(
-                "Codex background send exited with status {} for {}",
-                status,
-                session_id
-            );
-        }
-        Err(err) => {
-            log::warn!(
-                "Codex background send wait failed for {}: {}",
-                session_id,
-                err
-            );
-        }
-    });
+    }
 
-    Ok(())
+    osascript_ok(
+        r#"tell application "System Events"
+  set matchingProcesses to application processes whose name is "Codex"
+  if (count of matchingProcesses) is 0 then
+    set matchingProcesses to application processes whose name contains "Codex"
+  end if
+  if (count of matchingProcesses) > 0 then
+    set frontmost of item 1 of matchingProcesses to true
+    return "ok"
+  end if
+end tell"#,
+    ) || osascript_ok(r#"tell application "Codex" to activate"#)
 }
 
-fn codex_exec_resume_args(session_id: &str) -> Vec<String> {
-    vec![
-        "exec".to_string(),
-        "resume".to_string(),
-        "--skip-git-repo-check".to_string(),
-        session_id.to_string(),
-        "-".to_string(),
-    ]
+fn send_message_to_codex_desktop(session: &SessionState, message: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Codex Desktop message sending is only supported on macOS".to_string());
+    }
+
+    open_codex_desktop_session(session)?;
+    std::thread::sleep(Duration::from_millis(300));
+
+    let script = codex_desktop_send_message_script(message);
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|err| format!("Failed to run Codex Desktop send script: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Failed to send message to Codex Desktop".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+fn codex_desktop_send_message_script(message: &str) -> String {
+    let message_literal = applescript_string_literal(message);
+    format!(
+        r#"set previousClipboard to missing value
+try
+  set previousClipboard to the clipboard
+end try
+set the clipboard to {message_literal}
+set sendError to missing value
+try
+  tell application "System Events"
+    keystroke "v" using command down
+    delay 0.35
+    set didSend to false
+    try
+      set frontProcess to first application process whose frontmost is true
+      set frontWindow to front window of frontProcess
+      set sendButtons to (entire contents of frontWindow) whose role is "AXButton" and (name is "Send" or description is "Send" or name is "发送" or description is "发送")
+      if (count of sendButtons) > 0 then
+        click item 1 of sendButtons
+        set didSend to true
+      end if
+    end try
+    if didSend is false then
+      key code 36
+    end if
+  end tell
+on error errMsg
+  set sendError to errMsg
+end try
+if previousClipboard is not missing value then
+  delay 0.2
+  set the clipboard to previousClipboard
+end if
+if sendError is not missing value then
+  error sendError
+end if"#
+    )
+}
+
+fn send_message_to_qoder_app(
+    session: &SessionState,
+    message: &str,
+    activate_before_send: bool,
+) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Qoder App message sending is only supported on macOS".to_string());
+    }
+    if !activate_before_send {
+        return Err(
+            "Qoder App message sending requires Jump Before Send so the editor can receive focus."
+                .to_string(),
+        );
+    }
+
+    if !activate_qoder_app(session.pid) {
+        return Err("Failed to activate Qoder App".to_string());
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    let script = qoder_app_send_message_script(message, session.pid);
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|err| format!("Failed to run Qoder App send script: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Failed to send message to Qoder App".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+fn activate_qoder_app(pid: Option<u32>) -> bool {
+    if std::process::Command::new("/usr/bin/open")
+        .args(["-b", "com.qoder.ide"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if let Some(pid) = pid {
+        let script = format!(
+            r#"tell application "System Events"
+  set matchingProcesses to (application processes whose unix id is {pid})
+  if (count of matchingProcesses) > 0 then
+    set qoderProcess to item 1 of matchingProcesses
+    try
+      if bundle identifier of qoderProcess is "com.qoder.ide" then
+        set frontmost of qoderProcess to true
+        return "ok"
+      end if
+    end try
+  end if
+end tell"#
+        );
+        if osascript_ok(&script) {
+            return true;
+        }
+    }
+
+    osascript_ok(
+        r#"tell application "System Events"
+  set matchingProcesses to (application processes whose bundle identifier is "com.qoder.ide")
+  if (count of matchingProcesses) > 0 then
+    set frontmost of item 1 of matchingProcesses to true
+    return "ok"
+  end if
+end tell"#,
+    )
+}
+
+fn qoder_app_send_message_script(message: &str, pid: Option<u32>) -> String {
+    let message_literal = applescript_string_literal(message);
+    let pid_lookup = pid
+        .map(|pid| {
+            format!(
+                r#"set matchingProcesses to (application processes whose unix id is {pid})
+  if (count of matchingProcesses) > 0 then
+    set candidateProcess to item 1 of matchingProcesses
+    try
+      if bundle identifier of candidateProcess is "com.qoder.ide" then
+        set qoderProcess to candidateProcess
+      end if
+    end try
+  end if"#
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        r#"set previousClipboard to missing value
+try
+  set previousClipboard to the clipboard
+end try
+set the clipboard to {message_literal}
+set sendError to missing value
+try
+  tell application "System Events"
+    set qoderProcess to missing value
+    {pid_lookup}
+    if qoderProcess is missing value then
+      set matchingProcesses to (application processes whose bundle identifier is "com.qoder.ide")
+      if (count of matchingProcesses) > 0 then
+        set qoderProcess to item 1 of matchingProcesses
+      end if
+    end if
+    if qoderProcess is missing value then error "Qoder App is not running"
+    set frontmost of qoderProcess to true
+    delay 0.15
+    if (count of windows of qoderProcess) is 0 then error "Qoder App has no open windows"
+
+    set targetWindow to front window of qoderProcess
+    set inputFields to (entire contents of targetWindow) whose (role is "AXTextArea" or role is "AXTextField")
+    if (count of inputFields) is 0 then error "Could not find Qoder message input"
+    set inputField to item (count of inputFields) of inputFields
+    try
+      set focused of inputField to true
+    end try
+    delay 0.05
+    keystroke "a" using command down
+    keystroke "v" using command down
+    delay 0.35
+
+    set didSend to false
+    set sendButtons to (entire contents of targetWindow) whose role is "AXButton" and (name is "Send message" or description is "Send message" or name is "Send" or description is "Send" or name is "发送" or description is "发送")
+    repeat with sendButton in sendButtons
+      try
+        if enabled of sendButton is not false then
+          click sendButton
+          set didSend to true
+          exit repeat
+        end if
+      end try
+    end repeat
+    if didSend is false then
+      key code 36
+    end if
+  end tell
+on error errMsg
+  set sendError to errMsg
+end try
+if previousClipboard is not missing value then
+  delay 0.2
+  set the clipboard to previousClipboard
+end if
+if sendError is not missing value then
+  error sendError
+end if"#
+    )
+}
+
+fn send_message_to_codex_desktop_without_activation(
+    session: &SessionState,
+    message: &str,
+) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Codex Desktop message sending is only supported on macOS".to_string());
+    }
+
+    open_codex_desktop_session_in_background(session)?;
+    std::thread::sleep(Duration::from_millis(500));
+
+    let script = codex_desktop_send_message_without_activation_script(message, session.pid);
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|err| format!("Failed to run Codex Desktop background send script: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Failed to send message to Codex Desktop without activating it. Turn on Jump Before Send or switch to the Codex App thread and try again.".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+fn open_codex_desktop_session_in_background(session: &SessionState) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Codex Desktop session jumping is only supported on macOS".to_string());
+    }
+    if !is_uuid_like(&session.id) {
+        return Err("Codex App background sending requires a thread UUID. Turn on Jump Before Send to continue.".to_string());
+    }
+
+    let output = std::process::Command::new("/usr/bin/open")
+        .args(["-g", &format!("codex://threads/{}", session.id)])
+        .output()
+        .map_err(|err| format!("Failed to open Codex thread in the background: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Failed to open Codex thread in the background".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+fn codex_desktop_send_message_without_activation_script(message: &str, pid: Option<u32>) -> String {
+    let message_literal = applescript_string_literal(message);
+    let pid_lookup = pid
+        .map(|pid| {
+            format!(
+                r#"set matchingProcesses to application processes whose unix id is {pid}
+    if (count of matchingProcesses) > 0 then
+      set codexProcess to item 1 of matchingProcesses
+    end if"#
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        r#"set messageText to {message_literal}
+tell application "System Events"
+  set codexProcess to missing value
+  {pid_lookup}
+  if codexProcess is missing value then
+    set matchingProcesses to application processes whose name is "Codex"
+    if (count of matchingProcesses) is 0 then
+      set matchingProcesses to application processes whose name contains "Codex"
+    end if
+    if (count of matchingProcesses) > 0 then
+      set codexProcess to item 1 of matchingProcesses
+    end if
+  end if
+  if codexProcess is missing value then error "Codex App is not running"
+  if (count of windows of codexProcess) is 0 then error "Codex App has no open windows"
+
+  set targetWindow to front window of codexProcess
+  set inputFields to (entire contents of targetWindow) whose (role is "AXTextArea" or role is "AXTextField")
+  set didInput to false
+  repeat with inputIndex from (count of inputFields) to 1 by -1
+    set inputField to item inputIndex of inputFields
+    try
+      set value of inputField to messageText
+      set didInput to true
+      exit repeat
+    end try
+  end repeat
+  if didInput is false then error "Could not find Codex message input"
+
+  set sendButtons to (entire contents of targetWindow) whose role is "AXButton" and (name is "Send" or description is "Send" or name is "发送" or description is "发送")
+  if (count of sendButtons) > 0 then
+    perform action "AXPress" of item 1 of sendButtons
+  else
+    error "Could not find Codex send button"
+  end if
+end tell"#
+    )
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn open_bundle_id(bundle_id: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("App bundle jumping is only supported on macOS".to_string());
+    }
+
+    let output = std::process::Command::new("/usr/bin/open")
+        .args(["-b", bundle_id])
+        .output()
+        .map_err(|e| format!("Failed to activate app bundle {bundle_id}: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("Failed to activate app bundle {bundle_id}")
+        } else {
+            stderr
+        })
+    }
 }
 
 fn resolve_codex_binary() -> Option<PathBuf> {
@@ -1763,35 +2262,58 @@ pub async fn simulate_hook_event(
 
 #[tauri::command]
 pub async fn jump_to_terminal(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
     log::info!("Jump to terminal: session={}", session_id);
+    release_notch_keyboard_focus(&app);
 
     let session = state
         .session_store
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
-    if is_codex_desktop_session(&session) {
-        match open_codex_desktop_session(&session.id) {
-            Ok(()) => return Ok(()),
-            Err(err) if session.pid.is_some() || session.tty.is_some() => {
-                log::warn!(
-                    "Codex Desktop jump failed, falling back to terminal: {}",
-                    err
-                );
-            }
-            Err(err) => return Err(err),
-        }
+    if app_host_bundle_id(&session).is_some() || is_codex_desktop_session(&session) {
+        return open_app_host_session(&session);
     }
 
     let pid = session.pid.unwrap_or(0);
-    if pid == 0 && session.tty.as_deref().unwrap_or("").is_empty() {
-        if session.terminal.trim().is_empty() || !can_fallback_to_terminal_app(&session.terminal) {
-            return Err("Session has no terminal metadata to jump to".to_string());
+    let resolved_tty = resolve_session_tty(&session);
+    if let Some(tty) = &resolved_tty {
+        if session.tty.as_deref() != Some(tty.as_str()) {
+            let resolved_tty = tty.clone();
+            state.session_store.update_session(&session_id, |s| {
+                s.tty = Some(resolved_tty);
+            });
         }
-        return jump_to_terminal_fallback(&session.terminal, &session.cwd);
+    }
+
+    let has_jump_metadata = pid != 0
+        || resolved_tty.is_some()
+        || !session.terminal.trim().is_empty()
+        || session
+            .term_program
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || session
+            .term_bundle_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || session
+            .wezterm_pane
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || session
+            .zellij_pane_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || session
+            .cmux_surface_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    if !has_jump_metadata {
+        return Err("Session has no terminal metadata to jump to".to_string());
     }
 
     let tree = crate::terminal::process_tree::build_tree();
@@ -1809,23 +2331,37 @@ pub async fn jump_to_terminal(
         pid,
         iterm_session_id: terminal_env.iterm_session_id,
         kitty_window_id: terminal_env.kitty_window_id,
-        wezterm_pane: session.wezterm_pane.or(terminal_env.wezterm_pane),
-        zellij_pane_id: session.zellij_pane_id.or(terminal_env.zellij_pane_id),
+        wezterm_pane: session.wezterm_pane.clone().or(terminal_env.wezterm_pane),
+        zellij_pane_id: session
+            .zellij_pane_id
+            .clone()
+            .or(terminal_env.zellij_pane_id),
         zellij_session_name: session
             .zellij_session_name
+            .clone()
             .or(terminal_env.zellij_session_name),
-        cmux_surface_id: session.cmux_surface_id.or(terminal_env.cmux_surface_id),
-        cmux_workspace_id: session.cmux_workspace_id.or(terminal_env.cmux_workspace_id),
+        cmux_surface_id: session
+            .cmux_surface_id
+            .clone()
+            .or(terminal_env.cmux_surface_id),
+        cmux_workspace_id: session
+            .cmux_workspace_id
+            .clone()
+            .or(terminal_env.cmux_workspace_id),
         tmux_pane,
         tmux_env: terminal_env.tmux,
         cwd: Some(session.cwd.clone()).filter(|cwd| !cwd.is_empty()),
-        tty_path: session.tty.clone(),
+        tty_path: resolved_tty,
         terminal_app: Some(session.terminal.clone()).filter(|terminal| !terminal.is_empty()),
-        term_program: session.term_program.or(terminal_env.term_program),
-        term_bundle_id: session.term_bundle_id.or(terminal_env.cf_bundle_identifier),
+        term_program: session.term_program.clone().or(terminal_env.term_program),
+        term_bundle_id: session
+            .term_bundle_id
+            .clone()
+            .or(terminal_env.cf_bundle_identifier),
         agent_type: Some(session.agent_type.clone()),
     };
 
+    let fallback_terminal = terminal_hint_for_fallback(&session);
     match crate::terminal::jump::jump_to_terminal_with_context(&jump_context) {
         crate::terminal::jump::JumpResult::Success => Ok(()),
         crate::terminal::jump::JumpResult::SessionNotFound => Err("Session not found".to_string()),
@@ -1834,7 +2370,7 @@ pub async fn jump_to_terminal(
                 "Terminal not found in process tree for session {}. Falling back to app activation.",
                 session_id
             );
-            jump_to_terminal_fallback(&session.terminal, &session.cwd)
+            jump_to_terminal_fallback(&fallback_terminal, &session.cwd)
         }
         crate::terminal::jump::JumpResult::Failed(msg) => {
             log::warn!(
@@ -1842,9 +2378,57 @@ pub async fn jump_to_terminal(
                 session_id,
                 msg
             );
-            jump_to_terminal_fallback(&session.terminal, &session.cwd)
+            jump_to_terminal_fallback(&fallback_terminal, &session.cwd)
         }
     }
+}
+
+fn release_notch_keyboard_focus(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("notch") else {
+            return;
+        };
+
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::NSWindow;
+            if let Ok(ptr) = window.ns_window() {
+                unsafe {
+                    let ns_window = ptr as *const NSWindow;
+                    (*ns_window).resignKeyWindow();
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+        }
+    });
+}
+
+fn terminal_hint_for_fallback(session: &SessionState) -> String {
+    if !session.terminal.trim().is_empty() {
+        return session.terminal.clone();
+    }
+
+    if let Some(program) = session
+        .term_program
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return fallback_terminal_app_name(program).to_string();
+    }
+
+    if let Some(bundle_id) = session
+        .term_bundle_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return fallback_terminal_app_name(bundle_id).to_string();
+    }
+
+    String::new()
 }
 
 fn jump_to_terminal_fallback(terminal: &str, cwd: &str) -> Result<(), String> {
@@ -2013,6 +2597,19 @@ fn shell_quote(value: &str) -> String {
 
 fn applescript_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn applescript_string_literal(value: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let parts = normalized
+        .split('\n')
+        .map(|part| format!("\"{}\"", applescript_escape(part)))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "\"\"".to_string()
+    } else {
+        parts.join(" & linefeed & ")
+    }
 }
 
 #[tauri::command]
@@ -2783,9 +3380,13 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_fallback_to_terminal_app, codex_answers_for_pending_question, codex_exec_resume_args,
-        codex_request_user_input_output, fallback_terminal_app_name, is_codex_desktop_session,
-        parse_subagent_chat_history_for_session, remote_session_chat_history, resolve_session_tty,
+        app_host_message_unsupported_error, can_fallback_to_terminal_app,
+        codex_answers_for_pending_question, codex_desktop_send_message_script,
+        codex_desktop_send_message_without_activation_script, codex_request_user_input_output,
+        fallback_terminal_app_name, is_codex_desktop_session, is_uuid_like,
+        parse_subagent_chat_history_for_session, qoder_app_send_message_script,
+        read_codex_session_meta_from_path, remote_session_chat_history, resolve_session_tty,
+        terminal_hint_for_fallback,
     };
     use crate::hooks::server::RawHookEvent;
     use crate::hooks::session_store::{
@@ -2890,22 +3491,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_desktop_send_uses_background_exec_resume_args() {
-        assert_eq!(
-            codex_exec_resume_args("session-123"),
-            vec![
-                "exec",
-                "resume",
-                "--skip-git-repo-check",
-                "session-123",
-                "-"
-            ]
-        );
-    }
-
-    #[test]
-    fn codex_desktop_detection_uses_missing_tty_or_codex_terminal() {
-        // Desktop background send is only safe when there is no foreground TTY.
+    fn codex_desktop_detection_uses_bundle_or_missing_tty() {
         assert!(is_codex_desktop_session(&session("codex", "", None)));
         assert!(is_codex_desktop_session(&session("codex", "Codex", None)));
         assert!(!is_codex_desktop_session(&session(
@@ -2915,7 +3501,7 @@ mod tests {
         )));
         let mut bundle_session = session("codex", "iTerm2", Some("/dev/ttys001"));
         bundle_session.term_bundle_id = Some("com.openai.codex".to_string());
-        assert!(!is_codex_desktop_session(&bundle_session));
+        assert!(is_codex_desktop_session(&bundle_session));
         assert!(!is_codex_desktop_session(&session(
             "codex", "AgentBro", None
         )));
@@ -2946,6 +3532,97 @@ mod tests {
     }
 
     #[test]
+    fn codex_session_meta_reads_originator_and_source() {
+        let nonce = uuid::Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!("agentbro-codex-meta-{nonce}.jsonl"));
+        fs::write(
+            &path,
+            r#"{"type":"session_meta","payload":{"originator":"codex_cli_rs","source":"cli"}}
+{"type":"event_msg","payload":{"type":"token_count"}}"#,
+        )
+        .expect("write codex meta");
+
+        let meta = read_codex_session_meta_from_path(&path).expect("read meta");
+        assert_eq!(meta.originator.as_deref(), Some("codex_cli_rs"));
+        assert_eq!(meta.source.as_deref(), Some("cli"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn codex_desktop_message_send_uses_accessibility_script() {
+        let script = codex_desktop_send_message_script("挺好 \"Codex\"\nnext");
+
+        assert!(script.contains("keystroke \"v\" using command down"));
+        assert!(script.contains("name is \"发送\""));
+        assert!(script.contains("description is \"发送\""));
+        assert!(
+            script.contains("set the clipboard to \"挺好 \\\"Codex\\\"\" & linefeed & \"next\"")
+        );
+        assert!(script.contains("key code 36"));
+    }
+
+    #[test]
+    fn codex_desktop_background_send_uses_app_accessibility_not_cli() {
+        let script =
+            codex_desktop_send_message_without_activation_script("挺好 \"Codex\"\nnext", Some(42));
+
+        assert!(script.contains("application processes whose unix id is 42"));
+        assert!(script.contains("role is \"AXTextArea\""));
+        assert!(script.contains("set value of inputField to messageText"));
+        assert!(script.contains("perform action \"AXPress\""));
+        assert!(script.contains("name is \"发送\""));
+        assert!(!script.contains("keystroke"));
+        assert!(!script.contains("exec"));
+        assert!(!script.contains("resume"));
+    }
+
+    #[test]
+    fn codex_desktop_message_send_is_supported_app_host() {
+        let mut session = session("codex", "", Some("/dev/ttys001"));
+        session.term_bundle_id = Some("com.openai.codex".to_string());
+
+        assert!(is_codex_desktop_session(&session));
+        assert!(app_host_message_unsupported_error(&session).is_none());
+    }
+
+    #[test]
+    fn app_host_message_send_blocks_non_terminal_app_bundles() {
+        let mut app_session = session("claude-code", "", Some("/dev/ttys001"));
+        app_session.term_bundle_id = Some("com.example.agenthost".to_string());
+        assert!(app_host_message_unsupported_error(&app_session)
+            .unwrap()
+            .contains("App-hosted sessions do not support"));
+
+        let mut terminal_session = session("claude-code", "iTerm2", Some("/dev/ttys001"));
+        terminal_session.term_bundle_id = Some("com.googlecode.iterm2".to_string());
+        assert!(app_host_message_unsupported_error(&terminal_session).is_none());
+    }
+
+    #[test]
+    fn qoder_app_message_send_is_supported_app_host() {
+        let mut session = session("qoder", "Qoder", None);
+        session.term_bundle_id = Some("com.qoder.ide".to_string());
+
+        assert!(app_host_message_unsupported_error(&session).is_none());
+    }
+
+    #[test]
+    fn qoder_app_send_uses_accessibility_script() {
+        let script = qoder_app_send_message_script("继续 \"Qoder\"\nnext", Some(42));
+
+        assert!(script.contains("application processes whose unix id is 42"));
+        assert!(script.contains("bundle identifier of candidateProcess is \"com.qoder.ide\""));
+        assert!(script.contains("role is \"AXTextArea\""));
+        assert!(script.contains("keystroke \"v\" using command down"));
+        assert!(script.contains("name is \"Send message\""));
+        assert!(script.contains("description is \"Send message\""));
+        assert!(
+            script.contains("set the clipboard to \"继续 \\\"Qoder\\\"\" & linefeed & \"next\"")
+        );
+    }
+
+    #[test]
     fn terminal_app_fallback_rejects_agent_app_labels() {
         assert!(can_fallback_to_terminal_app("iTerm2"));
         assert!(can_fallback_to_terminal_app("Terminal"));
@@ -2959,6 +3636,24 @@ mod tests {
         assert_eq!(fallback_terminal_app_name("Ghostty"), "Ghostty");
         assert_eq!(fallback_terminal_app_name("AntCC"), "Terminal");
         assert_eq!(fallback_terminal_app_name(""), "Terminal");
+    }
+
+    #[test]
+    fn jump_fallback_uses_terminal_environment_hint_when_terminal_is_empty() {
+        let mut env_session = session("claude-code", "", None);
+        env_session.term_program = Some("iTerm.app".to_string());
+        assert_eq!(terminal_hint_for_fallback(&env_session), "iTerm");
+
+        let mut bundle_session = session("claude-code", "", None);
+        bundle_session.term_bundle_id = Some("com.mitchellh.ghostty".to_string());
+        assert_eq!(terminal_hint_for_fallback(&bundle_session), "Ghostty");
+    }
+
+    #[test]
+    fn codex_thread_jump_requires_uuid_like_ids() {
+        assert!(is_uuid_like("123e4567-e89b-12d3-a456-426614174000"));
+        assert!(!is_uuid_like("not-a-thread-id"));
+        assert!(!is_uuid_like("123e4567e89b12d3a456426614174000"));
     }
 
     #[test]

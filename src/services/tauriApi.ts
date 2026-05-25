@@ -4,6 +4,7 @@
 
 import type { RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
+import { useConfigStore } from '../stores/configStore'
 
 /** Returns true when running inside a Tauri webview. */
 export function isTauri(): boolean {
@@ -442,7 +443,8 @@ export async function sendMessage(sessionId: string, message: string): Promise<v
     console.log(`[mock] sendMessage(${sessionId}, "${message}")`)
     return
   }
-  return invoke('send_message', { sessionId, message })
+  const activateBeforeSend = useConfigStore.getState().jumpBeforeSend
+  return invoke('send_message', { sessionId, message, activateBeforeSend })
 }
 
 export async function jumpToTerminal(sessionId: string): Promise<void> {

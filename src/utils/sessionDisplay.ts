@@ -97,6 +97,16 @@ function labelFromBundle(bundleId: string | null | undefined, labels: Array<[str
   return labels.find(([needle]) => bundle.includes(needle))?.[1] ?? null
 }
 
+function labelFromUnknownBundle(bundleId: string | null | undefined): string | null {
+  const bundle = (bundleId || '').trim()
+  if (!bundle || labelFromBundle(bundle, TERMINAL_BUNDLE_LABELS)) return null
+  const product = bundle.split('.').filter(Boolean).pop()
+  if (!product) return bundle
+  return product
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
 function normalizeTerminalLabel(value: string | null | undefined): string | null {
   const raw = (value || '').trim()
   if (!raw || isTtyLabel(raw)) return null
@@ -112,6 +122,9 @@ export function getSessionAppLabel(session: SessionState): string | null {
   const appLabel = labelFromBundle(session.termBundleId, APP_BUNDLE_LABELS)
   if (appLabel) return appLabel
 
+  const unknownAppLabel = labelFromUnknownBundle(session.termBundleId)
+  if (unknownAppLabel) return unknownAppLabel
+
   const terminal = (session.terminal || '').trim()
   const terminalLower = terminal.toLowerCase()
   if (terminalLower.includes('codex')) return 'Codex App'
@@ -122,18 +135,16 @@ export function getSessionAppLabel(session: SessionState): string | null {
 
 export function getSessionTerminalLabel(session: SessionState): string | null {
   const appLabel = getSessionAppLabel(session)
+  if (appLabel) return null
+
   const bundleLabel = labelFromBundle(session.termBundleId, TERMINAL_BUNDLE_LABELS)
-  if (bundleLabel && bundleLabel !== appLabel) return bundleLabel
+  if (bundleLabel) return bundleLabel
 
   const termProgramLabel = normalizeTerminalLabel(session.termProgram)
-  if (termProgramLabel && termProgramLabel !== appLabel) return termProgramLabel
+  if (termProgramLabel) return termProgramLabel
 
   const terminalLabel = normalizeTerminalLabel(session.terminal)
   if (!terminalLabel) return null
-
-  if (appLabel && terminalLabel.toLowerCase().includes(appLabel.replace(/\s+app$/i, '').toLowerCase())) {
-    return null
-  }
 
   return terminalLabel
 }

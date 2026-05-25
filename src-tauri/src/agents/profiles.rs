@@ -322,6 +322,21 @@ pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
     },
 ];
 
+pub const QODER_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("UserPromptSubmit"),
+    matcher_event("PreToolUse", "*", None),
+    matcher_event("PostToolUse", "*", None),
+    matcher_event("PostToolUseFailure", "*", None),
+    matcher_event("PermissionRequest", "*", None),
+    matcher_event("Notification", "*", None),
+    plain_event("Stop"),
+    plain_event("SessionStart"),
+    plain_event("SessionEnd"),
+    plain_event("PreCompact"),
+    plain_event("SubagentStart"),
+    plain_event("SubagentStop"),
+];
+
 const fn plain_event(name: &'static str) -> HookEventDescriptor {
     HookEventDescriptor {
         name,
@@ -442,7 +457,18 @@ pub fn pi_profile() -> AgentIntegrationProfile {
 }
 
 pub fn qoder_profile() -> AgentIntegrationProfile {
-    command_only_json_profile("qoder", ".qoder/settings.json", SNAKE_SESSION_TOOL_EVENTS)
+    AgentIntegrationProfile {
+        id: "qoder",
+        installation_kind: InstallationKind::JsonHooks {
+            entry: JsonHookEntry::TypedCommand,
+            nested: true,
+        },
+        configuration_path: ".qoder/settings.json",
+        activation_path: None,
+        source: "qoder",
+        extra_args: &[],
+        events: QODER_EVENTS,
+    }
 }
 
 pub fn qoder_cli_profile() -> AgentIntegrationProfile {
@@ -2462,6 +2488,66 @@ name = "also keep"
 
         assert_eq!(commands.len(), 1);
         assert!(commands[0].contains("--source qoder-cli"));
+    }
+
+    #[test]
+    fn qoder_profile_writes_nested_official_hooks() {
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder-cli"
+                            }
+                        ]
+                    },
+                    {
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder"
+                    }
+                ],
+                "session_start": [
+                    {
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder"
+                    }
+                ]
+            }
+        });
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-qoder-profile-{}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let updated = update_nested_json_hooks(
+            &qoder_profile(),
+            &path,
+            "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder",
+        )
+        .unwrap();
+
+        let session_start = updated["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(session_start.len(), 2);
+        assert!(session_start[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--source qoder-cli"));
+        assert!(session_start[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--source qoder"));
+        assert_eq!(
+            updated["hooks"]["PreToolUse"][0]["matcher"],
+            serde_json::json!("*")
+        );
+        assert!(updated["hooks"].get("session_start").is_none());
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

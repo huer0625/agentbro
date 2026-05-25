@@ -13,6 +13,7 @@ describe('configStore island defaults', () => {
     expect(state.completionCardHeight).toBe(200)
     expect(state.detailPanelMaxHeight).toBe(500)
     expect(state.showCacheTTL).toBe(true)
+    expect(state.jumpBeforeSend).toBe(true)
     expect(state.taskCompleteDwellSeconds).toBe(6)
     expect(state.idleTimeoutMinutes).toBe(5)
     expect(state.volume).toBe(70)

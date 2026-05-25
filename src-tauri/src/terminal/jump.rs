@@ -793,6 +793,7 @@ fn jump_via_tmux_pane(pane: &str, tmux_env: Option<&str>) -> JumpResult {
         let _ = cmd.output();
     };
 
+    run(&["switch-client", "-t", pane]);
     run(&["select-window", "-t", pane]);
     run(&["select-pane", "-t", pane]);
 

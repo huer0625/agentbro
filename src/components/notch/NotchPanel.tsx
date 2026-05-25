@@ -78,6 +78,21 @@ function isDragIgnoredTarget(target: EventTarget | null): boolean {
   )
 }
 
+function getInputFocusTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null
+  const focusTarget = target.closest('input, textarea, select, [contenteditable="true"]')
+  if (!(focusTarget instanceof HTMLElement)) return null
+  if (
+    (focusTarget instanceof HTMLInputElement
+      || focusTarget instanceof HTMLTextAreaElement
+      || focusTarget instanceof HTMLSelectElement)
+    && focusTarget.disabled
+  ) {
+    return null
+  }
+  return focusTarget
+}
+
 function getOverlayNotificationContent(overlay: OverlayItem | null | undefined, session?: { lastUserMessage?: string }): NotificationContentMetrics | undefined {
   if (!overlay) return undefined
   if (overlay.type === 'response') {
@@ -711,10 +726,20 @@ export function NotchPanel() {
     flushNativeIgnoreCursorEvents()
   }, [flushNativeIgnoreCursorEvents])
 
-  const focusNotchForHover = useCallback((options?: { allowNonBlockingOverlay?: boolean }) => {
+  const focusNotchForHover = useCallback((options?: { allowNonBlockingOverlay?: boolean; focusTarget?: HTMLElement | null }) => {
     const overlay = useSessionStore.getState().activeOverlay
-    if (overlay && isNonBlockingOverlay(overlay) && !options?.allowNonBlockingOverlay) return
-    setNotchFocusable(true).catch(() => {})
+    const focusTarget = options?.focusTarget ?? null
+    if (overlay && isNonBlockingOverlay(overlay) && !options?.allowNonBlockingOverlay && !focusTarget) return
+    setNotchFocusable(true)
+      .then(() => {
+        if (!focusTarget) return
+        window.requestAnimationFrame(() => {
+          if (document.contains(focusTarget)) focusTarget.focus({ preventScroll: true })
+        })
+      })
+      .catch(() => {
+        if (focusTarget && document.contains(focusTarget)) focusTarget.focus({ preventScroll: true })
+      })
   }, [])
 
   const setHoverContentNode = useCallback((node: HTMLDivElement | null) => {
@@ -784,7 +809,10 @@ export function NotchPanel() {
       && panelState === 'collapsed'
       && !interaction.isHidden,
     )
-    if (notificationIsAlreadyVisible && source === 'native') return
+    if (notificationIsAlreadyVisible && source === 'native') {
+      focusNotchForHover({ allowNonBlockingOverlay: true })
+      return
+    }
     if (panelState !== 'collapsed') {
       focusNotchForHover()
       return
@@ -855,9 +883,15 @@ export function NotchPanel() {
   }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActiveBlockingOverlayInline, setPanelState])
 
   const handleHitboxPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (!islandEnabled || event.button !== 0 || isDragIgnoredTarget(event.target)) return
+    if (!islandEnabled || event.button !== 0) return
 
     requestNativeIgnoreCursorEvents(false, { force: true })
+    focusNotchForHover({
+      allowNonBlockingOverlay: true,
+      focusTarget: getInputFocusTarget(event.target),
+    })
+
+    if (isDragIgnoredTarget(event.target)) return
 
     const current = useSessionStore.getState().panelState
     if (current !== 'collapsed') return
@@ -873,7 +907,7 @@ export function NotchPanel() {
       expandTimerRef.current = undefined
     }
     showHoverPanel({ allowNonBlockingOverlay: true })
-  }, [islandEnabled, requestNativeIgnoreCursorEvents, showHoverPanel])
+  }, [focusNotchForHover, islandEnabled, requestNativeIgnoreCursorEvents, showHoverPanel])
 
   useEffect(() => {
     return () => {

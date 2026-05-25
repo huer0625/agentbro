@@ -655,6 +655,43 @@ describe('NotchPanel island shell', () => {
     expect(screen.getAllByText('Collapsed response should still pop up').length).toBeGreaterThan(0)
   })
 
+  it('focuses a collapsed feedback popup when native hover enters it', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(true)
+    const activeOverlay: OverlayItem = {
+      id: 'response-s1-native-hover',
+      sessionId: 's1',
+      type: 'response',
+      data: {
+        responseText: 'Native hover should make this reply box interactive',
+        userMessage: 'Can I reply here?',
+      },
+      createdAt: Date.now(),
+    }
+    const currentSession = session()
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+      expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+    })
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
+    expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
+  })
+
   it('keeps the feedback countdown running while hovered and collapses as soon as hover leaves after expiry', () => {
     vi.useFakeTimers()
     try {
@@ -1392,6 +1429,27 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().activeOverlay).toBeNull()
   })
 
+  it('focuses plan feedback inputs through the island hitbox capture path', () => {
+    mountIsland({
+      id: 'plan-s1-input-focus',
+      sessionId: 's1',
+      type: 'plan',
+      data: { planTitle: 'Implementation plan', planContent: '1. Fix input focus' },
+      createdAt: Date.now(),
+    }, {
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix input focus',
+    })
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    tauriMocks.setNotchFocusable.mockClear()
+
+    fireEvent.pointerDown(input, { button: 0 })
+
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+    expect(tauriMocks.jumpToTerminal).not.toHaveBeenCalled()
+  })
+
   it('routes response overlay jump and reply actions to terminal APIs', async () => {
     mountIsland({
       id: 'response-s1',
@@ -1710,14 +1768,14 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
   })
 
-  it('does not let native notification hover probing steal focus', async () => {
+  it('lets native notification hover probing focus visible feedback controls', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     tauriMocks.isCursorOverNotch.mockResolvedValue(true)
     const activeOverlay: OverlayItem = {
       id: 'completion-s1-native',
       sessionId: 's1',
       type: 'completion',
-      data: { summary: 'Native probe should not focus' },
+      data: { summary: 'Native probe should focus feedback controls' },
       createdAt: Date.now(),
     }
     const currentSession = session()
@@ -1741,7 +1799,7 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
     })
 
-    expect(tauriMocks.setNotchFocusable).not.toHaveBeenCalledWith(true)
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 

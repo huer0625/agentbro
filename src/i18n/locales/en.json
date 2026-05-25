@@ -437,6 +437,8 @@
     "collapseDelayDesc": "Delay before collapsing after cursor leaves.",
     "clickToDetail": "Click to Detail",
     "clickToDetailDesc": "When enabled, clicking a session card opens chat detail; when disabled, it jumps to the terminal.",
+    "jumpBeforeSend": "Jump Before Send",
+    "jumpBeforeSendDesc": "When enabled, Codex App sessions jump to the target window before sending. Disable to operate the Codex App background window without calling Codex CLI.",
     "tipsEnabled": "Show Tips",
     "tipsEnabledDesc": "Show rotating tips in the center area when there are no sessions or all sessions are idle.",
     "carouselInterval": "Carousel Interval",

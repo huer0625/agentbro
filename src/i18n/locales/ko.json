@@ -394,6 +394,8 @@
     "collapseDelayDesc": "커서가 떠난 뒤 접기까지의 지연.",
     "clickToDetail": "클릭해 상세 보기",
     "clickToDetailDesc": "켜면 세션 카드 클릭 시 채팅 상세 보기를 열고, 끄면 터미널로 이동합니다.",
+    "jumpBeforeSend": "전송 전 이동",
+    "jumpBeforeSendDesc": "켜면 Codex App 세션은 대상 창으로 이동한 뒤 전송합니다. 끄면 Codex CLI를 호출하지 않고 Codex App의 백그라운드 창만 조작합니다.",
     "tipsEnabled": "팁 표시",
     "tipsEnabledDesc": "세션이 없거나 모든 세션이 유휴 상태일 때 가운데 영역에 회전 팁을 표시합니다.",
     "carouselInterval": "캐러셀 간격",

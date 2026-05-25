@@ -340,6 +340,8 @@
     "collapseDelayDesc": "İmleç ayrıldıktan sonra daraltmadan önce bekleyeceği süre.",
     "clickToDetail": "Detaya Tıkla",
     "clickToDetailDesc": "Açıkken oturum kartına tıklamak sohbet detayını açar; kapalıyken terminale atlar.",
+    "jumpBeforeSend": "Göndermeden Önce Atla",
+    "jumpBeforeSendDesc": "Açıkken Codex App oturumları göndermeden önce hedef pencereye atlar. Kapalıyken Codex CLI çağırmadan yalnızca Codex App arka plan penceresini kullanır.",
     "tipsEnabled": "İpuçlarını Göster",
     "tipsEnabledDesc": "Oturum yokken veya tüm oturumlar boştayken orta alanda dönen ipuçlarını göster.",
     "carouselInterval": "Döngü Aralığı",

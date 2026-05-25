@@ -648,6 +648,9 @@ function BehaviorTab() {
         <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
           <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
         </SettingRow>
+        <SettingRow label={t('settings.jumpBeforeSend')} description={t('settings.jumpBeforeSendDesc')}>
+          <Toggle checked={config.jumpBeforeSend} onChange={(v) => config.updateConfig('jumpBeforeSend', v)} />
+        </SettingRow>
         <SettingRow label={t('settings.carouselInterval')} description={t('settings.carouselIntervalDesc')}>
           <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
             onChange={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
