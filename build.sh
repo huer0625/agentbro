@@ -66,6 +66,16 @@ check_deps() {
 build_app_bundle() {
     echo "==> Building Tauri universal app bundle..."
     local tauri_app="$BUILD_DIR/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
+    local bridge_out="$BUILD_DIR/universal-apple-darwin/release/agentbro-bridge"
+
+    echo "==> Building universal bridge helper..."
+    cargo build --release --target aarch64-apple-darwin --bin agentbro-bridge --manifest-path src-tauri/Cargo.toml
+    cargo build --release --target x86_64-apple-darwin --bin agentbro-bridge --manifest-path src-tauri/Cargo.toml
+    mkdir -p "$(dirname "$bridge_out")"
+    lipo -create \
+        "$BUILD_DIR/aarch64-apple-darwin/release/agentbro-bridge" \
+        "$BUILD_DIR/x86_64-apple-darwin/release/agentbro-bridge" \
+        -output "$bridge_out"
 
     cargo tauri build \
         --target universal-apple-darwin \
