@@ -123,7 +123,9 @@ jobs:
           export APP_VERSION="$VERSION"
           export DMG_NAME="AgentBro_${VERSION}_universal.dmg"
           export UPDATE_BASE_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
-          export RELEASE_NOTES="$(cat .github/release-notes.md)"
+          mkdir -p dist
+          sed "s/{{VERSION}}/${VERSION}/g" .github/release-notes.md > dist/release-notes.md
+          export RELEASE_NOTES="$(cat dist/release-notes.md)"
           if [ "$IS_PRERELEASE" = "1" ]; then
             bash build.sh
           else
@@ -147,7 +149,7 @@ jobs:
             dist/AgentBro.app.tar.gz.sig
             dist/latest.json
             dist/checksums.txt
-          body_path: .github/release-notes.md
+          body_path: dist/release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   update-homebrew:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { Update } from '@tauri-apps/plugin-updater'
+import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater'
 import { getCurrentAppVersion, isTauri } from '../services/tauriApi'
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
@@ -14,6 +14,11 @@ interface UpdateState {
   date: string | null
   error: string | null
   manualDownloadUrl: string | null
+  downloadProgress: {
+    downloaded: number
+    total: number | null
+    percent: number | null
+  } | null
 }
 
 export function useUpdater() {
@@ -26,6 +31,7 @@ export function useUpdater() {
     date: null,
     error: null,
     manualDownloadUrl: null,
+    downloadProgress: null,
   })
 
   const checkForUpdate = useCallback(async () => {
@@ -49,11 +55,12 @@ export function useUpdater() {
           date: update.date ?? null,
           error: null,
           manualDownloadUrl: null,
+          downloadProgress: null,
         })
       } else {
         updateRef.current = null
         manualDownloadUrlRef.current = null
-        setState({ status: 'up-to-date', version: null, notes: null, date: null, error: null, manualDownloadUrl: null })
+        setState({ status: 'up-to-date', version: null, notes: null, date: null, error: null, manualDownloadUrl: null, downloadProgress: null })
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
@@ -71,17 +78,18 @@ export function useUpdater() {
             date: fallback.date,
             error: null,
             manualDownloadUrl: fallback.downloadUrl,
+            downloadProgress: null,
           })
           return
         }
 
         updateRef.current = null
         manualDownloadUrlRef.current = null
-        setState({ status: 'up-to-date', version: null, notes: null, date: null, error: null, manualDownloadUrl: null })
+        setState({ status: 'up-to-date', version: null, notes: null, date: null, error: null, manualDownloadUrl: null, downloadProgress: null })
       } catch (fallbackError) {
         const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
         console.error('[updater] fallback check failed:', fallbackMessage)
-        setState({ status: 'error', version: null, notes: null, date: null, error: null, manualDownloadUrl: null })
+        setState({ status: 'error', version: null, notes: null, date: null, error: null, manualDownloadUrl: null, downloadProgress: null })
       }
     }
   }, [])
@@ -96,21 +104,46 @@ export function useUpdater() {
       return
     }
 
-    setState(prev => ({ ...prev, status: 'downloading' }))
+    let downloaded = 0
+    let total: number | null = null
+    const onDownloadEvent = (event: DownloadEvent) => {
+      if (event.event === 'Started') {
+        downloaded = 0
+        total = event.data.contentLength ?? null
+      } else if (event.event === 'Progress') {
+        downloaded += event.data.chunkLength
+      } else if (event.event === 'Finished') {
+        downloaded = total ?? downloaded
+      }
+
+      const percent = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : null
+      setState(prev => ({
+        ...prev,
+        status: 'downloading',
+        downloadProgress: { downloaded, total, percent },
+      }))
+    }
+
+    setState(prev => ({
+      ...prev,
+      status: 'downloading',
+      error: null,
+      downloadProgress: { downloaded: 0, total: null, percent: null },
+    }))
     try {
-      await update.downloadAndInstall()
-      setState(prev => ({ ...prev, status: 'ready' }))
+      await update.downloadAndInstall(onDownloadEvent)
+      setState(prev => ({ ...prev, status: 'ready', downloadProgress: { downloaded, total, percent: 100 } }))
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[updater] install failed:', message)
-      setState(prev => ({ ...prev, status: 'error', error: message }))
+      setState(prev => ({ ...prev, status: 'available', error: message, downloadProgress: null }))
     }
   }, [])
 
   const dismissUpdate = useCallback(() => {
     updateRef.current = null
     manualDownloadUrlRef.current = null
-    setState({ status: 'idle', version: null, notes: null, date: null, error: null, manualDownloadUrl: null })
+    setState({ status: 'idle', version: null, notes: null, date: null, error: null, manualDownloadUrl: null, downloadProgress: null })
   }, [])
 
   useEffect(() => {

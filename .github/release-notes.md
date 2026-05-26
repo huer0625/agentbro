@@ -1,29 +1,30 @@
-# AgentBro v0.1.4
+# AgentBro v{{VERSION}}
 
-AgentBro is a native macOS companion for coding agents. This release is focused on making the first public build easier to install, easier to update, and clearer to understand.
+AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次更新继续围绕开源首发版本打磨：让安装、更新、排障和核心功能理解都更顺畅。
 
-## Highlights
+## 主要功能
 
-- Dynamic Island for agents: watch active sessions, tool calls, plans, pending questions, approvals, completion states, and errors from the menu bar.
-- Fast interaction loop: approve or reject actions, answer pending questions, jump back to the right terminal/app, and continue the current agent flow without hunting through windows.
-- Multi-agent monitoring: supports Claude Code, Codex, Gemini CLI, Cursor, Qoder, Qwen Code, GitHub Copilot, and other local or custom agent setups.
-- SSH Remote: connect remote development machines and forward agent events back to the local AgentBro island.
-- Skills Manager: scan local skill folders, preview metadata and source, manage skill packs, and sync skills across compatible agents.
-- Settings and diagnostics: configure island layout, display behavior, shortcuts, notifications, sounds, usage display, links, diagnostics export, and community entry.
+- 灵动岛状态栏：在菜单栏附近实时查看 Agent 会话、工具调用、计划、待回答问题、权限审批、完成状态和错误状态。
+- 快速交互：在弹窗里直接批准/拒绝操作、回复 Agent 的问题，并快速跳回对应终端或应用继续当前任务。
+- 多 Agent 监控：支持 Claude Code、Codex、Gemini CLI、Cursor、Qoder、Qwen Code、GitHub Copilot，以及本地自定义 Agent 配置。
+- SSH Remote：连接远程开发机器，把远端 Agent 事件转发到本地 AgentBro 灵动岛展示。
+- Skills Manager：扫描本地 Skills 目录，预览元数据和源码，管理技能包，并在兼容 Agent 之间同步技能。
+- 设置与诊断：支持灵动岛布局、显示行为、快捷键、通知、声音、用量展示、相关链接、诊断报告和交流群入口。
 
-## Fixes In This Release
+## 本次改进
 
-- Fixed the About page version so it now reads the real packaged app version instead of the old `0.1.0-alpha` placeholder.
-- Improved update checking. AgentBro still uses the signed Tauri updater first, and now falls back to GitHub Releases if the updater endpoint cannot be reached in the current network environment.
-- Added clear GitHub release notes so users can understand what the release contains before downloading.
+- 关于页面会显示真实的打包版本，不再显示旧的 `0.1.0-alpha` 占位版本号。
+- 检查更新优先使用签名的 Tauri updater；如果当前网络无法连接 updater，会降级到 GitHub Releases 检查最新版。
+- 更新弹窗支持 Markdown 渲染、中文更新说明和下载进度展示。
+- GitHub Release 会带上清晰的中文更新日志，方便用户下载前理解版本内容。
 
-## Download
+## 下载
 
-- Recommended download: `AgentBro_latest_universal.dmg`
-- Versioned download: `AgentBro_0.1.4_universal.dmg`
-- Auto-update artifact: `AgentBro.app.tar.gz` plus `latest.json`
+- 推荐下载：`AgentBro_latest_universal.dmg`
+- 版本归档：`AgentBro_{{VERSION}}_universal.dmg`
+- 自动更新文件：`AgentBro.app.tar.gz` 与 `latest.json`
 
-## Notes
+## 说明
 
-- macOS is the supported platform for this release.
-- Windows support is planned for a later stage.
+- 当前版本主要支持 macOS。
+- Windows 支持会放在后续阶段推进。
