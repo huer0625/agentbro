@@ -109,10 +109,21 @@ AgentBro 会坚持本地优先：第一个公开版本先把灵动岛、Hook 集
 
 ## 加入交流群
 
-如果你正在使用 AgentBro，或者想参与后续 Windows、Agent Monitor、Agent Switch、Skills 等模块讨论，可以扫码添加微信，备注 **AgentBro 交流群**。
+如果你正在使用 AgentBro，或者想参与后续 Windows、Agent Monitor、Agent Switch、Skills 等模块讨论，可以扫码添加微信，备注 **AgentBro 交流群**，或直接扫码加入 **AgentBro 开源社区** 群聊。
 
 <div align="center">
-  <img src="public/agentbro-wechat-qr.jpg" alt="AgentBro 交流群微信二维码" width="260" />
+  <table>
+    <tr>
+      <td align="center">
+        <img src="public/agentbro-wechat-qr.jpg" alt="AgentBro 交流群微信二维码" width="260" /><br />
+        <sub>添加微信备注 <b>AgentBro 交流群</b></sub>
+      </td>
+      <td align="center">
+        <img src="public/agentbro-group-qr.png" alt="AgentBro 开源社区微信群二维码" width="260" /><br />
+        <sub>群聊：<b>AgentBro 开源社区</b>（二维码 7 天有效，过期后请联系微信邀请）</sub>
+      </td>
+    </tr>
+  </table>
 </div>
 
 ## 平台支持

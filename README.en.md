@@ -109,10 +109,21 @@ AgentBro stays local-first. The first public release focuses on making the islan
 
 ## Join The Community
 
-If you use AgentBro or want to discuss upcoming Windows support, Agent Monitor, Agent Switch, or Skills management, scan the QR code and mention **AgentBro community**.
+If you use AgentBro or want to discuss upcoming Windows support, Agent Monitor, Agent Switch, or Skills management, scan the QR code to add the maintainer on WeChat (mention **AgentBro community**), or join the **AgentBro Open Source Community** group chat directly.
 
 <div align="center">
-  <img src="public/agentbro-wechat-qr.jpg" alt="AgentBro WeChat community QR code" width="260" />
+  <table>
+    <tr>
+      <td align="center">
+        <img src="public/agentbro-wechat-qr.jpg" alt="AgentBro WeChat community QR code" width="260" /><br />
+        <sub>Add on WeChat — mention <b>AgentBro community</b></sub>
+      </td>
+      <td align="center">
+        <img src="public/agentbro-group-qr.png" alt="AgentBro Open Source Community group QR code" width="260" /><br />
+        <sub>Group chat: <b>AgentBro Open Source Community</b> (QR refreshed every 7 days)</sub>
+      </td>
+    </tr>
+  </table>
 </div>
 
 ## Platform Support
