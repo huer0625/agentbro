@@ -10,6 +10,7 @@ pub mod cursor_cli;
 pub mod deepseek;
 pub mod detection;
 pub mod droid;
+pub mod executable;
 pub mod gemini;
 pub mod hermes;
 pub mod hook_manager;

@@ -1,4 +1,4 @@
-use crate::agents::{AdapterStatus, AgentAdapter};
+use crate::agents::{executable, AdapterStatus, AgentAdapter};
 use crate::commands::AppState;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
@@ -558,43 +558,11 @@ fn open_target(target: &str) -> Result<(), String> {
 }
 
 fn which(binary: &str) -> Option<String> {
-    if let Some(path) = std::process::Command::new("which")
-        .arg(binary)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
-    {
-        return Some(path);
-    }
-
-    common_binary_paths(binary)
-        .into_iter()
-        .find(|path| Path::new(path).exists())
+    executable::find_binary(binary).map(|path| path.display().to_string())
 }
 
 fn command_name(binary: &str) -> String {
     which(binary).unwrap_or_else(|| binary.to_string())
-}
-
-fn common_binary_paths(binary: &str) -> Vec<String> {
-    let mut paths = vec![
-        format!("/opt/homebrew/bin/{binary}"),
-        format!("/usr/local/bin/{binary}"),
-        format!("/usr/bin/{binary}"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        paths.push(
-            home.join(".npm-global")
-                .join("bin")
-                .join(binary)
-                .display()
-                .to_string(),
-        );
-    }
-    paths
 }
 
 fn expand_home(path: &str) -> String {

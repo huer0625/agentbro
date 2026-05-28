@@ -43,11 +43,7 @@ impl CodexAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("codex")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("codex")
     }
 
     fn hooks_path(&self) -> PathBuf {

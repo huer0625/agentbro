@@ -32,6 +32,11 @@ export async function getCurrentAppVersion(): Promise<string> {
   }
 }
 
+export async function restartApp(): Promise<void> {
+  if (!isTauri()) return
+  return invoke('restart_app')
+}
+
 // ── Backend Types (match Rust serde camelCase output) ────────────
 
 export interface BackendSession {

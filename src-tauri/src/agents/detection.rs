@@ -1,6 +1,6 @@
 // detection.rs — Auto-detection of installed AI coding CLI tools
 
-use super::AdapterStatus;
+use super::{executable, AdapterStatus};
 use std::path::PathBuf;
 
 /// Information about a detected tool installation
@@ -90,12 +90,13 @@ fn detect_copilot() -> DetectedTool {
     let gh_path = find_binary(&["gh"]);
     let config_dir = find_config_dir(&[".config/github-copilot"]);
 
-    let copilot_available = gh_path.is_some()
-        && std::process::Command::new("gh")
+    let copilot_available = gh_path.as_ref().is_some_and(|path| {
+        std::process::Command::new(path)
             .args(["copilot", "--version"])
             .output()
             .map(|o| o.status.success())
-            .unwrap_or(false);
+            .unwrap_or(false)
+    });
 
     let status = if copilot_available {
         AdapterStatus::Available
@@ -117,13 +118,8 @@ fn detect_copilot() -> DetectedTool {
 /// Search PATH for any of the given binary names; return path of first found
 fn find_binary(names: &[&str]) -> Option<PathBuf> {
     for name in names {
-        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    return Some(PathBuf::from(path_str));
-                }
-            }
+        if let Some(path) = executable::find_binary(name) {
+            return Some(path);
         }
     }
     None

@@ -207,11 +207,7 @@ impl AgentAdapter for QoderAdapter {
 }
 
 fn command_exists(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    super::executable::command_exists(name)
 }
 
 fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {

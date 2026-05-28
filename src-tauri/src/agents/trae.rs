@@ -25,11 +25,7 @@ impl TraeAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("trae")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("trae")
     }
 
     fn config_path(&self) -> PathBuf {

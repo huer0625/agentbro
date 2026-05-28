@@ -1753,6 +1753,12 @@ async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     show_settings_window(&app)
 }
 
+#[tauri::command]
+async fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.request_restart();
+    Ok(())
+}
+
 // ── Sound Commands ───────────────────────────────────────────────
 
 fn custom_sounds_dir() -> PathBuf {
@@ -4068,6 +4074,7 @@ pub fn run() {
             set_global_action_shortcuts,
             perform_haptic,
             set_notch_focusable,
+            restart_app,
             open_image,
             open_system_path,
             list_themes,

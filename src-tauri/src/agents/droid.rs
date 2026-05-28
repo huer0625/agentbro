@@ -26,11 +26,7 @@ impl DroidAdapter {
 
     fn is_installed() -> bool {
         std::path::Path::new("/Applications/Factory.app").exists()
-            || std::process::Command::new("which")
-                .arg("factory")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+            || super::executable::command_exists("factory")
     }
 
     fn settings_path(&self) -> PathBuf {

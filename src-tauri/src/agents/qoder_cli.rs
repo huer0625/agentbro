@@ -25,11 +25,7 @@ impl QoderCliAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("qodercli")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("qodercli")
     }
 
     fn settings_path(&self) -> PathBuf {

@@ -75,6 +75,16 @@ const ACCOUNT_USAGE_PROVIDER_ORDER = [
 const ACCOUNT_USAGE_PROVIDER_RANK = new Map(
   ACCOUNT_USAGE_PROVIDER_ORDER.map((provider, index) => [provider, index]),
 )
+
+function readableError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error)
+}
+
 const QUIET_ASSISTANT_PRESET = {
   interactionMode: 'minimal' as const,
   smartSuppression: true,
@@ -263,6 +273,10 @@ interface ToolHookStatus {
 
 function hookToolId(tool: ToolHookStatus) {
   return tool.toolId || tool.name
+}
+
+function hookCanInstall(tool: ToolHookStatus) {
+  return tool.isCustom || tool.status !== 'Unavailable'
 }
 
 type HookInstallStatus = 'installed' | 'not_installed' | 'needs_reinstall' | 'settings_corrupted' | 'error'
@@ -1693,7 +1707,7 @@ function IntegrationTab() {
       const status = await invoke<ToolHookStatus[]>('get_all_hook_status')
       setTools(status)
     }
-    catch (e) { setError(String(e)) }
+    catch (e) { setError(readableError(e)) }
     setLoading(false)
   }, [])
 
@@ -1716,7 +1730,7 @@ function IntegrationTab() {
       }
     } catch (e) {
       if (showLoading && requestSeq === usageRequestSeq.current) {
-        setError(String(e))
+        setError(readableError(e))
       }
     } finally {
       if (showLoading && requestSeq === usageRequestSeq.current) {
@@ -1755,7 +1769,7 @@ function IntegrationTab() {
     } catch (err) {
       setHookDoctorReport({
         generatedAt: Math.floor(Date.now() / 1000),
-        checks: [{ id: 'doctor-error', label: 'Hook Doctor', status: 'error', detail: String(err) }],
+        checks: [{ id: 'doctor-error', label: 'Hook Doctor', status: 'error', detail: readableError(err) }],
       })
     } finally {
       setHookDoctorBusy(false)
@@ -1780,7 +1794,7 @@ function IntegrationTab() {
       await authorizeUsageProvider(provider)
       setNotice(t('settings.usageAuthStarted', { defaultValue: '已打开终端授权，完成登录后点检测刷新状态。' }))
     } catch (e) {
-      setError(String(e))
+      setError(readableError(e))
     } finally {
       setUsageAction(null)
     }
@@ -1794,14 +1808,19 @@ function IntegrationTab() {
     }
     setBulkInstalling(true)
     try {
-      const targets = visibleTools.map((tool) => hookToolId(tool))
+      const targets = visibleTools.filter(hookCanInstall).map((tool) => hookToolId(tool))
+      if (targets.length === 0) {
+        setNotice(t('settings.noInstallableHooks', { defaultValue: '没有检测到可安装 Hook 的 CLI。请先安装对应命令行工具后再检测。' }))
+        setBulkInstalling(false)
+        return
+      }
       const errors: string[] = []
       for (const toolId of targets) {
         setToolAction(toolId, 'install')
         try {
           await invoke('install_agent_hook', { toolName: toolId })
         } catch (err) {
-          errors.push(`${toolId}: ${String(err)}`)
+          errors.push(`${toolId}: ${readableError(err)}`)
         } finally {
           setToolAction(toolId, null)
         }
@@ -1810,7 +1829,7 @@ function IntegrationTab() {
       setNotice(errors.length > 0
         ? t('settings.hookInstallAllDoneWithErrors', { defaultValue: '部分 Hook 安装失败：{{errors}}', errors: errors.join('；') })
         : t('settings.hookInstallAllDone', { defaultValue: '全部 Hook 已安装。请重启对应 CLI 会话以加载最新配置。' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setBulkInstalling(false)
   }
 
@@ -1837,7 +1856,7 @@ function IntegrationTab() {
       setNotice(errors.length > 0
         ? t('settings.hookUninstallAllDoneWithErrors', { defaultValue: '部分 Hook 卸载失败：{{errors}}', errors: errors.join('；') })
         : t('settings.hookUninstallAllDone', { defaultValue: '已清理全部 AgentBro Hook，可重新安装。' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setBulkUninstalling(false)
   }
 
@@ -1855,7 +1874,7 @@ function IntegrationTab() {
       await invoke('install_agent_hook', { toolName: toolId })
       await fetchStatus()
       setNotice(t('settings.hookInstallDone', { defaultValue: 'Hook installed. Restart the corresponding CLI session to load it.' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setToolAction(toolId, null)
   }
 
@@ -1870,7 +1889,7 @@ function IntegrationTab() {
       await invoke('uninstall_agent_hook', { toolName: toolId })
       await fetchStatus()
       setNotice(t('settings.hookUninstallDone', { defaultValue: 'Hook uninstalled.' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setToolAction(toolId, null)
   }
 
@@ -1885,7 +1904,7 @@ function IntegrationTab() {
       await invoke('install_agent_hook', { toolName: toolId })
       await fetchStatus()
       setNotice(t('settings.hookReinstallDone', { defaultValue: 'Hook reinstalled. Restart the corresponding CLI session to load it.' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setToolAction(toolId, null)
   }
 
@@ -1902,7 +1921,7 @@ function IntegrationTab() {
       await fetchStatus()
       setConfiguringTool(null)
       setNotice(t('settings.hookConfigSaved', { defaultValue: 'Hook configuration saved. Restart the corresponding CLI session to load it.' }))
-    } catch (e) { setError(String(e)) }
+    } catch (e) { setError(readableError(e)) }
     setToolAction(toolId, null)
   }
 
@@ -1913,7 +1932,7 @@ function IntegrationTab() {
       return
     }
     try { await invoke('open_system_path', { path }) }
-    catch (e) { setError(String(e)) }
+    catch (e) { setError(readableError(e)) }
   }
 
   const addCustomHook = async () => {
@@ -1939,7 +1958,7 @@ function IntegrationTab() {
         path: targetPath,
       }))
     }
-    catch (e) { setError(String(e)) }
+    catch (e) { setError(readableError(e)) }
   }
 
   const selectCustomInstallDir = async () => {

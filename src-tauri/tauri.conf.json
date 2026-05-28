@@ -86,8 +86,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "../src/themes/**/*"
-    ]
+    "resources": {
+      "../src/themes": "themes",
+      "target/agentbro-bridge-resource/agentbro-bridge": "agentbro-bridge"
+    }
   }
 }

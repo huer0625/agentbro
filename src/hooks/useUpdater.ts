@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater'
-import { getCurrentAppVersion, isTauri } from '../services/tauriApi'
+import { getCurrentAppVersion, isTauri, restartApp } from '../services/tauriApi'
 import { useConfigStore } from '../stores/configStore'
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
@@ -99,6 +99,11 @@ export function useUpdater() {
   }, [])
 
   const installUpdate = useCallback(async () => {
+    if (state.status === 'ready') {
+      await restartApp()
+      return
+    }
+
     const update = updateRef.current
     if (!update) {
       const manualDownloadUrl = manualDownloadUrlRef.current
@@ -142,7 +147,7 @@ export function useUpdater() {
       console.error('[updater] install failed:', message)
       setState(prev => ({ ...prev, status: 'available', error: message, downloadProgress: null }))
     }
-  }, [])
+  }, [state.status])
 
   const dismissUpdate = useCallback(() => {
     updateRef.current = null

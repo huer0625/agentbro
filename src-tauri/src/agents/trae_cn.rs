@@ -25,11 +25,7 @@ impl TraeCNAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("traecn")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("traecn")
             || std::path::Path::new("/Applications/Trae.app").exists()
     }
 

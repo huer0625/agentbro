@@ -2012,6 +2012,51 @@
   line-height: 1.55;
 }
 
+.about-analytics-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--settings-separator);
+  color: var(--settings-text-secondary);
+  opacity: 0.68;
+  transition: opacity 0.15s ease;
+}
+
+.about-analytics-row:hover {
+  opacity: 1;
+}
+
+.about-analytics-row__copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.about-analytics-row__label {
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.about-analytics-row__description {
+  max-width: 680px;
+  color: var(--settings-text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.about-analytics-row .toggle {
+  flex: 0 0 auto;
+  transform: scale(0.86);
+  transform-origin: right center;
+}
+
 /* ── Settings-scoped overrides for shared glass-* components ── */
 /* These override glass.css styles only inside .settings-app */
 

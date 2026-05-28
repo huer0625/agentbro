@@ -24,11 +24,7 @@ impl GeminiAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("gemini")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("gemini")
     }
 
     fn settings_path(&self) -> PathBuf {

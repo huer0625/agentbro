@@ -25,17 +25,9 @@ impl QwenAdapter {
 
     fn is_installed() -> bool {
         // Check for qwen-coder or qwen CLI
-        for cmd in &["qwen-coder", "qwen"] {
-            if std::process::Command::new("which")
-                .arg(cmd)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        }
-        false
+        ["qwen-coder", "qwen"]
+            .iter()
+            .any(|cmd| super::executable::command_exists(cmd))
     }
 
     fn settings_path(&self) -> PathBuf {

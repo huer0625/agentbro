@@ -62,11 +62,7 @@ impl ClaudeCodeAdapter {
 
     /// Check if Claude Code CLI is installed
     fn is_claude_code_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("claude")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("claude")
     }
 
     /// Get the path where the bridge binary should be installed
