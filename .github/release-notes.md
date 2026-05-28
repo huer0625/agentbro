@@ -2,21 +2,19 @@
 
 AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次更新继续围绕开源首发版本打磨：让安装、更新、排障和核心功能理解都更顺畅。
 
-## 主要功能
+## 主要更新
 
-- 灵动岛状态栏：在菜单栏附近实时查看 Agent 会话、工具调用、计划、待回答问题、权限审批、完成状态和错误状态。
-- 快速交互：在弹窗里直接批准/拒绝操作、回复 Agent 的问题，并快速跳回对应终端或应用继续当前任务。
-- 多 Agent 监控：支持 Claude Code、Codex、Gemini CLI、Cursor、Qoder、Qwen Code、GitHub Copilot，以及本地自定义 Agent 配置。
-- SSH Remote：连接远程开发机器，把远端 Agent 事件转发到本地 AgentBro 灵动岛展示。
-- Skills Manager：扫描本地 Skills 目录，预览元数据和源码，管理技能包，并在兼容 Agent 之间同步技能。
-- 设置与诊断：支持灵动岛布局、显示行为、快捷键、通知、声音、用量展示、相关链接、诊断报告和交流群入口。
+- 新增宠物灵动岛体验：支持宠物模式、宠物状态展示、活力/压力反馈和调试预览能力。
+- 改进外接显示器定位：修复多显示器场景下灵动岛位置和窗口显示异常。
+- 改进 Webhook 通知：支持多语言通知文案，并在审批类通知里展示更完整的上下文。
+- 优化终端跳转：避免重复点击跳转按钮时触发并发跳转导致系统卡顿。
+- 暂时隐藏设置里的“Agent 与技能”入口，避免未完成模块在正式版本中暴露。
 
-## 本次改进
+## 安装与更新
 
-- 关于页面会显示真实的打包版本，不再显示旧的 `0.1.0-alpha` 占位版本号。
-- 检查更新优先使用签名的 Tauri updater；如果当前网络无法连接 updater，会降级到 GitHub Releases 检查最新版。
-- 更新弹窗支持 Markdown 渲染、中文更新说明和下载进度展示。
-- GitHub Release 会带上清晰的中文更新日志，方便用户下载前理解版本内容。
+- Homebrew 支持一行安装：`brew tap shirenchuang/tap && brew install --cask agentbro`
+- GitHub Release 和应用内自动更新会使用同一份版本说明。
+- 自动更新文件继续包含签名的 `AgentBro.app.tar.gz` 和 `latest.json`。
 
 ## 下载
 
