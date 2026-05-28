@@ -27,6 +27,7 @@ For unsigned preview releases, only the Tauri signing secret is required. For st
 Optional for stable releases:
 
 - `HOMEBREW_TAP_TOKEN`: token that can push to the Homebrew tap repository. If omitted, the signed and notarized DMG release still ships, and the workflow skips the Homebrew cask update.
+- `AGENTBRO_TELEMETRY_SLS_HOST`, `AGENTBRO_TELEMETRY_SLS_PROJECT`, `AGENTBRO_TELEMETRY_SLS_LOGSTORE`: Alibaba Cloud SLS WebTracking target for anonymous usage telemetry. Set all three together, or leave all three empty to ship telemetry-disabled builds.
 
 Do not commit the private key or Apple certificate.
 
@@ -48,7 +49,7 @@ pnpm build
 - Release files do not contain stale `AgentBro` names.
 - Tauri updater artifacts are enabled.
 - Preview CI releases have updater signing secrets.
-- Stable CI releases have updater, code-signing, and notarization secrets. Homebrew updates run only when the Homebrew token is present.
+- Stable CI releases have updater, code-signing, and notarization secrets. Homebrew updates run only when the Homebrew token is present. Anonymous telemetry is compiled in only when the full SLS target is present.
 
 ## Unsigned Preview Release
 
@@ -90,6 +91,20 @@ The `Release` workflow builds a universal macOS release and uploads:
 
 When `HOMEBREW_TAP_TOKEN` is configured, the workflow also updates the Homebrew cask in the tap repository.
 
+Users can then install from the first-party tap:
+
+```bash
+brew tap shirenchuang/tap
+brew install --cask agentbro
+```
+
+Create the public tap repository before enabling the token:
+
+```bash
+brew tap-new shirenchuang/tap
+gh repo create shirenchuang/homebrew-tap --public --source "$(brew --repository shirenchuang/tap)" --push
+```
+
 ## Website Download
 
 Use `https://www.agentbro.net` as the public homepage and download entry.
@@ -117,4 +132,5 @@ Before announcing a release:
 - Confirm `~/.agentbro/bin/agentbro-bridge` is installed after hook setup.
 - Confirm `https://www.agentbro.net` points to the new DMG or GitHub release.
 - Confirm Homebrew installs the same version.
+- Confirm anonymous usage stats are enabled by default and can be disabled in Settings.
 - Confirm an older app version updates through the Tauri updater.

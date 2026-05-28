@@ -77,6 +77,8 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub usage_query_enabled: bool,
     pub theme: String,
+    #[serde(default = "default_language")]
+    pub language: String,
     /// Which display to position on: "primary" or a monitor name
     #[serde(default = "default_display_id")]
     pub display_id: String,
@@ -144,18 +146,30 @@ pub struct AppConfig {
     /// Show confetti on task completion
     #[serde(default = "default_true")]
     pub confetti_enabled: bool,
+    /// Optional anonymous product analytics.
+    #[serde(default = "default_true")]
+    pub analytics_enabled: bool,
+    /// Whether the user has seen or acted on the analytics consent prompt.
+    #[serde(default = "default_true")]
+    pub analytics_consent_prompt_completed: bool,
     /// Filter sessions by focused terminal window
     #[serde(default)]
     pub follow_focus: bool,
     /// Island surface mode: "island" or "pet"
     #[serde(default = "default_island_surface_mode")]
     pub island_surface_mode: String,
+    /// Dev-only pet vitals debug panel visibility.
+    #[serde(default)]
+    pub pet_vitals_debug_open: bool,
     /// Pet scale percentage
     #[serde(default = "default_island_pet_scale")]
     pub island_pet_scale: u32,
     /// Pet window origin
     #[serde(default)]
     pub island_pet_window_origin: Option<WindowOrigin>,
+    /// Active pet identifier (e.g. "codex:dewey", "user:my-cat"). `None` = auto-follow active session's agent.
+    #[serde(default)]
+    pub island_active_pet_id: Option<String>,
     /// Global keyboard shortcut to toggle island visibility
     #[serde(default = "default_global_shortcut")]
     pub global_shortcut: String,
@@ -180,6 +194,10 @@ pub struct AppConfig {
 
 fn default_display_id() -> String {
     "primary".to_string()
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 fn default_true() -> bool {
@@ -246,6 +264,7 @@ impl Default for AppConfig {
             show_token_usage: true,
             usage_query_enabled: true,
             theme: "midnight".to_string(),
+            language: default_language(),
             display_id: "primary".to_string(),
             auto_hide_no_sessions: false,
             sound_events: std::collections::HashMap::new(),
@@ -269,10 +288,14 @@ impl Default for AppConfig {
             tips_enabled: true,
             pixel_cursor_enabled: true,
             confetti_enabled: true,
+            analytics_enabled: true,
+            analytics_consent_prompt_completed: true,
             follow_focus: false,
             island_surface_mode: default_island_surface_mode(),
+            pet_vitals_debug_open: false,
             island_pet_scale: default_island_pet_scale(),
             island_pet_window_origin: None,
+            island_active_pet_id: None,
             global_shortcut: "CommandOrControl+Shift+I".to_string(),
             shortcut_approve: default_shortcut_approve(),
             shortcut_approve_enabled: false,
@@ -457,6 +480,8 @@ mod tests {
         assert!(!config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
         assert!(config.boot_sound_default_migrated);
+        assert!(config.analytics_enabled);
+        assert!(config.analytics_consent_prompt_completed);
     }
 
     #[test]

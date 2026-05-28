@@ -273,48 +273,81 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
     TerminalType::Unknown
 }
 
-/// Read process environment via kern.procargs2 (macOS sysctl) using python3.
+/// Read process environment via kern.procargs2 (macOS sysctl).
 /// Returns a newline-separated list of KEY=VALUE strings, or None on failure.
+///
+/// Implemented as a direct libc::sysctl call. Previously this forked python3
+/// once per ancestor (up to ~20 times per `read_terminal_env`), which under
+/// rapid jump-button clicks could spawn dozens of python3 processes
+/// concurrently and contribute to system-wide memory pressure.
+#[cfg(target_os = "macos")]
 fn read_proc_environ(pid: u32) -> Option<String> {
-    // Use python3 to read kern.procargs2 — reliable across macOS versions
-    let script = format!(
-        r"
-import ctypes, struct, sys
-lib = ctypes.CDLL(None)
-CTL_KERN, KERN_PROCARGS2 = 1, 49
-mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, {pid})
-size = ctypes.c_size_t(256 * 1024)
-buf = ctypes.create_string_buffer(size.value)
-if lib.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
-    sys.exit(1)
-data = buf.raw[:size.value]
-argc = struct.unpack_from('<I', data, 0)[0]
-pos = 4
-while pos < len(data) and data[pos] != 0: pos += 1
-while pos < len(data) and data[pos] == 0: pos += 1
-for _ in range(argc):
-    while pos < len(data) and data[pos] != 0: pos += 1
-    while pos < len(data) and data[pos] == 0: pos += 1
-rest = data[pos:]
-for part in rest.split(b'\x00'):
-    try:
-        s = part.decode('utf-8', errors='replace')
-        if '=' in s: print(s)
-    except: pass
-",
-        pid = pid
-    );
+    const KERN_PROCARGS2: libc::c_int = 49;
+    const BUF_SIZE: usize = 256 * 1024;
 
-    let output = std::process::Command::new("python3")
-        .args(["-c", &script])
-        .output()
-        .ok()?;
+    let mut mib: [libc::c_int; 3] = [libc::CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = BUF_SIZE;
+    let mut buf: Vec<u8> = vec![0u8; BUF_SIZE];
 
-    if output.status.success() && !output.stdout.is_empty() {
-        Some(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        None
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size as *mut libc::size_t,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size < 4 {
+        return None;
     }
+    buf.truncate(size);
+
+    // Layout: [argc:u32][exec_path \0][padding \0..][argv 0..argc][env 0..]
+    let argc = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let mut pos = 4usize;
+
+    while pos < buf.len() && buf[pos] != 0 {
+        pos += 1;
+    }
+    while pos < buf.len() && buf[pos] == 0 {
+        pos += 1;
+    }
+    for _ in 0..argc {
+        while pos < buf.len() && buf[pos] != 0 {
+            pos += 1;
+        }
+        while pos < buf.len() && buf[pos] == 0 {
+            pos += 1;
+        }
+    }
+    if pos >= buf.len() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for part in buf[pos..].split(|&b| b == 0) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Ok(s) = std::str::from_utf8(part) {
+            if s.contains('=') {
+                out.push_str(s);
+                out.push('\n');
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_proc_environ(_pid: u32) -> Option<String> {
+    None
 }
 
 fn merge_terminal_env(text: &str, env: &mut TerminalEnv) {

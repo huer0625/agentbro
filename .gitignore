@@ -11,7 +11,13 @@ node_modules
 dist
 dist-ssr
 tmp/
-.claude/
+
+# Shared Claude Code config (CLAUDE.md, commands/) is checked in.
+# Only ignore per-user / per-machine state.
+.claude/settings.local.json
+.claude/worktrees/
+.claude/*.local.*
+
 .codex/
 .superpowers/
 prototypes/

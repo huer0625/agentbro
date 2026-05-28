@@ -15,6 +15,8 @@
     ·
     <a href="https://github.com/shirenchuang/agentbro/releases">下载</a>
     ·
+    <a href="docs/privacy-policy.md">隐私</a>
+    ·
     <a href="README.en.md">English</a>
   </p>
 
@@ -134,6 +136,19 @@ Windows 支持在计划中。Tauri + React + Rust 的基础架构具备跨平台
 
 Linux 后续也可以支持，但不属于第一个公开版本的目标。
 
+## 安装
+
+### Homebrew Cask
+
+```bash
+brew tap shirenchuang/tap
+brew install --cask agentbro
+```
+
+### 下载发行版
+
+也可以从 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) 下载最新 DMG。
+
 ## 本地开发
 
 ### 环境要求
@@ -190,6 +205,17 @@ pnpm tauri:build   # 构建 Tauri 应用
 6. 启动 Claude Code、Codex、Gemini CLI 或其他支持的 Agent。
 
 之后 AgentBro 会在灵动岛中展示会话状态、工具调用、权限请求、问题、计划和完成提醒。
+
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- AI Agent 协作指南：[AGENTS.md](AGENTS.md)
+- Claude Code 项目配置：[.claude/CLAUDE.md](.claude/CLAUDE.md)
+
+PR 请提到 `dev` 分支，提交前跑一遍 `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml`。
 
 ## 发布
 

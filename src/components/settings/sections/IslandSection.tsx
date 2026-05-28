@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { open as openDialog, ask as askDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
 import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
+import type { ThemeConfig } from '../../../types/theme'
+import { usePetStore } from '../../../stores/petStore'
+import { SpriteCanvas } from '../../notch/SpriteCanvas'
+import { PRIORITY } from '../../../types/priority'
 import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
 import {
   formatShortcutKeyEvent,
@@ -20,7 +24,7 @@ import {
   setActiveBackendTheme, listRemoteHosts, addRemoteHost, removeRemoteHost, connectRemote,
   disconnectRemote, getRemoteStatus, listSshConfigHosts,
   installRemoteAgentHooks, uninstallRemoteAgentHooks, checkRemoteHooks, listRemoteInstallableAgents,
-  runHookDoctor,
+  runHookDoctor, uninstallAllHooks,
   getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, ConnectionStatus, HookDoctorCheck, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
@@ -115,6 +119,12 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
     islandSurfaceMode: next.islandSurfaceMode ?? state.islandSurfaceMode,
     islandPetScale: next.islandPetScale ?? state.islandPetScale,
   }).catch((err) => console.error('Failed to persist island surface options:', err))
+}
+
+function persistPetVitalsDebugOpen(open: boolean) {
+  getConfig()
+    .then((backendConfig) => updateBackendConfig({ ...backendConfig, petVitalsDebugOpen: open }))
+    .catch((err) => console.error('Failed to persist pet vitals debug panel setting:', err))
 }
 
 function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
@@ -302,6 +312,8 @@ interface WebhookConfig {
   url: string
   secret?: string
   events: string[]
+  delayEnabled: boolean
+  delayMinutes: number
 }
 
 interface SavedWebhookConfig {
@@ -310,13 +322,17 @@ interface SavedWebhookConfig {
   url: string
   secret: string | null
   enabled: boolean
+  events?: string[]
+  delayEnabled?: boolean
+  delayMinutes?: number
 }
 
 type WebhookProvider = 'dingtalk' | 'feishu'
 
 const WEBHOOK_EVENT_OPTIONS = [
-  'session_start', 'task_complete', 'error', 'waiting_approval',
+  'session_start', 'task_complete', 'error', 'waiting_approval', 'waiting_input', 'plan_approval',
 ]
+const DEFAULT_WEBHOOK_EVENTS = ['error', 'waiting_approval', 'waiting_input', 'plan_approval']
 
 function WebhookProviderSection({
   provider, labelKey, descKey, urlPlaceholder, iconEmoji,
@@ -325,9 +341,15 @@ function WebhookProviderSection({
 }) {
   const { t } = useTranslation()
   const [config, setConfig] = useState<WebhookConfig>({
-    enabled: false, url: '', secret: '', events: ['task_complete', 'error', 'waiting_approval'],
+    enabled: false,
+    url: '',
+    secret: '',
+    events: DEFAULT_WEBHOOK_EVENTS,
+    delayEnabled: false,
+    delayMinutes: 1,
   })
   const [saving, setSaving] = useState(false)
+  const [savingEnabled, setSavingEnabled] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
 
@@ -345,6 +367,9 @@ function WebhookProviderSection({
           enabled: saved.enabled,
           url: saved.url,
           secret: saved.secret ?? '',
+          events: saved.events?.length ? saved.events : prev.events,
+          delayEnabled: saved.delayEnabled ?? false,
+          delayMinutes: Math.max(1, saved.delayMinutes ?? 1),
         }))
       } catch (e) {
         console.error('Failed to load webhook config:', e)
@@ -357,18 +382,33 @@ function WebhookProviderSection({
     }
   }, [provider])
 
-  const save = async () => {
+  const saveConfig = async (nextConfig: WebhookConfig, showSaving = true) => {
     setSaveResult(null)
-    setSaving(true)
+    if (showSaving) setSaving(true)
     try {
-      await invoke('save_webhook_config', { provider, config })
+      await invoke('save_webhook_config', { provider, config: nextConfig })
       setSaveResult('success')
     } catch (e) {
       console.error('Failed to save webhook config:', e)
       setSaveResult('error')
     } finally {
-      setSaving(false)
+      if (showSaving) setSaving(false)
       setTimeout(() => setSaveResult(null), 3000)
+    }
+  }
+
+  const save = () => saveConfig(config)
+
+  const toggleEnabled = async (enabled: boolean) => {
+    const nextConfig = { ...config, enabled }
+    setConfig(nextConfig)
+    if (nextConfig.url.trim()) {
+      setSavingEnabled(true)
+      try {
+        await saveConfig(nextConfig, false)
+      } finally {
+        setSavingEnabled(false)
+      }
     }
   }
 
@@ -389,7 +429,7 @@ function WebhookProviderSection({
   return (
     <SettingGroup label={`${iconEmoji} ${t(labelKey)}`}>
       <SettingRow label={t('settings.webhookEnabled')} description={t(descKey)}>
-        <Toggle checked={config.enabled} onChange={(v) => setConfig(prev => ({ ...prev, enabled: v }))} />
+        <Toggle checked={config.enabled} onChange={(v) => { void toggleEnabled(v) }} disabled={savingEnabled} />
       </SettingRow>
       {config.enabled && (
         <>
@@ -413,6 +453,24 @@ function WebhookProviderSection({
               ))}
             </div>
           </SettingRow>
+          <SettingRow label={t('settings.webhookDelayEnabled')} description={t('settings.webhookDelayDesc')}>
+            <Toggle checked={config.delayEnabled} onChange={(v) => setConfig(prev => ({ ...prev, delayEnabled: v }))} />
+          </SettingRow>
+          {config.delayEnabled && (
+            <SettingRow label={t('settings.webhookDelayMinutes')} description={t('settings.webhookDelayMinutesDesc')}>
+              <GlassInput
+                type="number"
+                min="1"
+                max="120"
+                value={String(config.delayMinutes)}
+                onChange={(e) => setConfig(prev => ({
+                  ...prev,
+                  delayMinutes: Math.max(1, Number((e.target as HTMLInputElement).value) || 1),
+                }))}
+                style={{ width: 96, fontSize: 12 }}
+              />
+            </SettingRow>
+          )}
           <div style={{ display: 'flex', gap: 8, paddingTop: 8, justifyContent: 'flex-end' }}>
             {testResult === 'success' && <span style={{ fontSize: 12, color: 'var(--settings-status-active)', alignSelf: 'center' }}>{t('settings.webhookTestSuccess')}</span>}
             {testResult === 'error' && <span style={{ fontSize: 12, color: 'var(--settings-danger)', alignSelf: 'center' }}>{t('settings.webhookTestError')}</span>}
@@ -673,9 +731,19 @@ function DisplayTab() {
   const { t, i18n } = useTranslation()
   const config = useConfigStore()
   const { themes, activeThemeName, setActiveTheme, colorTheme, setColorTheme } = useThemeStore()
+  const petRegistry = usePetStore((s) => s.registry)
+  const activePetId = usePetStore((s) => s.activePetId)
+  const setActivePet = usePetStore((s) => s.setActivePet)
+  const loadPetRegistry = usePetStore((s) => s.loadRegistry)
   const isZh = i18n.language?.startsWith('zh')
   const [displays, setDisplays] = useState<BackendDisplayInfo[]>([])
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => {
+    if (config.islandSurfaceMode === 'pet' && petRegistry.length === 0) {
+      void loadPetRegistry()
+    }
+  }, [config.islandSurfaceMode, petRegistry.length, loadPetRegistry])
   const compactPillWidthValue = Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))
 
   useEffect(() => {
@@ -715,14 +783,6 @@ function DisplayTab() {
     clearIslandLayoutPreview().catch(() => {})
   }, [])
 
-  const themeOptions = themes.map((th) => {
-    const label = th.name === 'ink-amber'
-      ? isZh ? 'AgentBro 经典' : 'AgentBro Classic'
-      : th.displayName
-        ? th.isCodexPet ? `Codex Pet: ${th.displayName}` : th.displayName
-        : th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' ')
-    return { value: th.name, label }
-  })
   const fontSizeOptions = [
     { value: '11px', label: `11px - ${t('settings.fontSizeSmall', { defaultValue: 'Small' })}` },
     { value: '12px', label: `12px - ${t('settings.fontSizeCompact', { defaultValue: 'Compact' })}` },
@@ -776,28 +836,88 @@ function DisplayTab() {
             }}
           />
         </SettingRow>
-        <SettingRow label={t('settings.activeTheme')} description={t('settings.activeThemeDesc')}>
-          <Dropdown value={activeThemeName} options={themeOptions}
-            onChange={(v) => {
-              setActiveTheme(v)
-              setActiveBackendTheme(v).catch((e) => console.error('Failed to persist active theme:', e))
-            }} minWidth={160} />
-        </SettingRow>
-        {config.islandSurfaceMode === 'pet' && (
-          <SettingRow label={t('settings.islandPetScale', { defaultValue: '宠物大小' })} description={`${config.islandPetScale}%`}>
-            <Slider
-              value={config.islandPetScale}
-              min={50}
-              max={120}
-              step={5}
-              onChange={(v) => {
-                config.updateConfig('islandPetScale', v)
-                persistIslandSurfaceOptions({ islandPetScale: v })
-                previewLayout('expanded')
+        {config.islandSurfaceMode !== 'pet' && (
+          <div className="pet-picker-block">
+            <div className="pet-picker-block__header">
+              <div className="pet-picker-block__title">
+                {t('settings.activeTheme')}
+              </div>
+              <div className="pet-picker-block__desc">
+                {t('settings.activeThemeDesc')}
+              </div>
+            </div>
+            <ThemePicker
+              themes={themes}
+              activeThemeName={activeThemeName}
+              onSelect={(name) => {
+                setActiveTheme(name)
+                setActiveBackendTheme(name).catch((e) => console.error('Failed to persist active theme:', e))
               }}
-              unit="%"
+              isZh={isZh}
             />
-          </SettingRow>
+          </div>
+        )}
+        {config.islandSurfaceMode === 'pet' && (
+          <>
+            <SettingRow label={t('settings.islandPetScale', { defaultValue: '宠物大小' })} description={`${config.islandPetScale}%`}>
+              <Slider
+                value={config.islandPetScale}
+                min={50}
+                max={120}
+                step={5}
+                onChange={(v) => {
+                  config.updateConfig('islandPetScale', v)
+                  persistIslandSurfaceOptions({ islandPetScale: v })
+                  previewLayout('expanded')
+                }}
+                unit="%"
+              />
+            </SettingRow>
+            <SettingRow
+              label={t('settings.petVitals', { defaultValue: '宠物活力' })}
+              description={t('settings.petVitalsDesc', { defaultValue: '根据上下文压力和 Token 用量显示宠物状态变化' })}
+            >
+              <Toggle
+                checked={config.petVitalsEnabled}
+                onChange={(v) => config.updateConfig('petVitalsEnabled', v)}
+              />
+            </SettingRow>
+            {import.meta.env.DEV && (
+              <SettingRow
+                label={t('settings.petVitalsDebug', { defaultValue: '宠物活力调试' })}
+                description={t('settings.petVitalsDebugDesc', { defaultValue: '打开宠物窗口上的调试面板，用 mock 数据预览阶段、上下文压力和体力消耗。' })}
+              >
+                <Toggle
+                  checked={config.petVitalsDebugOpen}
+                  onChange={(v) => {
+                    config.updateConfig('petVitalsDebugOpen', v)
+                    persistPetVitalsDebugOpen(v)
+                  }}
+                />
+              </SettingRow>
+            )}
+            <div className="pet-picker-block">
+              <div className="pet-picker-block__header">
+                <div className="pet-picker-block__title">
+                  {t('settings.petPickerTitle', { defaultValue: '选择宠物' })}
+                </div>
+                <div className="pet-picker-block__desc">
+                  {t('settings.petPickerDesc', { defaultValue: '自动跟随当前活跃 Agent，或锁定一只固定宠物。' })}
+                </div>
+              </div>
+              <PetPicker
+                registry={petRegistry}
+                activePetId={activePetId}
+                onSelect={(id) => {
+                  void setActivePet(id)
+                }}
+                autoLabel={t('settings.petAuto', { defaultValue: '自动跟随 Agent' })}
+                emptyHint={t('settings.petInstallHint', {
+                  defaultValue: '未检测到 Codex.app 的内置宠物。安装 Codex 或在 ~/.codex/pets 添加自定义。',
+                })}
+              />
+            </div>
+          </>
         )}
       </SettingGroup>
 
@@ -914,6 +1034,198 @@ function DisplayTab() {
       </SettingGroup>
 
     </>
+  )
+}
+
+// ── Theme Pixel Preview (for themes without character sprites) ──
+
+function ThemePixelPreview({ theme }: { theme: ThemeConfig }) {
+  const colors = theme.priorityColors
+  if (!colors) {
+    return (
+      <span className="theme-picker__pixel-icon" aria-hidden="true">
+        <span /><span /><span /><span />
+      </span>
+    )
+  }
+  const fallback = '#888'
+  const grid = [
+    colors.idle ?? fallback, colors.working ?? fallback,
+    colors.thinking ?? fallback, colors.done ?? fallback,
+    colors.attention ?? fallback, colors.idle ?? fallback,
+    colors.done ?? fallback, colors.working ?? fallback,
+    colors.thinking ?? fallback,
+  ]
+  return (
+    <span className="theme-picker__pixel-grid" aria-hidden="true">
+      {grid.map((color, i) => (
+        <span key={i} style={{ background: color, opacity: i % 3 === 0 ? 1 : 0.7 }} />
+      ))}
+    </span>
+  )
+}
+
+// ── Theme Picker ──
+
+interface ThemePickerProps {
+  themes: ThemeConfig[]
+  activeThemeName: string
+  onSelect: (name: string) => void
+  isZh: boolean
+}
+
+function ThemePicker({ themes, activeThemeName, onSelect, isZh }: ThemePickerProps) {
+  const builtinThemes = themes.filter((th) => !th.isCodexPet)
+  const codexPetThemes = themes.filter((th) => th.isCodexPet)
+
+  const themeLabel = (th: ThemeConfig) => {
+    if (th.name === 'ink-amber') return isZh ? 'AgentBro 经典' : 'AgentBro Classic'
+    return th.displayName ?? th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' ')
+  }
+
+  return (
+    <div className="pet-picker">
+      {builtinThemes.length > 0 && (
+        <div className="pet-picker__group">
+          <div className="pet-picker__group-label">{isZh ? '内置' : 'Built-in'}</div>
+          <div className="pet-picker__grid">
+            {builtinThemes.map((th) => (
+              <button
+                key={th.name}
+                type="button"
+                className={`pet-picker__card ${activeThemeName === th.name ? 'pet-picker__card--active' : ''}`}
+                aria-pressed={activeThemeName === th.name}
+                onClick={() => onSelect(th.name)}
+                title={th.description ?? themeLabel(th)}
+              >
+                <div className="pet-picker__thumb">
+                  {th.character ? (
+                    <SpriteCanvas
+                      theme={th}
+                      priority={PRIORITY.idle}
+                      size={56}
+                      enableIdleBehaviors={false}
+                      animationOverride="idle"
+                    />
+                  ) : (
+                    <ThemePixelPreview theme={th} />
+                  )}
+                </div>
+                <div className="pet-picker__name">{themeLabel(th)}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {codexPetThemes.length > 0 && (
+        <div className="pet-picker__group">
+          <div className="pet-picker__group-label">codex</div>
+          <div className="pet-picker__grid">
+            {codexPetThemes.map((th) => (
+              <button
+                key={th.name}
+                type="button"
+                className={`pet-picker__card ${activeThemeName === th.name ? 'pet-picker__card--active' : ''}`}
+                aria-pressed={activeThemeName === th.name}
+                onClick={() => onSelect(th.name)}
+                title={th.description ?? themeLabel(th)}
+              >
+                <div className="pet-picker__thumb">
+                  <SpriteCanvas
+                    theme={th}
+                    priority={PRIORITY.idle}
+                    size={56}
+                    enableIdleBehaviors={false}
+                    animationOverride="idle"
+                  />
+                </div>
+                <div className="pet-picker__name">{themeLabel(th)}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Pet Picker ──
+
+interface PetPickerProps {
+  registry: ReturnType<typeof usePetStore.getState>['registry']
+  activePetId: string | null
+  onSelect: (id: string | null) => void
+  autoLabel: string
+  emptyHint: string
+}
+
+function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint }: PetPickerProps) {
+  const isAuto = activePetId === null
+
+  const groups = registry.reduce<Map<string, typeof registry>>((acc, pet) => {
+    const key = pet.provider || 'other'
+    const bucket = acc.get(key) ?? []
+    bucket.push(pet)
+    acc.set(key, bucket)
+    return acc
+  }, new Map())
+  const orderedProviders = ['codex', 'user', ...Array.from(groups.keys()).filter((k) => k !== 'codex' && k !== 'user')]
+
+  return (
+    <div className="pet-picker">
+      <div className="pet-picker__group">
+        <div className="pet-picker__group-label">auto</div>
+        <div className="pet-picker__grid">
+          <button
+            type="button"
+            className={`pet-picker__card pet-picker__card--auto ${isAuto ? 'pet-picker__card--active' : ''}`}
+            aria-pressed={isAuto}
+            onClick={() => onSelect(null)}
+          >
+            <div className="pet-picker__thumb pet-picker__thumb--auto">A</div>
+            <div className="pet-picker__name">{autoLabel}</div>
+          </button>
+        </div>
+      </div>
+
+      {registry.length === 0 ? (
+        <div className="pet-picker__empty">{emptyHint}</div>
+      ) : (
+        orderedProviders
+          .filter((provider) => groups.has(provider))
+          .map((provider) => (
+            <div className="pet-picker__group" key={provider}>
+              <div className="pet-picker__group-label">{provider}</div>
+              <div className="pet-picker__grid">
+                {groups.get(provider)!.map((pet) => {
+                  const selected = pet.id === activePetId
+                  return (
+                    <button
+                      key={pet.id}
+                      type="button"
+                      className={`pet-picker__card ${selected ? 'pet-picker__card--active' : ''}`}
+                      aria-pressed={selected}
+                      onClick={() => onSelect(pet.id)}
+                      title={pet.description ?? pet.displayName}
+                    >
+                      <div className="pet-picker__thumb">
+                        <SpriteCanvas
+                          pet={pet}
+                          priority={PRIORITY.idle}
+                          size={56}
+                          enableIdleBehaviors={false}
+                          animationOverride="idle"
+                        />
+                      </div>
+                      <div className="pet-picker__name">{pet.displayName}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))
+      )}
+    </div>
   )
 }
 
@@ -1360,6 +1672,7 @@ function IntegrationTab() {
   const [addingCustom, setAddingCustom] = useState(false)
   const [configuringTool, setConfiguringTool] = useState<ToolHookStatus | null>(null)
   const [bulkInstalling, setBulkInstalling] = useState(false)
+  const [bulkUninstalling, setBulkUninstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [hookDoctorReport, setHookDoctorReport] = useState<HookDoctorReport | null>(null)
@@ -1499,6 +1812,33 @@ function IntegrationTab() {
         : t('settings.hookInstallAllDone', { defaultValue: '全部 Hook 已安装。请重启对应 CLI 会话以加载最新配置。' }))
     } catch (e) { setError(String(e)) }
     setBulkInstalling(false)
+  }
+
+  const uninstallAll = async () => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    const confirmed = await askDialog(
+      t('settings.uninstallAllConfirmMessage', {
+        defaultValue: '将清理 AgentBro 安装到所有 CLI 工具的 Hook 配置（含自定义安装），用于排错重装。继续？',
+      }),
+      {
+        title: t('settings.uninstallAllConfirmTitle', { defaultValue: '一键卸载全部 Hook' }),
+        kind: 'warning',
+      }
+    )
+    if (!confirmed) return
+    setBulkUninstalling(true)
+    try {
+      const errors = await uninstallAllHooks()
+      await fetchStatus()
+      setNotice(errors.length > 0
+        ? t('settings.hookUninstallAllDoneWithErrors', { defaultValue: '部分 Hook 卸载失败：{{errors}}', errors: errors.join('；') })
+        : t('settings.hookUninstallAllDone', { defaultValue: '已清理全部 AgentBro Hook，可重新安装。' }))
+    } catch (e) { setError(String(e)) }
+    setBulkUninstalling(false)
   }
 
   const setToolAction = (toolId: string, action: string | null) =>
@@ -1688,11 +2028,14 @@ function IntegrationTab() {
       <SettingGroup
         actions={config.islandExternalEnabled ? (
           <>
-            <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={detectNow} type="button">
+            <button className="settings-mini-button" disabled={loading || bulkInstalling || bulkUninstalling} onClick={detectNow} type="button">
               {loading || usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.detectNow', { defaultValue: '一键检测' })}
             </button>
-            <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={installAll} type="button">
+            <button className="settings-mini-button" disabled={loading || bulkInstalling || bulkUninstalling} onClick={installAll} type="button">
               {bulkInstalling ? t('settings.installing', { defaultValue: '安装中...' }) : t('settings.installAllHooks', { defaultValue: '一键全部安装' })}
+            </button>
+            <button className="settings-mini-button" disabled={loading || bulkInstalling || bulkUninstalling} onClick={uninstallAll} type="button">
+              {bulkUninstalling ? t('settings.uninstalling', { defaultValue: '卸载中...' }) : t('settings.uninstallAllHooks', { defaultValue: '一键卸载全部' })}
             </button>
           </>
         ) : null}
@@ -1704,7 +2047,12 @@ function IntegrationTab() {
         {visibleTools.map((tool) => {
           const toolId = hookToolId(tool)
           const installStatus = hookInstallStatus(tool)
-          const busy = actionLoading[toolId] !== undefined || bulkInstalling
+          const cliUnavailable = tool.status === 'Unavailable'
+          const busy = actionLoading[toolId] !== undefined || bulkInstalling || bulkUninstalling
+          const installBlocked = busy || cliUnavailable
+          const cliMissingTitle = cliUnavailable
+            ? t('settings.cliNotInstalled', { defaultValue: 'CLI 未安装，请先安装对应的命令行工具' })
+            : undefined
           const isInstalled = installStatus === 'installed' || installStatus === 'needs_reinstall' || installStatus === 'settings_corrupted'
           const canConfigureHook = installStatus === 'installed' && tool.supportsEventSelection && tool.events && tool.events.length > 0
           return (
@@ -1730,7 +2078,7 @@ function IntegrationTab() {
                 </GlassButton>
                 {isInstalled ? (
                   <>
-                    <GlassButton variant="secondary" onClick={() => reinstall(toolId)} disabled={busy}>
+                    <GlassButton variant="secondary" onClick={() => reinstall(toolId)} disabled={installBlocked} title={cliMissingTitle}>
                       {actionLoading[toolId] === 'reinstall' ? t('settings.installing', { defaultValue: 'Installing...' }) : t('settings.reinstall', { defaultValue: 'Reinstall' })}
                     </GlassButton>
                     <GlassButton variant="secondary" onClick={() => uninstall(toolId)} disabled={busy}>
@@ -1738,7 +2086,7 @@ function IntegrationTab() {
                     </GlassButton>
                   </>
                 ) : (
-                  <GlassButton variant="secondary" onClick={() => install(toolId)} disabled={busy}>
+                  <GlassButton variant="secondary" onClick={() => install(toolId)} disabled={installBlocked} title={cliMissingTitle}>
                     {actionLoading[toolId] === 'install' ? t('settings.installing', { defaultValue: 'Installing...' }) : t('settings.install', { defaultValue: 'Install' })}
                   </GlassButton>
                 )}
@@ -1805,7 +2153,7 @@ function IntegrationTab() {
 
       <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
         {!addingCustom ? (
-          <button className="engine-add-btn" onClick={() => setAddingCustom(true)}>
+          <button className="engine-add-btn" onClick={() => { setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName(''); setAddingCustom(true) }}>
             + {t('settings.addCustomHookConfig', { defaultValue: '添加自定义配置' })}
           </button>
         ) : (
@@ -1813,7 +2161,7 @@ function IntegrationTab() {
             <div className="engine-add-form__row">
               <label>{t('settings.customHookName', { defaultValue: '名称' })}</label>
               <GlassInput
-                placeholder={t('settings.customHookNamePlaceholder', { defaultValue: '例如 CodeFuse Engine' })}
+                placeholder={t('settings.customHookNamePlaceholder', { defaultValue: '例如 My Custom Engine' })}
                 value={customName}
                 onChange={(e) => setCustomName((e.target as HTMLInputElement).value)}
                 style={{ flex: 1 }}

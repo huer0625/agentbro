@@ -20,4 +20,15 @@ pub trait AgentAdapter: Send + Sync + 'static {
             .iter()
             .any(|path| super::hook_manager::has_agentbro_hooks(path))
     }
+
+    /// Re-check whether the underlying CLI / app is currently installed,
+    /// bypassing the value cached in `status()` at adapter construction time.
+    ///
+    /// Used by install entry points to refuse writing hook configuration into
+    /// the home directory of a tool the user has not actually installed. The
+    /// default implementation falls back to the cached status; each adapter
+    /// should override to re-run its own `which`/path probe.
+    fn detect_status_now(&self) -> AdapterStatus {
+        self.status()
+    }
 }

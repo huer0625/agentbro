@@ -17,6 +17,7 @@ pub enum WebhookPlatform {
 
 /// Webhook configuration (stored in app settings)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebhookConfig {
     pub id: String,
     pub name: String,
@@ -27,7 +28,28 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
     /// Agent sources that trigger this webhook (empty = all)
     pub sources: Vec<String>,
+    /// Event keys that trigger this webhook (empty = all)
+    #[serde(default)]
+    pub events: Vec<String>,
     pub enabled: bool,
+    /// Delay interactive notifications until the session remains unresolved.
+    #[serde(default)]
+    pub delay_enabled: bool,
+    /// Delay duration in minutes for interactive notifications.
+    #[serde(default = "default_delay_minutes")]
+    pub delay_minutes: u32,
+}
+
+fn default_delay_minutes() -> u32 {
+    1
+}
+
+impl WebhookConfig {
+    pub fn matches(&self, event_key: &str, source: &str) -> bool {
+        self.enabled
+            && (self.sources.is_empty() || self.sources.iter().any(|s| s == source))
+            && (self.events.is_empty() || self.events.iter().any(|e| e == event_key))
+    }
 }
 
 /// Result of a webhook delivery attempt
@@ -47,6 +69,7 @@ impl WebhookForwarder {
         event: &NotificationEvent,
         source: &str,
         session_id: &str,
+        language: &str,
     ) -> Vec<(String, WebhookResult)> {
         let mut results = Vec::new();
 
@@ -59,10 +82,20 @@ impl WebhookForwarder {
                 results.push((cfg.id.clone(), WebhookResult::Skipped));
                 continue;
             }
+            let event_key = templates::event_key(event);
+            if event_key != "custom"
+                && !cfg.events.is_empty()
+                && !cfg.events.iter().any(|e| e == event_key)
+            {
+                results.push((cfg.id.clone(), WebhookResult::Skipped));
+                continue;
+            }
 
             let result = match cfg.platform {
-                WebhookPlatform::DingTalk => send_dingtalk(cfg, event, source, session_id),
-                WebhookPlatform::Feishu => send_feishu(cfg, event, source, session_id),
+                WebhookPlatform::DingTalk => {
+                    send_dingtalk(cfg, event, source, session_id, language)
+                }
+                WebhookPlatform::Feishu => send_feishu(cfg, event, source, session_id, language),
             };
             results.push((cfg.id.clone(), result));
         }
@@ -78,8 +111,9 @@ fn send_dingtalk(
     event: &NotificationEvent,
     source: &str,
     session_id: &str,
+    language: &str,
 ) -> WebhookResult {
-    let body = templates::dingtalk_markdown(event, source, session_id);
+    let body = templates::dingtalk_markdown(event, source, session_id, language);
     let url = build_dingtalk_url(&cfg.url, cfg.secret.as_deref());
     post_json_curl(&url, &body)
 }
@@ -111,9 +145,10 @@ fn send_feishu(
     event: &NotificationEvent,
     source: &str,
     session_id: &str,
+    language: &str,
 ) -> WebhookResult {
     let timestamp = now_secs();
-    let mut body = templates::feishu_interactive(event, source, session_id);
+    let mut body = templates::feishu_interactive(event, source, session_id, language);
 
     if let Some(secret) = cfg.secret.as_deref() {
         if !secret.is_empty() {

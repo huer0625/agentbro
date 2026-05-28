@@ -11,6 +11,7 @@ import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
 import { useUpdater } from '../../hooks/useUpdater'
+import { useConfigStore } from '../../stores/configStore'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
@@ -25,6 +26,7 @@ interface SettingsAppProps {
 export function SettingsApp({ onClose }: SettingsAppProps) {
   const { t } = useTranslation()
   const updater = useUpdater()
+  const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
   const [activeSection, setActiveSection] = useState('general')
   const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
@@ -69,6 +71,18 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         >
           {t('settings.close')}
         </button>
+        {!autoInstallUpdate && (updater.status === 'available' || updater.status === 'ready') && updater.version && (
+          <button
+            className="settings-update-pill"
+            type="button"
+            title={t('settings.installNow', { defaultValue: 'Install Now' }) + ` v${updater.version}`}
+            onClick={() => updater.installUpdate()}
+          >
+            <span aria-hidden="true">↑</span>
+            <span>{t('settings.installNow', { defaultValue: 'Install' })}</span>
+            <em>v{updater.version}</em>
+          </button>
+        )}
         <AnimatePresence mode="wait">
           <motion.div
             key={activeSection}

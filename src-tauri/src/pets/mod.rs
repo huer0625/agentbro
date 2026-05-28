@@ -1,0 +1,621 @@
+// Codex pet asset discovery — replicates evolab/codex-pet-discovery.ts in pure Rust.
+//
+// Sources, in order of precedence:
+//   1. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp (unpacked)
+//   2. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
+//   3. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (user-defined)
+//   4. ~/Applications/Codex.app/...                         (per-user install fallback)
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const MAX_SPRITESHEET_BYTES: u64 = 10 * 1024 * 1024;
+// asar v1: content starts at 8 + u32@4 (aligned pickle size). Using 16 + u32@12
+// (unpadded JSON length) silently shifts every read back by Pickle's 1–3 byte pad.
+const ASAR_HEADER_JSON_LEN_OFFSET: usize = 12;
+const ASAR_JSON_START: usize = 16;
+const ASAR_PICKLE_PAYLOAD_OFFSET: usize = 4;
+const ASAR_PICKLE_PAYLOAD_BASE: usize = 8;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationDef {
+    pub row: u32,
+    pub frames: u32,
+    pub fps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetMetadata {
+    pub id: String,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub provider: String, // "codex" | "user"
+    pub builtin: bool,
+    pub spritesheet_data_url: String,
+    pub frame_size: FrameSize,
+    pub animations: HashMap<String, AnimationDef>,
+    pub state_mapping: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetDiscoveryResult {
+    pub pets: Vec<PetMetadata>,
+    pub warnings: Vec<String>,
+}
+
+struct BuiltInCodexPet {
+    id: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+}
+
+const BUILT_IN_CODEX_PETS: &[BuiltInCodexPet] = &[
+    BuiltInCodexPet {
+        id: "codex",
+        display_name: "Codex",
+        description: "The original Codex companion.",
+    },
+    BuiltInCodexPet {
+        id: "dewey",
+        display_name: "Dewey",
+        description: "A tidy duck for calm workspace days.",
+    },
+    BuiltInCodexPet {
+        id: "fireball",
+        display_name: "Fireball",
+        description: "Hot path energy for fast iteration.",
+    },
+    BuiltInCodexPet {
+        id: "rocky",
+        display_name: "Rocky",
+        description: "A steady rock when the diff gets large.",
+    },
+    BuiltInCodexPet {
+        id: "seedy",
+        display_name: "Seedy",
+        description: "Small green shoots for new ideas.",
+    },
+    BuiltInCodexPet {
+        id: "stacky",
+        display_name: "Stacky",
+        description: "A balanced stack for deep work.",
+    },
+    BuiltInCodexPet {
+        id: "bsod",
+        display_name: "BSOD",
+        description: "A tiny blue-screen gremlin.",
+    },
+    BuiltInCodexPet {
+        id: "null-signal",
+        display_name: "Null Signal",
+        description: "Quiet signal from the void.",
+    },
+];
+
+/// Discover all available pets from Codex.app and user-defined pet directories.
+pub fn discover_all_pets() -> PetDiscoveryResult {
+    let mut pets = Vec::new();
+    let mut warnings = Vec::new();
+
+    if let Some(resources_dir) = find_codex_resources_dir() {
+        for builtin in BUILT_IN_CODEX_PETS {
+            match read_builtin_spritesheet_data_url(&resources_dir, builtin.id) {
+                Some(data_url) => pets.push(make_codex_builtin_pet(builtin, data_url)),
+                None => warnings.push(format!(
+                    "Failed to load spritesheet for built-in pet '{}'",
+                    builtin.id
+                )),
+            }
+        }
+    } else {
+        warnings.push("Codex.app not found — built-in pets unavailable".into());
+    }
+
+    if let Some(user_dir) = find_user_pets_dir() {
+        pets.extend(discover_user_pets(&user_dir));
+    }
+
+    PetDiscoveryResult { pets, warnings }
+}
+
+#[tauri::command]
+pub fn discover_pets() -> PetDiscoveryResult {
+    discover_all_pets()
+}
+
+// ── Codex.app resource discovery ─────────────────────────────────────────────
+
+fn find_codex_resources_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> =
+        vec![PathBuf::from("/Applications/Codex.app/Contents/Resources")];
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Applications/Codex.app/Contents/Resources"));
+    }
+    candidates
+        .into_iter()
+        .find(|c| c.join("app.asar").exists() || c.join("webview").join("assets").is_dir())
+}
+
+fn find_user_pets_dir() -> Option<PathBuf> {
+    let path = dirs::home_dir()?.join(".codex").join("pets");
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+// ── Spritesheet readers ──────────────────────────────────────────────────────
+
+fn read_builtin_spritesheet_data_url(resources_dir: &Path, asset_ref: &str) -> Option<String> {
+    if let Some(url) = read_unpacked_codex_asset(resources_dir, asset_ref) {
+        return Some(url);
+    }
+
+    let asar = resources_dir.join("app.asar");
+    if asar.is_file() {
+        return read_asar_asset_data_url(&asar, asset_ref);
+    }
+
+    None
+}
+
+fn read_unpacked_codex_asset(resources_dir: &Path, asset_ref: &str) -> Option<String> {
+    let assets = resources_dir.join("webview").join("assets");
+    let prefix = format!("{}-spritesheet-", asset_ref);
+    let entries = fs::read_dir(&assets).ok()?;
+    for entry in entries.flatten() {
+        let name_os = entry.file_name();
+        let name = name_os.to_str()?;
+        if !name.starts_with(&prefix) || !name.ends_with(".webp") {
+            continue;
+        }
+        let path = entry.path();
+        let meta = fs::metadata(&path).ok()?;
+        if !meta.is_file() || meta.len() > MAX_SPRITESHEET_BYTES {
+            continue;
+        }
+        let bytes = fs::read(&path).ok()?;
+        return Some(format!(
+            "data:image/webp;base64,{}",
+            STANDARD.encode(&bytes)
+        ));
+    }
+    None
+}
+
+fn read_asar_asset_data_url(asar_path: &Path, asset_ref: &str) -> Option<String> {
+    let data = fs::read(asar_path).ok()?;
+    if data.len() < ASAR_JSON_START + 4 {
+        return None;
+    }
+    let json_len_bytes: [u8; 4] = data
+        [ASAR_HEADER_JSON_LEN_OFFSET..ASAR_HEADER_JSON_LEN_OFFSET + 4]
+        .try_into()
+        .ok()?;
+    let json_len = u32::from_le_bytes(json_len_bytes) as usize;
+
+    let payload_size_bytes: [u8; 4] = data
+        [ASAR_PICKLE_PAYLOAD_OFFSET..ASAR_PICKLE_PAYLOAD_OFFSET + 4]
+        .try_into()
+        .ok()?;
+    let payload_size = u32::from_le_bytes(payload_size_bytes) as usize;
+
+    let json_start = ASAR_JSON_START;
+    let json_end = json_start.checked_add(json_len)?;
+    let content_start = ASAR_PICKLE_PAYLOAD_BASE.checked_add(payload_size)?;
+    if json_end > data.len() || content_start < json_end || content_start > data.len() {
+        return None;
+    }
+
+    let header_str = std::str::from_utf8(&data[json_start..json_end]).ok()?;
+    let header: JsonValue = serde_json::from_str(header_str).ok()?;
+
+    let prefix = format!("{}-spritesheet-", asset_ref);
+    let matcher = |path: &str| -> bool {
+        path.starts_with("/webview/assets/")
+            && path[16..].starts_with(&prefix)
+            && path.ends_with(".webp")
+    };
+
+    let asset = find_asar_file(&header, &matcher, "")?;
+    if asset.size > MAX_SPRITESHEET_BYTES as usize {
+        return None;
+    }
+
+    let file_start = content_start.checked_add(asset.offset)?;
+    let file_end = file_start.checked_add(asset.size)?;
+    if file_end > data.len() {
+        return None;
+    }
+
+    let bytes = &data[file_start..file_end];
+    Some(format!("data:image/webp;base64,{}", STANDARD.encode(bytes)))
+}
+
+struct AsarFile {
+    offset: usize,
+    size: usize,
+}
+
+fn find_asar_file<F: Fn(&str) -> bool>(
+    node: &JsonValue,
+    matcher: &F,
+    prefix: &str,
+) -> Option<AsarFile> {
+    let files = node.get("files")?.as_object()?;
+    for (name, child) in files {
+        let next_path = format!("{}/{}", prefix, name);
+        if let Some(size) = child.get("size").and_then(|v| v.as_u64()) {
+            if matcher(&next_path) {
+                let offset = child
+                    .get("offset")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                return Some(AsarFile {
+                    size: size as usize,
+                    offset: offset as usize,
+                });
+            }
+        }
+        if let Some(found) = find_asar_file(child, matcher, &next_path) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+// ── User-defined pets ────────────────────────────────────────────────────────
+
+fn discover_user_pets(dir: &Path) -> Vec<PetMetadata> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut pets = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let json_path = path.join("pet.json");
+        if !json_path.is_file() {
+            continue;
+        }
+
+        let json_str = match fs::read_to_string(&json_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let pet_json: JsonValue = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let id = pet_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(String::from)
+                    .unwrap_or_default()
+            });
+        if id.is_empty() {
+            continue;
+        }
+
+        let display_name = pet_json
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| id.clone());
+        let description = pet_json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let sprite_path_rel = pet_json
+            .get("spritesheetPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or("spritesheet.webp");
+
+        let data_url = match read_user_spritesheet(&path, sprite_path_rel) {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let frame_size = parse_frame_size(&pet_json).unwrap_or(FrameSize {
+            width: 192,
+            height: 208,
+        });
+        let animations = parse_animations(&pet_json).unwrap_or_else(default_codex_animations);
+        let state_mapping =
+            parse_state_mapping(&pet_json).unwrap_or_else(default_codex_state_mapping);
+
+        pets.push(PetMetadata {
+            id: format!("user:{}", id),
+            display_name,
+            description,
+            provider: "user".into(),
+            builtin: false,
+            spritesheet_data_url: data_url,
+            frame_size,
+            animations,
+            state_mapping,
+        });
+    }
+
+    pets
+}
+
+fn read_user_spritesheet(root: &Path, rel_path: &str) -> Option<String> {
+    let absolute = root.join(rel_path);
+    let canonical_root = fs::canonicalize(root).ok()?;
+    let canonical = fs::canonicalize(&absolute).ok()?;
+    if !canonical.starts_with(&canonical_root) {
+        return None;
+    }
+
+    let meta = fs::metadata(&canonical).ok()?;
+    if !meta.is_file() || meta.len() > MAX_SPRITESHEET_BYTES {
+        return None;
+    }
+
+    let ext = canonical.extension()?.to_str()?.to_lowercase();
+    let mime = match ext.as_str() {
+        "webp" => "image/webp",
+        "png" => "image/png",
+        _ => return None,
+    };
+
+    let bytes = fs::read(&canonical).ok()?;
+    Some(format!("data:{};base64,{}", mime, STANDARD.encode(&bytes)))
+}
+
+fn parse_frame_size(json: &JsonValue) -> Option<FrameSize> {
+    let fs = json.get("frameSize")?;
+    let width = fs.get("width")?.as_u64()? as u32;
+    let height = fs.get("height")?.as_u64()? as u32;
+    Some(FrameSize { width, height })
+}
+
+fn parse_animations(json: &JsonValue) -> Option<HashMap<String, AnimationDef>> {
+    let anims = json.get("animations")?.as_object()?;
+    let mut result = HashMap::new();
+    for (k, v) in anims {
+        let row = v.get("row")?.as_u64()? as u32;
+        let frames = v.get("frames")?.as_u64()? as u32;
+        let fps = v.get("fps")?.as_u64()? as u32;
+        result.insert(k.clone(), AnimationDef { row, frames, fps });
+    }
+    Some(result)
+}
+
+fn parse_state_mapping(json: &JsonValue) -> Option<HashMap<String, String>> {
+    let m = json.get("stateMapping")?.as_object()?;
+    let mut result = HashMap::new();
+    for (k, v) in m {
+        result.insert(k.clone(), v.as_str()?.to_string());
+    }
+    Some(result)
+}
+
+// ── Codex pet defaults (matches built-in spritesheet layout) ────────────────
+
+fn default_codex_animations() -> HashMap<String, AnimationDef> {
+    let mut m = HashMap::new();
+    m.insert(
+        "idle".into(),
+        AnimationDef {
+            row: 0,
+            frames: 6,
+            fps: 6,
+        },
+    );
+    m.insert(
+        "runningRight".into(),
+        AnimationDef {
+            row: 1,
+            frames: 8,
+            fps: 10,
+        },
+    );
+    m.insert(
+        "runningLeft".into(),
+        AnimationDef {
+            row: 2,
+            frames: 8,
+            fps: 10,
+        },
+    );
+    m.insert(
+        "waving".into(),
+        AnimationDef {
+            row: 3,
+            frames: 4,
+            fps: 6,
+        },
+    );
+    m.insert(
+        "jumping".into(),
+        AnimationDef {
+            row: 4,
+            frames: 5,
+            fps: 7,
+        },
+    );
+    m.insert(
+        "failed".into(),
+        AnimationDef {
+            row: 5,
+            frames: 8,
+            fps: 6,
+        },
+    );
+    m.insert(
+        "waiting".into(),
+        AnimationDef {
+            row: 6,
+            frames: 6,
+            fps: 5,
+        },
+    );
+    m.insert(
+        "running".into(),
+        AnimationDef {
+            row: 7,
+            frames: 6,
+            fps: 8,
+        },
+    );
+    m.insert(
+        "review".into(),
+        AnimationDef {
+            row: 8,
+            frames: 6,
+            fps: 5,
+        },
+    );
+    m
+}
+
+fn default_codex_state_mapping() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert("idle".into(), "idle".into());
+    m.insert("done".into(), "jumping".into());
+    m.insert("thinking".into(), "review".into());
+    m.insert("working".into(), "running".into());
+    m.insert("compacting".into(), "review".into());
+    m.insert("attention".into(), "waiting".into());
+    m.insert("error".into(), "failed".into());
+    m.insert("needsYou".into(), "waiting".into());
+    m
+}
+
+fn make_codex_builtin_pet(builtin: &BuiltInCodexPet, data_url: String) -> PetMetadata {
+    PetMetadata {
+        id: format!("codex:{}", builtin.id),
+        display_name: builtin.display_name.into(),
+        description: Some(builtin.description.into()),
+        provider: "codex".into(),
+        builtin: true,
+        spritesheet_data_url: data_url,
+        frame_size: FrameSize {
+            width: 192,
+            height: 208,
+        },
+        animations: default_codex_animations(),
+        state_mapping: default_codex_state_mapping(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_codex_asset_path_pattern() {
+        let prefix = "dewey-spritesheet-";
+        let matcher = |path: &str| -> bool {
+            path.starts_with("/webview/assets/")
+                && path[16..].starts_with(prefix)
+                && path.ends_with(".webp")
+        };
+        assert!(matcher("/webview/assets/dewey-spritesheet-abc123.webp"));
+        assert!(!matcher("/webview/assets/dewey-spritesheet-abc123.png"));
+        assert!(!matcher("/webview/dewey-spritesheet-abc.webp"));
+        assert!(!matcher("/webview/assets/foo-spritesheet-abc.webp"));
+    }
+
+    #[test]
+    fn parses_minimal_pet_json_overrides() {
+        let json: JsonValue = serde_json::from_str(
+            r#"{
+              "id": "fish",
+              "displayName": "Fish",
+              "frameSize": { "width": 64, "height": 64 },
+              "animations": { "idle": { "row": 0, "frames": 4, "fps": 8 } },
+              "stateMapping": { "idle": "idle" }
+            }"#,
+        )
+        .unwrap();
+
+        let fs = parse_frame_size(&json).unwrap();
+        assert_eq!(fs.width, 64);
+        assert_eq!(fs.height, 64);
+
+        let anims = parse_animations(&json).unwrap();
+        assert_eq!(anims.get("idle").unwrap().frames, 4);
+
+        let states = parse_state_mapping(&json).unwrap();
+        assert_eq!(states.get("idle").unwrap(), "idle");
+    }
+
+    #[test]
+    fn defaults_match_codex_spritesheet_layout() {
+        let anims = default_codex_animations();
+        assert_eq!(anims.get("idle").unwrap().row, 0);
+        assert_eq!(anims.get("runningLeft").unwrap().row, 2);
+        assert_eq!(anims.get("review").unwrap().row, 8);
+
+        let states = default_codex_state_mapping();
+        assert_eq!(states.get("done").unwrap(), "jumping");
+        assert_eq!(states.get("error").unwrap(), "failed");
+    }
+
+    /// End-to-end smoke test against the local Codex.app and ~/.codex/pets.
+    /// Run with: `cargo test --lib pets -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn smoke_discovers_local_pets() {
+        let result = discover_all_pets();
+        println!(
+            "discovered {} pets, {} warnings",
+            result.pets.len(),
+            result.warnings.len()
+        );
+        for w in &result.warnings {
+            println!("  WARN: {}", w);
+        }
+        for pet in &result.pets {
+            println!(
+                "  {:>22}  provider={}  builtin={}  data_url_len={}  frame={}x{}",
+                pet.id,
+                pet.provider,
+                pet.builtin,
+                pet.spritesheet_data_url.len(),
+                pet.frame_size.width,
+                pet.frame_size.height
+            );
+            assert!(pet.spritesheet_data_url.starts_with("data:image/"));
+            assert!(
+                pet.spritesheet_data_url.len() > 1000,
+                "spritesheet too small for {}",
+                pet.id
+            );
+        }
+        assert!(
+            !result.pets.is_empty(),
+            "expected at least one pet on a machine with Codex.app or ~/.codex/pets"
+        );
+    }
+}

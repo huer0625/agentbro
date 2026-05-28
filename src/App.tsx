@@ -2,21 +2,48 @@
 import { useEffect, useRef, useState } from 'react'
 import { ClaudeHookUiLab } from './components/dev/ClaudeHookUiLab'
 import { NotchPanel } from './components/notch/NotchPanel'
+import { PetApp } from './PetApp'
 import { SettingsApp } from './components/settings'
 import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
+import { usePetStore } from './stores/petStore'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
 import './styles/globals.css'
 
+// Fields whose source of truth lives in the Rust backend and is broadcast via
+// the `config-changed` event. We must NOT replay stale values from another
+// window's `storage` snapshot, or a notch window writing localStorage during a
+// `island-layout-preview` race can clobber the settings window's just-changed
+// `islandSurfaceMode`, causing the surface mode toggle to ping-pong.
+const BACKEND_MANAGED_CONFIG_KEYS = new Set<keyof ReturnType<typeof useConfigStore.getState>>([
+  'soundEnabled', 'volume', 'launchAtLogin', 'autoHide', 'smartSuppression',
+  'showUsageQuota', 'usageQueryEnabled', 'language', 'autoHideNoSessions', 'displayMonitor',
+  'globalShortcut',
+  'shortcutApprove', 'shortcutApproveEnabled',
+  'shortcutDeny', 'shortcutDenyEnabled',
+  'shortcutSkip', 'shortcutSkipEnabled',
+  'soundEvents', 'soundRules', 'customSounds', 'soundPack',
+  'probeSessionFilter',
+  'tipsEnabled', 'pixelCursorEnabled', 'confettiEnabled',
+  'analyticsEnabled', 'analyticsConsentPromptCompleted',
+  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandActivePetId',
+  'followFocus', 'quietHours', 'idleTimeoutMinutes',
+])
+
 function applyPersistedConfig(raw: string | null) {
   if (!raw) return
   try {
     const persisted = JSON.parse(raw) as { state?: Partial<ReturnType<typeof useConfigStore.getState>> }
-    if (persisted.state) {
-      useConfigStore.setState({ ...persisted.state, followFocus: false })
+    if (!persisted.state) return
+    const filtered: Partial<ReturnType<typeof useConfigStore.getState>> = {}
+    for (const key of Object.keys(persisted.state) as Array<keyof ReturnType<typeof useConfigStore.getState>>) {
+      if (BACKEND_MANAGED_CONFIG_KEYS.has(key)) continue
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(filtered as any)[key] = (persisted.state as any)[key]
     }
+    useConfigStore.setState(filtered)
   } catch {
     // Ignore malformed persisted config payloads.
   }
@@ -27,6 +54,7 @@ function applyPersistedConfig(raw: string | null) {
 async function detectWindowLabel(): Promise<string> {
   // Check URL hash first (works in both Tauri and browser)
   if (window.location.hash === '#settings') return 'settings'
+  if (window.location.hash === '#pet') return 'pet'
 
   // In Tauri, use the real window label
   if (isTauri()) {
@@ -122,6 +150,28 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    function applyPersistedPet(raw: string | null) {
+      if (!raw) return
+      try {
+        const persisted = JSON.parse(raw) as { state?: { activePetId?: string | null } }
+        usePetStore.getState().hydrateFromConfig(persisted.state?.activePetId ?? null)
+      } catch { /* ignore */ }
+    }
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'agentbro-pet') applyPersistedPet(event.newValue)
+    }
+    const handleFocus = () => applyPersistedPet(window.localStorage.getItem('agentbro-pet'))
+
+    handleFocus()
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('focus', handleFocus)
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [])
+
   // Detect window on mount
   useEffect(() => {
     detectWindowLabel().then(setWindowLabel)
@@ -158,6 +208,11 @@ function App() {
 
   // Wait for detection
   if (windowLabel === null) return null
+
+  // Pet companion window — independent, only renders the pet sprite layer.
+  if (windowLabel === 'pet') {
+    return <PetApp />
+  }
 
   // Settings window
   if (windowLabel === 'settings') {

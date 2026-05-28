@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "identifier": "default",
   "description": "Default permissions for AgentBro",
-  "windows": ["notch", "settings"],
+  "windows": ["notch", "settings", "pet"],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -24,6 +24,8 @@
     "core:webview:allow-webview-size",
     "shell:allow-open",
     "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-ask",
     "updater:default",
     "notification:default"
   ]

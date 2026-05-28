@@ -23,7 +23,6 @@ import { OverlayCompletionCard } from '../overlay/OverlayCompletionCard'
 import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { Confetti } from './Confetti'
 import { PixelCursor } from './PixelCursor'
-import { PetSurface } from './PetSurface'
 import './NotchPanel.css'
 
 const openMorphTransition = {
@@ -288,7 +287,6 @@ export function NotchPanel() {
   const confettiEnabled = useConfigStore((s) => s.confettiEnabled)
   const pixelCursorEnabled = useConfigStore((s) => s.pixelCursorEnabled)
   const islandSurfaceMode = useConfigStore((s) => s.islandSurfaceMode)
-  const islandPetScale = useConfigStore((s) => s.islandPetScale)
   const islandAnimationScaleValue = useConfigStore((s) => s.islandAnimationScale)
   const islandAnimationScale = Math.max(0.1, islandAnimationScaleValue || 1)
   const followFocus = useConfigStore((s) => s.followFocus)
@@ -922,6 +920,10 @@ export function NotchPanel() {
 
   useEffect(() => {
     if (!isTauri()) return
+    if (islandSurfaceMode === 'pet') {
+      requestNativeIgnoreCursorEvents(true, { force: true })
+      return
+    }
 
     let cancelled = false
     let inFlight = false
@@ -936,8 +938,7 @@ export function NotchPanel() {
         const currentPanelState = useSessionStore.getState().panelState
         const ignoreTransparentHost = !islandEnabled
           || (
-            islandSurfaceMode !== 'pet'
-            && !isDragging
+            !isDragging
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
@@ -1433,7 +1434,7 @@ export function NotchPanel() {
   const expandedHostPanelHeight = isPetMode ? 360 : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
-  const islandHidden = !islandEnabled || (!layoutPreview && interaction.isHidden)
+  const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
   const hostUsesStableCanvas = !isPetMode && islandEnabled
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
   const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
@@ -1801,6 +1802,7 @@ export function NotchPanel() {
             if (allowHorizontalDrag) event.preventDefault()
           }}
           style={{
+            display: isPetMode ? 'none' : undefined,
             overflow: 'hidden',
             cursor: allowHorizontalDrag ? (isDragging ? 'grabbing' : 'grab') : 'default',
             paddingInline: shellSideExtension,
@@ -1814,15 +1816,7 @@ export function NotchPanel() {
             />
           )}
           {isPetMode ? (
-            <PetSurface
-              activeOverlay={activeOverlay}
-              expanded={effectivePanelState !== 'collapsed'}
-              hidden={islandHidden}
-              onCollapse={handleCollapse}
-              onDismissOverlay={dismissOverlay}
-              scale={islandPetScale}
-              sessions={displayedSessions}
-            />
+            null
           ) : (
             <>
               <Confetti trigger={confettiEnabled && activeOverlay?.type === 'completion'} />

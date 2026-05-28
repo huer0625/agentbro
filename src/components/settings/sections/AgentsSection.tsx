@@ -518,9 +518,17 @@ export function AgentsSection({
           {hookStatuses.map((hook) => {
             const toolId = hookToolId(hook)
             const installStatus = hookInstallStatus(hook)
+            const cliUnavailable = hook.status === 'Unavailable'
             const busy = hookActions[toolId] !== undefined
             const isCurrentAgent = selectedAgent && (hook.adapterId || hook.name) === selectedAgent.id
             const canConfigureHook = installStatus === 'installed' && hook.supportsEventSelection && hook.events && hook.events.length > 0
+            // When the CLI isn't on PATH, prevent toggling the hook ON. We still
+            // allow toggling OFF so users can clean up stale hooks from a removed CLI.
+            const isOn = installStatus === 'installed'
+            const toggleDisabled = busy || (!isOn && cliUnavailable)
+            const toggleTitle = !isOn && cliUnavailable
+              ? '未在 PATH 中找到该 CLI，请先安装命令行工具'
+              : (isOn ? '移除 Hook' : '安装 Hook')
             return (
               <div key={`${toolId}:${hook.configPath || hook.displayName}`} className="agent-hook-card">
                 <div className="agent-hook-card__identity">
@@ -549,10 +557,11 @@ export function AgentsSection({
                   )}
                   <button
                     type="button"
-                    className={`demo-toggle ${installStatus === 'installed' ? 'demo-toggle--on' : ''}`}
-                    disabled={busy}
-                    onClick={() => toggleHook(hook, installStatus !== 'installed')}
-                    aria-label={installStatus === 'installed' ? '移除 Hook' : '安装 Hook'}
+                    className={`demo-toggle ${isOn ? 'demo-toggle--on' : ''}`}
+                    disabled={toggleDisabled}
+                    title={toggleTitle}
+                    onClick={() => toggleHook(hook, !isOn)}
+                    aria-label={toggleTitle}
                   />
                 </div>
               </div>

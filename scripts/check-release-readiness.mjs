@@ -72,6 +72,10 @@ function requireEnv(name) {
   if (!process.env[name]?.trim()) errors.push(`${name} is required for stable releases`)
 }
 
+function countPresentEnv(names) {
+  return names.filter((name) => process.env[name]?.trim()).length
+}
+
 const pkg = readJson('package.json')
 const tauri = readJson('src-tauri/tauri.conf.json')
 const cargoToml = read('src-tauri/Cargo.toml')
@@ -150,6 +154,18 @@ if (strictRelease) {
     requireEnv('APPLE_TEAM_ID')
     if (!process.env.HOMEBREW_TAP_TOKEN?.trim()) {
       warnings.push('HOMEBREW_TAP_TOKEN is not set; stable DMG release will proceed without updating Homebrew.')
+    }
+
+    const telemetryEnvNames = [
+      'AGENTBRO_TELEMETRY_SLS_HOST',
+      'AGENTBRO_TELEMETRY_SLS_PROJECT',
+      'AGENTBRO_TELEMETRY_SLS_LOGSTORE',
+    ]
+    const telemetryEnvCount = countPresentEnv(telemetryEnvNames)
+    if (telemetryEnvCount > 0 && telemetryEnvCount < telemetryEnvNames.length) {
+      errors.push('AGENTBRO_TELEMETRY_SLS_HOST, AGENTBRO_TELEMETRY_SLS_PROJECT, and AGENTBRO_TELEMETRY_SLS_LOGSTORE must all be set together')
+    } else if (telemetryEnvCount === 0) {
+      warnings.push('AgentBro anonymous telemetry SLS target is not set; release builds will not upload anonymous usage stats.')
     }
   } else {
     warnings.push('unsigned prerelease mode enabled; Apple signing, notarization, and Homebrew update are skipped.')

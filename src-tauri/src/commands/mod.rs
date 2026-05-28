@@ -23,9 +23,10 @@ use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
 use crate::switch::db::SwitchDatabase;
+use crate::telemetry::TelemetryService;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{BufRead, BufReader as StdBufReader};
+use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -50,6 +51,7 @@ pub struct AppState {
     pub diagnostic_buffer: Arc<DiagnosticRingBuffer>,
     pub network_monitor: Arc<NetworkMonitor>,
     pub switch_db: Arc<SwitchDatabase>,
+    pub telemetry: Arc<TelemetryService>,
     #[allow(dead_code)]
     pub tray_icon: tauri::tray::TrayIcon,
 }
@@ -2260,12 +2262,31 @@ pub async fn simulate_hook_event(
 
 // ── Terminal Commands ─────────────────────────────────────────────
 
+/// Process-wide lock to serialize jump_to_terminal executions.
+/// A single jump may fork-exec `pgrep`, `lsof`, `osascript`, and `open` and
+/// run AppleScript loops over every iTerm/Ghostty window — running multiple
+/// concurrently (e.g. from a user rage-clicking a stale "jump" button) can
+/// stack into a system-wide stall. We serialize and silently drop overlap.
+static JUMP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 #[tauri::command]
 pub async fn jump_to_terminal(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    let lock = JUMP_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::info!(
+                "Jump already in progress; ignoring duplicate click for session={}",
+                session_id
+            );
+            return Ok(());
+        }
+    };
+
     log::info!("Jump to terminal: session={}", session_id);
     release_notch_keyboard_focus(&app);
 
@@ -2735,7 +2756,36 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String>
 
 #[tauri::command]
 pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
+    let previous = state.config_store.get();
+    state.config_store.update(config.clone())?;
+    if previous.analytics_enabled != config.analytics_enabled {
+        state.telemetry.handle_consent_changed(&config).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_language(state: State<'_, AppState>, language: String) -> Result<(), String> {
+    let language = match language.as_str() {
+        "en" | "zh" | "ja" | "ko" | "tr" => language,
+        other => return Err(format!("Unsupported language: {}", other)),
+    };
+    let mut config = state.config_store.get();
+    config.language = language;
     state.config_store.update(config)
+}
+
+#[tauri::command]
+pub async fn set_analytics_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.analytics_enabled = enabled;
+    config.analytics_consent_prompt_completed = true;
+    state.config_store.update(config.clone())?;
+    state.telemetry.handle_consent_changed(&config).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2851,6 +2901,7 @@ pub async fn set_island_feature_flags(
 
 #[tauri::command]
 pub async fn set_island_surface_options(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     island_surface_mode: String,
     island_pet_scale: u32,
@@ -2862,11 +2913,33 @@ pub async fn set_island_surface_options(
         ));
     }
     let mut config = state.config_store.get();
-    if config.island_surface_mode != island_surface_mode {
+    let mode_changed = config.island_surface_mode != island_surface_mode;
+    if mode_changed {
         config.island_pet_window_origin = None;
     }
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(50, 120);
+    state.config_store.update(config.clone())?;
+
+    if mode_changed {
+        let handle = app.clone();
+        let saved_origin = config.island_pet_window_origin.clone();
+        let is_pet_mode = config.island_surface_mode == "pet";
+        app.run_on_main_thread(move || {
+            crate::sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_active_pet_id(
+    state: State<'_, AppState>,
+    pet_id: Option<String>,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.island_active_pet_id = pet_id.filter(|s| !s.is_empty());
     state.config_store.update(config)
 }
 
@@ -2880,7 +2953,19 @@ pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<
         .iter()
         .find(|a| a.name() == agent)
         .ok_or_else(|| format!("Unknown agent: {}", agent))?;
-    adapter.install_hooks().map_err(|e| e.to_string())
+    if matches!(
+        adapter.detect_status_now(),
+        crate::agents::AdapterStatus::Unavailable
+    ) {
+        return Err(format!(
+            "{} CLI not found on PATH. Install it first, then try again.",
+            adapter.display_name()
+        ));
+    }
+    adapter.install_hooks().map_err(|e| e.to_string())?;
+    let config = state.config_store.get();
+    state.telemetry.record_hook_install(&config, &agent).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2891,7 +2976,10 @@ pub async fn remove_hooks(state: State<'_, AppState>, agent: String) -> Result<(
         .iter()
         .find(|a| a.name() == agent)
         .ok_or_else(|| format!("Unknown agent: {}", agent))?;
-    adapter.remove_hooks().map_err(|e| e.to_string())
+    adapter.remove_hooks().map_err(|e| e.to_string())?;
+    let config = state.config_store.get();
+    state.telemetry.record_hook_uninstall(&config, &agent).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3265,32 +3353,410 @@ fn parse_subagent_chat_history_for_session(
 
 // ── Diagnostics Commands ────────────────────────────────────────
 
+/// Redact user home directory paths: /Users/<username>/... → /Users/<user>/...
+fn redact_paths(text: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if let Some(user_name) = home_str.rsplit('/').next() {
+            let full = home_str.as_ref();
+            let redacted = format!("/Users/<user>");
+            let mut result = text.replace(full, &redacted);
+            // Also redact just the username in remaining paths
+            result = result.replace(&format!("/Users/{}", user_name), "/Users/<user>");
+            return result;
+        }
+    }
+    text.to_string()
+}
+
+/// Generate or retrieve an anonymous install ID stored in the config directory.
+fn get_or_create_install_id() -> String {
+    let id_path = dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("agentbro")
+        .join("install_id");
+    if let Ok(id) = std::fs::read_to_string(&id_path) {
+        let trimmed = id.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let _ = std::fs::create_dir_all(id_path.parent().unwrap());
+    let _ = std::fs::write(&id_path, &id);
+    id
+}
+
+/// Build sanitized config JSON — redacts secrets, SSH targets, webhook URLs.
+fn sanitized_config_json(config: &AppConfig) -> serde_json::Value {
+    let mut val = serde_json::to_value(config).unwrap_or_default();
+
+    // Redact webhook configs
+    if let Some(webhooks) = val.get_mut("webhookConfigs").and_then(|v| v.as_array_mut()) {
+        for wh in webhooks.iter_mut() {
+            if let Some(url) = wh.get_mut("url") {
+                *url = serde_json::Value::String("[REDACTED]".to_string());
+            }
+            if let Some(secret) = wh.get_mut("secret") {
+                if !secret.is_null() {
+                    *secret = serde_json::Value::String("[REDACTED]".to_string());
+                }
+            }
+        }
+    }
+
+    // Redact remote hosts
+    if let Some(hosts) = val.get_mut("remoteHosts").and_then(|v| v.as_array_mut()) {
+        for host in hosts.iter_mut() {
+            if let Some(ssh_target) = host.get_mut("sshTarget") {
+                *ssh_target = serde_json::Value::String("[REDACTED]".to_string());
+            }
+            if let Some(identity_file) = host.get_mut("identityFile") {
+                if identity_file.is_string() {
+                    *identity_file = serde_json::Value::String("[REDACTED]".to_string());
+                }
+            }
+            if let Some(auth_socket) = host.get_mut("authSocket") {
+                if auth_socket.is_string() {
+                    *auth_socket = serde_json::Value::String("[REDACTED]".to_string());
+                }
+            }
+            if let Some(remote_socket_path) = host.get_mut("remoteSocketPath") {
+                let s = remote_socket_path.as_str().unwrap_or("");
+                *remote_socket_path = serde_json::Value::String(redact_paths(s));
+            }
+        }
+    }
+
+    // Redact buddy device shared secret
+    if let Some(secret) = val.pointer_mut("/buddyDevice/sharedSecret") {
+        if secret.is_string() && !secret.as_str().unwrap_or("").is_empty() {
+            *secret = serde_json::Value::String("[REDACTED]".to_string());
+        }
+    }
+
+    // Redact custom hooks install paths
+    if let Some(installs) = val
+        .get_mut("customHookInstalls")
+        .and_then(|v| v.as_array_mut())
+    {
+        for inst in installs.iter_mut() {
+            if let Some(dir) = inst.get_mut("installDirectory") {
+                let s = dir.as_str().unwrap_or("");
+                *dir = serde_json::Value::String(redact_paths(s));
+            }
+        }
+    }
+
+    // Redact engine instance config roots
+    if let Some(instances) = val
+        .get_mut("engineInstances")
+        .and_then(|v| v.as_array_mut())
+    {
+        for inst in instances.iter_mut() {
+            if let Some(root) = inst.get_mut("configRoot") {
+                let s = root.as_str().unwrap_or("");
+                *root = serde_json::Value::String(redact_paths(s));
+            }
+        }
+    }
+
+    // Redact custom sounds data URLs (may contain embedded file paths)
+    if let Some(sounds) = val.get_mut("customSounds").and_then(|v| v.as_array_mut()) {
+        for sound in sounds.iter_mut() {
+            if let Some(data_url) = sound.get_mut("dataUrl") {
+                if data_url.is_string() {
+                    *data_url = serde_json::Value::String("[REDACTED]".to_string());
+                }
+            }
+            if let Some(path) = sound.get_mut("path") {
+                let s = path.as_str().unwrap_or("");
+                *path = serde_json::Value::String(redact_paths(s));
+            }
+        }
+    }
+
+    val
+}
+
+/// Collect hook config file contents from all adapters, with path redaction.
+fn collect_hooks_sections(adapters: &[Arc<dyn AgentAdapter>]) -> Vec<String> {
+    let mut sections = Vec::new();
+    for adapter in adapters {
+        let paths = adapter.hook_config_paths();
+        if paths.is_empty() {
+            continue;
+        }
+        let mut block = format!(
+            "### {}\n\n> ID: `{}`\n\n",
+            adapter.display_name(),
+            adapter.name()
+        );
+        for path in &paths {
+            let display_path = redact_paths(&path.to_string_lossy());
+            if path.is_dir() {
+                for name in ["plugin.yaml", "__init__.py", "settings.json", "hooks.json"] {
+                    let candidate = path.join(name);
+                    if candidate.exists() {
+                        let cp = redact_paths(&candidate.to_string_lossy());
+                        match std::fs::read_to_string(&candidate) {
+                            Ok(content) => {
+                                block.push_str(&format!(
+                                    "**{}**\n```json\n{}\n```\n\n",
+                                    cp,
+                                    redact_paths(&content)
+                                ));
+                            }
+                            Err(e) => {
+                                block.push_str(&format!("**{}** — _read error: {}_\n\n", cp, e));
+                            }
+                        }
+                    }
+                }
+            } else if path.exists() {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        block.push_str(&format!(
+                            "**{}**\n```json\n{}\n```\n\n",
+                            display_path,
+                            redact_paths(&content)
+                        ));
+                    }
+                    Err(e) => {
+                        block.push_str(&format!("**{}** — _read error: {}_\n\n", display_path, e));
+                    }
+                }
+            } else {
+                block.push_str(&format!("**{}** — _not found_\n\n", display_path));
+            }
+        }
+        sections.push(block);
+    }
+    sections
+}
+
+/// Read recent log files from tauri-plugin-log's log directory.
+fn collect_log_files() -> Vec<(String, Vec<u8>)> {
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("agentbro")
+        .join("logs");
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&log_dir) {
+        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
+        for entry in entries.into_iter().rev().take(3) {
+            let path = entry.path();
+            if path.is_file() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                match std::fs::read(&path) {
+                    Ok(data) => {
+                        let redacted = redact_paths(&String::from_utf8_lossy(&data));
+                        files.push((format!("logs/{}", name), redacted.into_bytes()));
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Collect crash reports matching AgentBro from the system DiagnosticReports dir.
+fn collect_crash_reports() -> Vec<(String, Vec<u8>)> {
+    let crash_dir = PathBuf::from("/Library/Logs/DiagnosticReports");
+    let user_crash_dir = dirs::home_dir()
+        .map(|h| h.join("Library/Logs/DiagnosticReports"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/none"));
+    let mut files = Vec::new();
+    for dir in &[crash_dir, user_crash_dir] {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name.contains("AgentBro") || name.contains("agentbro") {
+                    if let Ok(data) = std::fs::read(&path) {
+                        let redacted = redact_paths(&String::from_utf8_lossy(&data));
+                        files.push((format!("crashes/{}", name), redacted.into_bytes()));
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
 #[tauri::command]
-pub async fn export_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn export_diagnostics(
+    state: State<'_, AppState>,
+    target_path: String,
+) -> Result<(), String> {
     let config = state.config_store.get();
     let sessions = state.session_store.get_all_sessions();
-    let adapters: Vec<serde_json::Value> = state
-        .adapters
-        .iter()
-        .map(|a| {
-            serde_json::json!({
-                "name": a.name(),
-                "displayName": a.display_name(),
-                "status": a.status(),
-            })
-        })
-        .collect();
-    let diagnostics = serde_json::json!({
-        "appVersion": env!("CARGO_PKG_VERSION"),
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "config": serde_json::to_value(&config).unwrap_or_default(),
-        "sessionCount": sessions.len(),
-        "adapters": adapters,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    });
+    let diagnostic_events = state.diagnostic_buffer.all();
+    let install_id = get_or_create_install_id();
+    let now = chrono::Local::now();
+    let timestamp = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
 
-    serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())
+    // ── Build Markdown report ──
+    let mut md = String::new();
+
+    // Header
+    md.push_str("# AgentBro Diagnostic Report\n\n");
+    md.push_str(&format!("| Field | Value |\n|---|---|\n"));
+    md.push_str(&format!("| Generated | {} |\n", timestamp));
+    md.push_str(&format!("| Version | {} |\n", env!("CARGO_PKG_VERSION")));
+    md.push_str(&format!("| Install ID | {} |\n", install_id));
+    md.push_str(&format!(
+        "| Platform | {} / {} |\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    md.push_str("\n---\n\n");
+
+    // Privacy notice
+    md.push_str("> **Privacy:** Home paths are masked as `/Users/<user>/`. Webhook URLs, secrets, SSH targets, and credentials are replaced with `[REDACTED]`. Session content and environment variable values are never included.\n\n---\n\n");
+
+    // Adapter status table
+    md.push_str("## Supported Agents\n\n");
+    md.push_str("| Agent | ID | Status | Hooks |\n|---|---|---|---|\n");
+    for adapter in state.adapters.iter() {
+        let status_str = match adapter.status() {
+            crate::agents::AdapterStatus::Active => "✅ Active",
+            crate::agents::AdapterStatus::Installed => "📦 Installed",
+            crate::agents::AdapterStatus::Available => "⚡ Available",
+            crate::agents::AdapterStatus::Unavailable => "— Unavailable",
+        };
+        let hooks_str = if adapter.hooks_installed() {
+            "✓"
+        } else {
+            "—"
+        };
+        md.push_str(&format!(
+            "| {} | `{}` | {} | {} |\n",
+            adapter.display_name(),
+            adapter.name(),
+            status_str,
+            hooks_str
+        ));
+    }
+    md.push_str("\n");
+
+    // CLI tool versions
+    md.push_str("## CLI Tools\n\n");
+    md.push_str("| Tool | Version |\n|---|---|\n");
+    for tool in &["claude", "cursor", "codex", "aider", "gemini"] {
+        let version = std::process::Command::new(tool)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "—".to_string());
+        md.push_str(&format!("| `{}` | {} |\n", tool, version));
+    }
+    md.push_str("\n---\n\n");
+
+    // Sessions overview
+    md.push_str("## Sessions\n\n");
+    md.push_str(&format!("**Total:** {}\n\n", sessions.len()));
+    let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
+    for s in &sessions {
+        *by_agent.entry(s.agent_type.clone()).or_insert(0) += 1;
+        *by_phase.entry(format!("{:?}", s.phase)).or_insert(0) += 1;
+    }
+    if !by_agent.is_empty() {
+        md.push_str("| Agent | Count |\n|---|---|\n");
+        for (agent, count) in &by_agent {
+            md.push_str(&format!("| {} | {} |\n", agent, count));
+        }
+        md.push_str("\n");
+    }
+    if !by_phase.is_empty() {
+        md.push_str("| Phase | Count |\n|---|---|\n");
+        for (phase, count) in &by_phase {
+            md.push_str(&format!("| {} | {} |\n", phase, count));
+        }
+        md.push_str("\n");
+    }
+    md.push_str("---\n\n");
+
+    // Hook configurations
+    md.push_str("## Hook Configurations\n\n");
+    let hooks_sections = collect_hooks_sections(&state.adapters);
+    if hooks_sections.is_empty() {
+        md.push_str("_No hook configurations found._\n\n");
+    } else {
+        for section in &hooks_sections {
+            md.push_str(section);
+        }
+    }
+    md.push_str("---\n\n");
+
+    // Diagnostic events
+    md.push_str("## Recent Events\n\n");
+    if diagnostic_events.is_empty() {
+        md.push_str("_No diagnostic events recorded._\n\n");
+    } else {
+        md.push_str("```json\n");
+        let events_json = serde_json::to_string_pretty(&diagnostic_events)
+            .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+        md.push_str(&redact_paths(&events_json));
+        md.push_str("\n```\n\n");
+    }
+    md.push_str("---\n\n");
+
+    // Archive contents
+    md.push_str("## Archive Contents\n\n");
+    md.push_str("| File | Description |\n|---|---|\n");
+    md.push_str("| `Diagnostic-Report.md` | This report |\n");
+    md.push_str("| `config.json` | Sanitized app configuration (JSON) |\n");
+    md.push_str("| `logs/` | Recent application logs |\n");
+    md.push_str("| `crashes/` | System crash reports (if any) |\n");
+
+    // ── Sanitized config as standalone JSON ──
+    let config_json = serde_json::to_string_pretty(&sanitized_config_json(&config))
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+
+    // ── Build the zip ──
+    let file = std::fs::File::create(&target_path)
+        .map_err(|e| format!("Failed to create zip file: {}", e))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let write_text = |zip: &mut zip::ZipWriter<std::fs::File>,
+                      name: &str,
+                      content: &str|
+     -> Result<(), String> {
+        zip.start_file(name, options).map_err(|e| e.to_string())?;
+        zip.write_all(content.as_bytes()).map_err(|e| e.to_string())
+    };
+
+    write_text(&mut zip, "Diagnostic-Report.md", &md)?;
+    write_text(&mut zip, "config.json", &redact_paths(&config_json))?;
+
+    // Logs
+    for (name, data) in collect_log_files() {
+        zip.start_file(&name, options).map_err(|e| e.to_string())?;
+        zip.write_all(&data).map_err(|e| e.to_string())?;
+    }
+
+    // Crash reports
+    for (name, data) in collect_crash_reports() {
+        zip.start_file(&name, options).map_err(|e| e.to_string())?;
+        zip.write_all(&data).map_err(|e| e.to_string())?;
+    }
+
+    zip.finish()
+        .map_err(|e| format!("Failed to finalize zip: {}", e))?;
+
+    log::info!("Diagnostics exported to {}", redact_paths(&target_path));
+    Ok(())
 }
 
 // ── Engine Instance Commands ────────────────────────────────────

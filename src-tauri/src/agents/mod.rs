@@ -23,6 +23,7 @@ pub mod qoder;
 pub mod qoder_cli;
 pub mod qwen;
 pub mod stepfun;
+pub mod toml_hooks;
 pub mod trae;
 pub mod trae_cli;
 pub mod trae_cn;

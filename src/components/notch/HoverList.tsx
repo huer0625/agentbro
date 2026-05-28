@@ -30,6 +30,7 @@ interface HoverListProps {
   onJumpToTerminal?: (sessionId: string) => void
   onInputDraftStateChange?: (hasDraft: boolean) => void
   focusFilteredEmpty?: boolean
+  hideBrandFooter?: boolean
 }
 
 type InlinePermissionRequest = Omit<PermissionRequest, 'toolInput'> & { toolInput?: unknown }
@@ -1482,7 +1483,15 @@ function SessionCard({
   )
 }
 
-export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onInputDraftStateChange, focusFilteredEmpty = false }: HoverListProps) {
+export function HoverList({
+  sessions,
+  onSessionClick,
+  onSubagentClick,
+  onJumpToTerminal,
+  onInputDraftStateChange,
+  focusFilteredEmpty = false,
+  hideBrandFooter = false,
+}: HoverListProps) {
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
@@ -1613,13 +1622,15 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
         </button>
       )}
 
-      <div className={`hover-list__brand-footer hover-list__brand-footer--${brandFooterTone}`} aria-hidden>
-        <span className="hover-list__brand-logo-stack">
-          <img className="hover-list__brand-logo hover-list__brand-logo--light" src="/agentbro-logo.png" alt="" />
-          <img className="hover-list__brand-logo hover-list__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
-        </span>
-        <span className="hover-list__brand-slogan">{t('notch.slogan')}</span>
-      </div>
+      {!hideBrandFooter && (
+        <div className={`hover-list__brand-footer hover-list__brand-footer--${brandFooterTone}`} aria-hidden>
+          <span className="hover-list__brand-logo-stack">
+            <img className="hover-list__brand-logo hover-list__brand-logo--light" src="/agentbro-logo.png" alt="" />
+            <img className="hover-list__brand-logo hover-list__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
+          </span>
+          <span className="hover-list__brand-slogan">{t('notch.slogan')}</span>
+        </div>
+      )}
     </div>
   )
 }

@@ -15,6 +15,8 @@
     ·
     <a href="https://github.com/shirenchuang/agentbro/releases">Download</a>
     ·
+    <a href="docs/privacy-policy.md">Privacy</a>
+    ·
     <a href="README.md">中文</a>
   </p>
 
@@ -134,6 +136,19 @@ Windows support is planned. The Tauri + React + Rust foundation is portable, but
 
 Linux support is possible later, but it is not part of the first public release target.
 
+## Installation
+
+### Homebrew Cask
+
+```bash
+brew tap shirenchuang/tap
+brew install --cask agentbro
+```
+
+### Download a Release
+
+You can also download the latest DMG from [GitHub Releases](https://github.com/shirenchuang/agentbro/releases).
+
 ## Local Development
 
 ### Prerequisites
@@ -190,6 +205,17 @@ pnpm tauri:build   # Build the Tauri app
 6. Start Claude Code, Codex, Gemini CLI, or another supported agent.
 
 AgentBro will then show session state, tool activity, approvals, questions, plans, and completions in the island.
+
+## Contributing
+
+Issues and pull requests are welcome!
+
+- Contributing guide: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- AI agent collaboration guide: [AGENTS.md](AGENTS.md)
+- Claude Code project config: [.claude/CLAUDE.md](.claude/CLAUDE.md)
+
+Please target the `dev` branch. Run `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml` before submitting.
 
 ## Release
 

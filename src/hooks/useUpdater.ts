@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater'
 import { getCurrentAppVersion, isTauri } from '../services/tauriApi'
+import { useConfigStore } from '../stores/configStore'
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
 
@@ -24,6 +25,9 @@ interface UpdateState {
 export function useUpdater() {
   const updateRef = useRef<Update | null>(null)
   const manualDownloadUrlRef = useRef<string | null>(null)
+  const autoCheckUpdate = useConfigStore((s) => s.autoCheckUpdate)
+  const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
+  const autoInstallTriggeredRef = useRef(false)
   const [state, setState] = useState<UpdateState>({
     status: 'idle',
     version: null,
@@ -148,13 +152,23 @@ export function useUpdater() {
 
   useEffect(() => {
     if (!isTauri()) return
+    if (!autoCheckUpdate) return
 
     const timer = setTimeout(() => {
       checkForUpdate()
     }, 5000)
 
     return () => clearTimeout(timer)
-  }, [checkForUpdate])
+  }, [checkForUpdate, autoCheckUpdate])
+
+  useEffect(() => {
+    if (state.status !== 'available') return
+    if (!autoInstallUpdate) return
+    if (autoInstallTriggeredRef.current) return
+    if (!updateRef.current) return
+    autoInstallTriggeredRef.current = true
+    installUpdate()
+  }, [state.status, autoInstallUpdate, installUpdate])
 
   return { ...state, checkForUpdate, installUpdate, dismissUpdate }
 }
