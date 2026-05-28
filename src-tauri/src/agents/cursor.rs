@@ -69,6 +69,14 @@ impl AgentAdapter for CursorAdapter {
         self.status.clone()
     }
 
+    fn detect_status_now(&self) -> AdapterStatus {
+        if Self::is_installed() {
+            AdapterStatus::Available
+        } else {
+            AdapterStatus::Unavailable
+        }
+    }
+
     fn parse_event(
         &self,
         raw: &serde_json::Value,

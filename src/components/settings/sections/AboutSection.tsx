@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -52,6 +52,23 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
   const updateConfig = useConfigStore((s) => s.updateConfig)
 
+  const updatePopoverPos = useCallback(() => {
+    const btn = communityBtnRef.current
+    if (!btn) return
+    const rect = btn.getBoundingClientRect()
+    const popoverWidth = 380
+    const popoverHeight = 320
+    const margin = 12
+    const anchorCenterX = rect.left + rect.width / 2
+    let left = anchorCenterX - popoverWidth / 2
+    left = Math.max(margin, Math.min(left, window.innerWidth - popoverWidth - margin))
+    let top = rect.bottom + 8
+    if (top + popoverHeight + margin > window.innerHeight) {
+      top = Math.max(margin, rect.top - popoverHeight - 8)
+    }
+    setPopoverPos({ top, left })
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     getCurrentAppVersion()
@@ -80,29 +97,11 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
       window.removeEventListener('resize', onScroll)
       window.removeEventListener('scroll', onScroll, true)
     }
-  }, [communityOpen])
+  }, [communityOpen, updatePopoverPos])
 
   useLayoutEffect(() => {
     if (communityOpen) updatePopoverPos()
-    else setPopoverPos(null)
-  }, [communityOpen])
-
-  const updatePopoverPos = () => {
-    const btn = communityBtnRef.current
-    if (!btn) return
-    const rect = btn.getBoundingClientRect()
-    const popoverWidth = 380
-    const popoverHeight = 320
-    const margin = 12
-    const anchorCenterX = rect.left + rect.width / 2
-    let left = anchorCenterX - popoverWidth / 2
-    left = Math.max(margin, Math.min(left, window.innerWidth - popoverWidth - margin))
-    let top = rect.bottom + 8
-    if (top + popoverHeight + margin > window.innerHeight) {
-      top = Math.max(margin, rect.top - popoverHeight - 8)
-    }
-    setPopoverPos({ top, left })
-  }
+  }, [communityOpen, updatePopoverPos])
 
   const openExternalLink = (url: string) => {
     open(url).catch((err) => console.warn('[AboutSection] open link:', err))

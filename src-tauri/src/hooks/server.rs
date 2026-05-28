@@ -17,6 +17,7 @@ use super::session_store::{
     SessionPhase, SessionStore, SubagentInfo, SubagentStopUpdate,
 };
 use crate::agents::{AgentAdapter, AgentEvent};
+use crate::config::ConfigStore;
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
@@ -25,6 +26,7 @@ use crate::hooks::conversation_parser::{
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
+use crate::webhook::{self, templates::NotificationEvent};
 
 const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
 const SESSION_END_CLEANUP_SECS: u64 = 5;
@@ -33,6 +35,8 @@ const DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 300;
 const HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 21_600;
 const RECENT_TOOL_CACHE_TTL_MS: u64 = 2 * 60 * 1000;
 const RECENT_TOOL_CACHE_LIMIT: usize = 200;
+const WEBHOOK_INTERACTION_EVENTS: [&str; 3] =
+    ["waiting_approval", "waiting_input", "plan_approval"];
 
 /// Raw hook event snapshot retained for Agent monitor diagnostics.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -158,6 +162,8 @@ pub struct HookServer {
     app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     /// Recent raw hook events grouped by session for monitor diagnostics.
     raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
+    /// App config store for webhook forwarding.
+    config_store: Arc<std::sync::Mutex<Option<ConfigStore>>>,
     /// IPC endpoint owned by this server instance.
     endpoint: hook_endpoint::HookEndpoint,
     socket_owned: Arc<AtomicBool>,
@@ -175,7 +181,23 @@ struct HookConnectionContext {
     sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
     app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
+    config_store: Arc<std::sync::Mutex<Option<ConfigStore>>>,
     recent_tools: Arc<Mutex<VecDeque<RecentToolInvocation>>>,
+}
+
+#[derive(Clone)]
+enum PendingWebhookCheck {
+    Permission {
+        tool_use_id: Option<String>,
+        tool_name: String,
+    },
+    Question {
+        question: String,
+    },
+    Plan {
+        title: String,
+        content: String,
+    },
 }
 
 impl HookServer {
@@ -192,6 +214,7 @@ impl HookServer {
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
             raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
             endpoint: hook_endpoint::current(),
             socket_owned: Arc::new(AtomicBool::new(false)),
             recent_tools: Arc::new(Mutex::new(VecDeque::new())),
@@ -216,6 +239,13 @@ impl HookServer {
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
         if let Ok(mut h) = self.app_handle.lock() {
             *h = Some(handle);
+        }
+    }
+
+    /// Set the config store (called after construction)
+    pub fn set_config_store(&self, config_store: ConfigStore) {
+        if let Ok(mut store) = self.config_store.lock() {
+            *store = Some(config_store);
         }
     }
 
@@ -410,6 +440,181 @@ impl HookServer {
         }
     }
 
+    fn current_config_store(
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+    ) -> Option<ConfigStore> {
+        config_store.lock().ok().and_then(|store| store.clone())
+    }
+
+    fn source_for_webhook(
+        store: &SessionStore,
+        raw: &serde_json::Value,
+        session_id: &str,
+        fallback: Option<&str>,
+    ) -> String {
+        store
+            .get_session(session_id)
+            .map(|session| session.agent_type)
+            .filter(|source| !source.trim().is_empty())
+            .or_else(|| {
+                raw.get("agent")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string)
+            })
+            .or_else(|| fallback.map(ToString::to_string))
+            .unwrap_or_else(|| "agent".to_string())
+    }
+
+    fn dispatch_webhook_event(
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+        store: &Arc<SessionStore>,
+        event: NotificationEvent,
+        source: String,
+        session_id: String,
+        pending_check: Option<PendingWebhookCheck>,
+    ) {
+        let Some(config_store) = Self::current_config_store(config_store) else {
+            return;
+        };
+        let event_key = webhook::templates::event_key(&event);
+        let configs = config_store.get().webhook_configs;
+        let mut immediate = Vec::new();
+
+        for cfg in configs {
+            if !cfg.matches(event_key, &source) {
+                continue;
+            }
+
+            if let Some(check) = pending_check
+                .clone()
+                .filter(|_| WEBHOOK_INTERACTION_EVENTS.contains(&event_key) && cfg.delay_enabled)
+            {
+                Self::schedule_delayed_webhook(
+                    config_store.clone(),
+                    store.clone(),
+                    cfg.id.clone(),
+                    event_key.to_string(),
+                    event.clone(),
+                    source.clone(),
+                    session_id.clone(),
+                    check,
+                    cfg.delay_minutes.max(1),
+                );
+            } else {
+                immediate.push(cfg);
+            }
+        }
+
+        if immediate.is_empty() {
+            return;
+        }
+
+        tokio::spawn(async move {
+            let results =
+                webhook::WebhookForwarder::send(&immediate, &event, &source, &session_id).await;
+            for (id, result) in results {
+                match result {
+                    webhook::WebhookResult::Success => {
+                        log::info!("Webhook {} delivered for session {}", id, session_id)
+                    }
+                    webhook::WebhookResult::Skipped => {}
+                    webhook::WebhookResult::Failed(message) => {
+                        log::warn!(
+                            "Webhook {} failed for session {}: {}",
+                            id,
+                            session_id,
+                            message
+                        )
+                    }
+                }
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_delayed_webhook(
+        config_store: ConfigStore,
+        store: Arc<SessionStore>,
+        webhook_id: String,
+        event_key: String,
+        event: NotificationEvent,
+        source: String,
+        session_id: String,
+        pending_check: PendingWebhookCheck,
+        delay_minutes: u32,
+    ) {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(u64::from(delay_minutes) * 60)).await;
+
+            if !Self::is_interaction_still_pending(&store, &session_id, &pending_check) {
+                log::info!(
+                    "Delayed webhook {} skipped; session {} was handled",
+                    webhook_id,
+                    session_id
+                );
+                return;
+            }
+
+            let cfg = config_store.get().webhook_configs.into_iter().find(|cfg| {
+                cfg.id == webhook_id && cfg.delay_enabled && cfg.matches(&event_key, &source)
+            });
+
+            let Some(cfg) = cfg else {
+                return;
+            };
+
+            let results =
+                webhook::WebhookForwarder::send(&[cfg], &event, &source, &session_id).await;
+            for (id, result) in results {
+                match result {
+                    webhook::WebhookResult::Success => log::info!(
+                        "Delayed webhook {} delivered for session {}",
+                        id,
+                        session_id
+                    ),
+                    webhook::WebhookResult::Skipped => {}
+                    webhook::WebhookResult::Failed(message) => log::warn!(
+                        "Delayed webhook {} failed for session {}: {}",
+                        id,
+                        session_id,
+                        message
+                    ),
+                }
+            }
+        });
+    }
+
+    fn is_interaction_still_pending(
+        store: &SessionStore,
+        session_id: &str,
+        pending_check: &PendingWebhookCheck,
+    ) -> bool {
+        let Some(session) = store.get_session(session_id) else {
+            return false;
+        };
+
+        match pending_check {
+            PendingWebhookCheck::Permission {
+                tool_use_id,
+                tool_name,
+            } => session.pending_permission.as_ref().is_some_and(|pending| {
+                if let Some(tool_use_id) = tool_use_id {
+                    pending.tool_use_id.as_ref() == Some(tool_use_id)
+                } else {
+                    pending.tool_name == *tool_name
+                }
+            }),
+            PendingWebhookCheck::Question { question } => session
+                .pending_question
+                .as_ref()
+                .is_some_and(|pending| pending.question == *question),
+            PendingWebhookCheck::Plan { title, content } => session
+                .pending_plan
+                .as_ref()
+                .is_some_and(|pending| pending.title == *title && pending.content == *content),
+        }
+    }
+
     /// Detect if Cursor has YOLO mode enabled by reading its settings.json
     fn detect_cursor_yolo_mode() -> bool {
         let home = match std::env::var("HOME") {
@@ -464,6 +669,7 @@ impl HookServer {
             sound: self.sound_engine.clone(),
             app: self.app_handle.clone(),
             raw_events: self.raw_events.clone(),
+            config_store: self.config_store.clone(),
             recent_tools: self.recent_tools.clone(),
         };
 
@@ -556,6 +762,7 @@ impl HookServer {
         let sound = context.sound;
         let app = context.app;
         let raw_events = context.raw_events;
+        let config_store = context.config_store;
         let recent_tools = context.recent_tools;
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = BufReader::new(reader);
@@ -630,6 +837,19 @@ impl HookServer {
                     }),
                 );
                 Self::update_session_metadata_from_raw(&store, &raw);
+                Self::dispatch_webhook_event(
+                    &config_store,
+                    &store,
+                    NotificationEvent::WaitingApproval {
+                        tool_name: tool_name.clone(),
+                    },
+                    Self::source_for_webhook(&store, &raw, session_id, None),
+                    session_id.clone(),
+                    Some(PendingWebhookCheck::Permission {
+                        tool_use_id: Some(resolved_tool_use_id.clone()),
+                        tool_name: tool_name.clone(),
+                    }),
+                );
 
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
@@ -753,6 +973,18 @@ impl HookServer {
                     }),
                 );
                 Self::update_session_metadata_from_raw(&store, &raw);
+                Self::dispatch_webhook_event(
+                    &config_store,
+                    &store,
+                    NotificationEvent::WaitingInput {
+                        question: question.clone(),
+                    },
+                    Self::source_for_webhook(&store, &raw, session_id, None),
+                    session_id.clone(),
+                    Some(PendingWebhookCheck::Question {
+                        question: question.clone(),
+                    }),
+                );
 
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
@@ -817,6 +1049,19 @@ impl HookServer {
                     }),
                 );
                 Self::update_session_metadata_from_raw(&store, &raw);
+                Self::dispatch_webhook_event(
+                    &config_store,
+                    &store,
+                    NotificationEvent::PlanApproval {
+                        title: title.clone(),
+                    },
+                    Self::source_for_webhook(&store, &raw, session_id, None),
+                    session_id.clone(),
+                    Some(PendingWebhookCheck::Plan {
+                        title: title.clone(),
+                        content: content.clone(),
+                    }),
+                );
 
                 if is_suppressed {
                     store.emit_update_suppressed(true);
@@ -857,7 +1102,7 @@ impl HookServer {
             }
             Some(ref agent_event) => {
                 // Process non-permission events (with sound)
-                Self::process_event(&store, agent_event, &raw, &sound, &app);
+                Self::process_event(agent_event, &raw, &store, &sound, &app, &config_store);
             }
             None => {
                 // No adapter matched — try generic processing (with sound)
@@ -1006,11 +1251,12 @@ impl HookServer {
 
     /// Process a parsed agent event and update session store
     fn process_event(
-        store: &SessionStore,
         event: &AgentEvent,
         _raw: &serde_json::Value,
+        store: &Arc<SessionStore>,
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         app: &Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
     ) {
         Self::update_session_metadata_from_raw(store, _raw);
         match event {
@@ -1061,6 +1307,14 @@ impl HookServer {
                 }
 
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::SessionStart);
+                Self::dispatch_webhook_event(
+                    config_store,
+                    store,
+                    NotificationEvent::SessionStart,
+                    agent_type.clone(),
+                    session_id.clone(),
+                    None,
+                );
             }
             AgentEvent::SessionEnd { session_id } => {
                 let summary = "Session ended".to_string();
@@ -1311,6 +1565,16 @@ impl HookServer {
                     }
                 }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+                Self::dispatch_webhook_event(
+                    config_store,
+                    store,
+                    NotificationEvent::Completion {
+                        summary: summary.clone(),
+                    },
+                    Self::source_for_webhook(store, _raw, session_id, None),
+                    session_id.clone(),
+                    None,
+                );
                 Self::schedule_done_session_cleanup(
                     store,
                     session_id,
@@ -1355,6 +1619,16 @@ impl HookServer {
                     }
                 }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+                Self::dispatch_webhook_event(
+                    config_store,
+                    store,
+                    NotificationEvent::Completion {
+                        summary: truncated.clone(),
+                    },
+                    Self::source_for_webhook(store, _raw, session_id, None),
+                    session_id.clone(),
+                    None,
+                );
             }
             AgentEvent::Error {
                 session_id,
@@ -1366,6 +1640,16 @@ impl HookServer {
                     s.last_response = None;
                 });
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskError);
+                Self::dispatch_webhook_event(
+                    config_store,
+                    store,
+                    NotificationEvent::Error {
+                        message: message.clone(),
+                    },
+                    Self::source_for_webhook(store, _raw, session_id, None),
+                    session_id.clone(),
+                    None,
+                );
             }
             AgentEvent::Interrupt { session_id } => {
                 store.update_phase(session_id, SessionPhase::Interrupted);
@@ -2515,7 +2799,7 @@ mod tests {
 
     #[test]
     fn ensure_session_creates_codex_session_without_session_start() {
-        let store = SessionStore::new();
+        let store = Arc::new(SessionStore::new());
         let raw = serde_json::json!({
             "agent": "codex",
             "session_id": "codex-mid-session",
@@ -2540,7 +2824,7 @@ mod tests {
 
     #[test]
     fn user_prompt_submit_replaces_codex_environment_context_title() {
-        let store = SessionStore::new();
+        let store = Arc::new(SessionStore::new());
         let raw = serde_json::json!({
             "agent": "codex",
             "session_id": "codex-title-session",
@@ -2554,6 +2838,7 @@ mod tests {
         };
         let sound = Arc::new(std::sync::Mutex::new(None));
         let app = Arc::new(std::sync::Mutex::new(None));
+        let config_store = Arc::new(std::sync::Mutex::new(None));
 
         HookServer::ensure_session_for_event(&store, &event, &raw);
         store.update_session("codex-title-session", |session| {
@@ -2562,7 +2847,7 @@ mod tests {
                     .to_string(),
             );
         });
-        HookServer::process_event(&store, &event, &raw, &sound, &app);
+        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
 
         let session = store
             .get_session("codex-title-session")
@@ -2579,7 +2864,7 @@ mod tests {
 
     #[test]
     fn remote_hook_pid_is_not_stored_as_local_process() {
-        let store = SessionStore::new();
+        let store = Arc::new(SessionStore::new());
         let raw = serde_json::json!({
             "agent": "claude-code",
             "session_id": "remote-mid-session",
@@ -2597,9 +2882,10 @@ mod tests {
         };
         let sound = Arc::new(std::sync::Mutex::new(None));
         let app = Arc::new(std::sync::Mutex::new(None));
+        let config_store = Arc::new(std::sync::Mutex::new(None));
 
         HookServer::ensure_session_for_event(&store, &event, &raw);
-        HookServer::process_event(&store, &event, &raw, &sound, &app);
+        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
 
         let sessions = store.get_all_sessions();
         assert_eq!(sessions.len(), 1);
@@ -2729,7 +3015,7 @@ mod tests {
 
     #[test]
     fn completion_summary_ignores_processing_prompt_preview() {
-        let store = SessionStore::new();
+        let store = Arc::new(SessionStore::new());
         let summary = HookServer::resolve_completion_summary(
             &store,
             "missing-session",
@@ -2743,7 +3029,7 @@ mod tests {
 
     #[test]
     fn pre_and_post_compact_events_drive_compacting_phase() {
-        let store = SessionStore::new();
+        let store = Arc::new(SessionStore::new());
         store.get_or_create_session(
             "compact-session",
             "claude-code",
@@ -2753,17 +3039,19 @@ mod tests {
         );
         let sound = Arc::new(std::sync::Mutex::new(None));
         let app = Arc::new(std::sync::Mutex::new(None));
+        let config_store = Arc::new(std::sync::Mutex::new(None));
 
         let pre = AgentEvent::Processing {
             session_id: "compact-session".to_string(),
             description: "Compacting context".to_string(),
         };
         HookServer::process_event(
-            &store,
             &pre,
             &serde_json::json!({ "event": "PreCompact" }),
+            &store,
             &sound,
             &app,
+            &config_store,
         );
 
         let session = store
@@ -2778,11 +3066,12 @@ mod tests {
             description: "Compacting context".to_string(),
         };
         HookServer::process_event(
-            &store,
             &post,
             &serde_json::json!({ "event": "PostCompact" }),
+            &store,
             &sound,
             &app,
+            &config_store,
         );
 
         let session = store

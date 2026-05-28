@@ -207,6 +207,16 @@ pub fn start_hook_recovery(
                 );
 
                 for adapter in adapters_to_restore.iter() {
+                    if matches!(
+                        adapter.detect_status_now(),
+                        crate::agents::AdapterStatus::Unavailable
+                    ) {
+                        log::debug!(
+                            "Hook recovery: skipping {} (CLI not installed)",
+                            adapter.display_name()
+                        );
+                        continue;
+                    }
                     if let Err(e) = adapter.install_hooks() {
                         log::warn!("Hook recovery failed for {}: {}", adapter.display_name(), e);
                     } else {

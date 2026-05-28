@@ -34,7 +34,27 @@
         "visible": false,
         "width": 1280,
         "height": 840,
+        "minWidth": 980,
+        "minHeight": 640,
         "center": true,
+        "backgroundColor": "#00000000"
+      },
+      {
+        "label": "pet",
+        "title": "AgentBro Pet",
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "acceptFirstMouse": true,
+        "width": 820,
+        "height": 360,
+        "x": null,
+        "y": null,
+        "visible": false,
         "backgroundColor": "#00000000"
       }
     ],

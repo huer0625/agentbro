@@ -17,6 +17,7 @@ pub enum WebhookPlatform {
 
 /// Webhook configuration (stored in app settings)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebhookConfig {
     pub id: String,
     pub name: String,
@@ -27,7 +28,28 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
     /// Agent sources that trigger this webhook (empty = all)
     pub sources: Vec<String>,
+    /// Event keys that trigger this webhook (empty = all)
+    #[serde(default)]
+    pub events: Vec<String>,
     pub enabled: bool,
+    /// Delay interactive notifications until the session remains unresolved.
+    #[serde(default)]
+    pub delay_enabled: bool,
+    /// Delay duration in minutes for interactive notifications.
+    #[serde(default = "default_delay_minutes")]
+    pub delay_minutes: u32,
+}
+
+fn default_delay_minutes() -> u32 {
+    1
+}
+
+impl WebhookConfig {
+    pub fn matches(&self, event_key: &str, source: &str) -> bool {
+        self.enabled
+            && (self.sources.is_empty() || self.sources.iter().any(|s| s == source))
+            && (self.events.is_empty() || self.events.iter().any(|e| e == event_key))
+    }
 }
 
 /// Result of a webhook delivery attempt
@@ -56,6 +78,14 @@ impl WebhookForwarder {
                 continue;
             }
             if !cfg.sources.is_empty() && !cfg.sources.iter().any(|s| s == source) {
+                results.push((cfg.id.clone(), WebhookResult::Skipped));
+                continue;
+            }
+            let event_key = templates::event_key(event);
+            if event_key != "custom"
+                && !cfg.events.is_empty()
+                && !cfg.events.iter().any(|e| e == event_key)
+            {
                 results.push((cfg.id.clone(), WebhookResult::Skipped));
                 continue;
             }

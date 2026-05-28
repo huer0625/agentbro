@@ -171,6 +171,15 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('Claude')).toBeInTheDocument()
   })
 
+  it('does not render the pet companion inside the notch window in pet mode', () => {
+    useConfigStore.setState({ islandSurfaceMode: 'pet' })
+    mountIsland()
+
+    expect(document.querySelector('.pet-surface')).not.toBeInTheDocument()
+    expect(document.querySelector('.notch-hitbox')).toHaveAttribute('data-island-hidden', 'true')
+    expect(document.querySelector('.notch-panel')).toHaveStyle({ display: 'none' })
+  })
+
   it('focuses the notch window when hover opens the session list', async () => {
     const currentSession = session()
     useSessionStore.setState({

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { OverlayCard } from './OverlayCard'
@@ -171,6 +171,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
   const [feedbackState, setFeedbackState] = useState({ overlayId: overlay.id, text: '', show: false })
   const feedbackRef = useRef<HTMLInputElement>(null)
+  const ignoreNextClickRef = useRef(false)
   const feedbackText = feedbackState.overlayId === overlay.id ? feedbackState.text : ''
   const showFeedback = feedbackState.overlayId === overlay.id && feedbackState.show
   const hasDraft = feedbackText.trim().length > 0
@@ -198,6 +199,22 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   const handleJump = useCallback(() => {
     jumpToTerminal(session.id)
   }, [session.id])
+
+  const runActionOnMouseDown = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
+    event.preventDefault()
+    event.stopPropagation()
+    ignoreNextClickRef.current = true
+    action()
+  }, [])
+
+  const runActionOnKeyboardClick = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
+    if (ignoreNextClickRef.current) {
+      ignoreNextClickRef.current = false
+      return
+    }
+    if (event.detail !== 0) return
+    action()
+  }, [])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -291,26 +308,49 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         <button
           type="button"
           className="perm-card__btn perm-card__btn--deny"
-          onClick={() => {
+          onMouseDown={(event) => runActionOnMouseDown(event, () => {
             if (showFeedback) {
               handleReject()
             } else {
               setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
               setNotchFocusable(true)
             }
-          }}
+          })}
+          onClick={(event) => runActionOnKeyboardClick(event, () => {
+            if (showFeedback) {
+              handleReject()
+            } else {
+              setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
+              setNotchFocusable(true)
+            }
+          })}
         >
           <span>{t('notch.deny')}</span>
         </button>
-        <button type="button" className="perm-card__btn perm-card__btn--allow" onClick={onAllow}>
+        <button
+          type="button"
+          className="perm-card__btn perm-card__btn--allow"
+          onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}
+          onClick={(event) => runActionOnKeyboardClick(event, onAllow)}
+        >
           <span>{t('notch.allowOnce')}</span>
         </button>
         {supportsPersistentActions && (
           <>
-            <button type="button" className="perm-card__btn perm-card__btn--always" onClick={onAllowAlways}>
+            <button
+              type="button"
+              className="perm-card__btn perm-card__btn--always"
+              onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}
+              onClick={(event) => runActionOnKeyboardClick(event, onAllowAlways)}
+            >
               <span>{t('notch.allowAlways')}</span>
             </button>
-            <button type="button" className="perm-card__btn perm-card__btn--auto" onClick={onAutoApprove}>
+            <button
+              type="button"
+              className="perm-card__btn perm-card__btn--auto"
+              onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}
+              onClick={(event) => runActionOnKeyboardClick(event, onAutoApprove)}
+            >
               <span>{t('notch.autoApprove')}</span>
             </button>
           </>

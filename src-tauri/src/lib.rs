@@ -5,11 +5,13 @@ pub mod config;
 pub mod hook_endpoint;
 pub mod hooks;
 pub mod network_monitor;
+pub mod pets;
 pub mod platform;
 pub mod remote;
 pub mod skills;
 pub mod sound;
 pub mod switch;
+pub mod telemetry;
 pub mod terminal;
 pub mod theme;
 pub mod webhook;
@@ -21,6 +23,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 
 use agents::claude_code::ClaudeCodeAdapter;
+use agents::AdapterStatus;
 use agents::AgentAdapter;
 use commands::persistence::{load_sessions, save_sessions};
 use commands::AppState;
@@ -34,6 +37,7 @@ use hooks::session_store::{SessionPhase, SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack};
+use telemetry::TelemetryService;
 
 #[derive(Debug, Clone, Copy)]
 struct NotchDragState {
@@ -133,13 +137,19 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
 }
 
 #[tauri::command]
-async fn set_notch_ignore_cursor_events(app: tauri::AppHandle, ignore: bool) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("notch") {
-        window
-            .set_ignore_cursor_events(ignore)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+async fn set_notch_ignore_cursor_events(
+    app: tauri::AppHandle,
+    ignore: bool,
+    window_label: Option<String>,
+) -> Result<(), String> {
+    let label = window_label.unwrap_or_else(|| "notch".to_string());
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window(&label) {
+            let _ = window.set_ignore_cursor_events(ignore);
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -237,6 +247,21 @@ fn expand_tilde_target(target: &str) -> String {
 
 // ── Agent Detection & Hook Management Commands ──────────────────
 
+/// Refuse to install hooks for an adapter whose CLI is not installed.
+/// Re-runs the per-adapter detection probe (not the cached value set at
+/// startup) so that newly-installed CLIs become installable without an
+/// app restart. `Installed` (config-dir-only, e.g. IDE extensions) counts
+/// as installed — only `Unavailable` blocks.
+fn ensure_installable(adapter: &dyn AgentAdapter) -> Result<(), String> {
+    match adapter.detect_status_now() {
+        AdapterStatus::Unavailable => Err(format!(
+            "{} CLI not found on PATH. Install it first, then try again.",
+            adapter.display_name()
+        )),
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command]
 async fn detect_tools() -> Vec<agents::detection::DetectedTool> {
     agents::detection::detect_installed_tools()
@@ -266,6 +291,10 @@ async fn install_agent_hook(
             Some(&dir_str),
         )
         .map_err(|e| e.to_string())?;
+        state
+            .telemetry
+            .record_hook_install(&cfg, &entry.profile_id)
+            .await;
         return Ok(());
     }
     let adapter = state
@@ -273,7 +302,14 @@ async fn install_agent_hook(
         .iter()
         .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
-    adapter.install_hooks().map_err(|e| e.to_string())
+    ensure_installable(adapter.as_ref())?;
+    adapter.install_hooks().map_err(|e| e.to_string())?;
+    let config = state.config_store.get();
+    state
+        .telemetry
+        .record_hook_install(&config, &tool_name)
+        .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -347,6 +383,11 @@ async fn install_custom_agent_hook(
     let mut cfg = state.config_store.get();
     cfg.custom_hook_installs.push(entry);
     state.config_store.update(cfg).map_err(|e| e.to_string())?;
+    let config = state.config_store.get();
+    state
+        .telemetry
+        .record_hook_install(&config, &profile_id)
+        .await;
 
     // Provide a helpful hint about what was validated
     let hint = if target_path.exists() || config_file_name.is_empty() {
@@ -379,6 +420,11 @@ async fn uninstall_agent_hook(
         }
         cfg.custom_hook_installs.remove(idx);
         state.config_store.update(cfg).map_err(|e| e.to_string())?;
+        let config = state.config_store.get();
+        state
+            .telemetry
+            .record_hook_uninstall(&config, &entry.profile_id)
+            .await;
         return Ok(());
     }
     let adapter = state
@@ -386,7 +432,13 @@ async fn uninstall_agent_hook(
         .iter()
         .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
-    adapter.remove_hooks().map_err(|e| e.to_string())
+    adapter.remove_hooks().map_err(|e| e.to_string())?;
+    let config = state.config_store.get();
+    state
+        .telemetry
+        .record_hook_uninstall(&config, &tool_name)
+        .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -426,6 +478,7 @@ async fn configure_agent_hook_events(
     let profile = agents::profiles::profile_for_agent(adapter.name())
         .ok_or_else(|| format!("Unknown hook profile: {}", adapter.name()))?;
     agents::profiles::save_event_selection(&profile, &enabled_events).map_err(|e| e.to_string())?;
+    ensure_installable(adapter.as_ref())?;
     adapter.install_hooks().map_err(|e| e.to_string())
 }
 
@@ -491,7 +544,7 @@ async fn get_all_hook_status(
                 "installStatus": install_status,
                 "configPath": config_path,
                 "configDir": config_dir,
-                "status": format!("{:?}", a.status()),
+                "status": format!("{:?}", a.detect_status_now()),
                 "supportsEventSelection": supports_event_selection,
                 "events": events,
                 "enabledEventNames": enabled_event_names,
@@ -572,8 +625,23 @@ async fn reinstall_all_hooks(
 ) -> Result<Vec<String>, String> {
     let mut errors = Vec::new();
     for adapter in &state.adapters {
-        if let Err(e) = adapter.install_hooks() {
+        if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
+            log::info!(
+                "Skipping hook reinstall for {}: {}",
+                adapter.display_name(),
+                skip_reason
+            );
+            continue;
+        }
+        let result = adapter.install_hooks().map_err(|e| e.to_string());
+        if let Err(e) = result {
             errors.push(format!("{}: {}", adapter.name(), e));
+        } else {
+            let config = state.config_store.get();
+            state
+                .telemetry
+                .record_hook_install(&config, adapter.name())
+                .await;
         }
     }
     let cfg = state.config_store.get();
@@ -581,16 +649,67 @@ async fn reinstall_all_hooks(
         if let Some(profile) = agents::profiles::profile_for_agent(&entry.profile_id) {
             let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
             let dir_str = base_dir.display().to_string();
-            if let Err(e) = agents::profiles::install_custom_at_labeled(
+            let result = agents::profiles::install_custom_at_labeled(
                 &profile,
                 &base_dir,
                 Some(&entry.display_name),
                 Some(&dir_str),
-            ) {
+            )
+            .map_err(|e| e.to_string());
+            if let Err(e) = result {
                 errors.push(format!("{}: {}", entry.display_name, e));
+            } else {
+                let config = state.config_store.get();
+                state
+                    .telemetry
+                    .record_hook_install(&config, &entry.profile_id)
+                    .await;
             }
         }
     }
+    Ok(errors)
+}
+
+#[tauri::command]
+async fn uninstall_all_hooks(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<String>, String> {
+    let mut errors = Vec::new();
+    for adapter in &state.adapters {
+        let result = adapter.remove_hooks().map_err(|e| e.to_string());
+        if let Err(e) = result {
+            errors.push(format!("{}: {}", adapter.display_name(), e));
+        } else {
+            let config = state.config_store.get();
+            state
+                .telemetry
+                .record_hook_uninstall(&config, adapter.name())
+                .await;
+        }
+    }
+    let mut cfg = state.config_store.get();
+    let custom_entries = std::mem::take(&mut cfg.custom_hook_installs);
+    for entry in custom_entries {
+        let Some(profile) = agents::profiles::profile_for_agent(&entry.profile_id) else {
+            continue;
+        };
+        let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+        let target = agents::profiles::custom_installation_path(&profile, &base_dir);
+        if target.exists() {
+            let result =
+                agents::profiles::uninstall_at(&profile, &target).map_err(|e| e.to_string());
+            if let Err(e) = result {
+                errors.push(format!("{}: {}", entry.display_name, e));
+            } else {
+                let config = state.config_store.get();
+                state
+                    .telemetry
+                    .record_hook_uninstall(&config, &entry.profile_id)
+                    .await;
+            }
+        }
+    }
+    state.config_store.update(cfg).map_err(|e| e.to_string())?;
     Ok(errors)
 }
 
@@ -656,6 +775,11 @@ async fn install_remote_hooks(
         .clone();
     let result = remote::installer::RemoteInstaller::install_hooks(&host).await;
     if result.ok {
+        let config = state.config_store.get();
+        state
+            .telemetry
+            .record_hook_install(&config, "remote:all")
+            .await;
         Ok(result.message)
     } else {
         Err(result.message)
@@ -675,6 +799,11 @@ async fn uninstall_remote_hooks(
         .clone();
     let result = remote::installer::RemoteInstaller::uninstall_hooks(&host).await;
     if result.ok {
+        let config = state.config_store.get();
+        state
+            .telemetry
+            .record_hook_uninstall(&config, "remote:all")
+            .await;
         Ok(result.message)
     } else {
         Err(result.message)
@@ -696,6 +825,11 @@ async fn install_remote_agent_hooks(
     let result =
         remote::installer::RemoteInstaller::install_hooks_for_agent(&host, &agent_id).await;
     if result.ok {
+        let config = state.config_store.get();
+        state
+            .telemetry
+            .record_hook_install(&config, &format!("remote:{agent_id}"))
+            .await;
         Ok(result.message)
     } else {
         Err(result.message)
@@ -717,6 +851,11 @@ async fn uninstall_remote_agent_hooks(
     let result =
         remote::installer::RemoteInstaller::uninstall_hooks_for_agent(&host, &agent_id).await;
     if result.ok {
+        let config = state.config_store.get();
+        state
+            .telemetry
+            .record_hook_uninstall(&config, &format!("remote:{agent_id}"))
+            .await;
         Ok(result.message)
     } else {
         Err(result.message)
@@ -761,10 +900,21 @@ async fn list_ssh_config_hosts() -> Result<Vec<remote::SshConfigHost>, String> {
 // ── Webhook Commands ────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WebhookFormConfig {
     enabled: bool,
     url: String,
     secret: Option<String>,
+    #[serde(default)]
+    events: Vec<String>,
+    #[serde(default)]
+    delay_enabled: bool,
+    #[serde(default = "default_webhook_delay_minutes")]
+    delay_minutes: u32,
+}
+
+fn default_webhook_delay_minutes() -> u32 {
+    1
 }
 
 fn webhook_provider_id(provider: &webhook::WebhookPlatform) -> &'static str {
@@ -796,6 +946,9 @@ fn webhook_config_from_form(
         enabled,
         url,
         secret,
+        events,
+        delay_enabled,
+        delay_minutes,
     } = form;
 
     webhook::WebhookConfig {
@@ -805,7 +958,10 @@ fn webhook_config_from_form(
         url: url.trim().to_string(),
         secret: normalize_webhook_secret(secret),
         sources: Vec::new(),
+        events,
         enabled: force_enabled || enabled,
+        delay_enabled,
+        delay_minutes: delay_minutes.max(1),
     }
 }
 
@@ -898,7 +1054,10 @@ async fn test_webhook(
             url,
             secret: normalize_webhook_secret(secret),
             sources: Vec::new(),
+            events: Vec::new(),
             enabled: true,
+            delay_enabled: false,
+            delay_minutes: default_webhook_delay_minutes(),
         }
     };
 
@@ -1044,6 +1203,48 @@ async fn get_cursor_position() -> Result<(f64, f64), String> {
     {
         Err("Cursor position not supported on this platform".to_string())
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogicalRect {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Hit-tests the cursor against a list of logical (CSS px) rects expressed in
+/// the target webview's viewport coordinates. Returns true if the cursor is
+/// inside any rect; used to drive per-zone click-through.
+///
+/// `window_label` defaults to "notch" for backward compatibility; callers in
+/// the pet webview should pass "pet".
+#[tauri::command]
+async fn is_cursor_in_window_zones(
+    app: tauri::AppHandle,
+    zones: Vec<LogicalRect>,
+    window_label: Option<String>,
+) -> Result<bool, String> {
+    if zones.is_empty() {
+        return Ok(false);
+    }
+    let label = window_label.as_deref().unwrap_or("notch");
+    let Some(window) = app.get_webview_window(label) else {
+        return Ok(false);
+    };
+    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let cx_logical = (cursor.x - position.x as f64) / scale;
+    let cy_logical = (cursor.y - position.y as f64) / scale;
+
+    Ok(zones.iter().any(|r| {
+        cx_logical >= r.left
+            && cx_logical <= r.left + r.width
+            && cy_logical >= r.top
+            && cy_logical <= r.top + r.height
+    }))
 }
 
 #[tauri::command]
@@ -1340,7 +1541,15 @@ async fn set_global_action_shortcuts(
 // ── Quit Command ────────────────────────────────────────────────
 
 #[tauri::command]
-async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+async fn quit_app(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<(), String> {
+    let config = state.config_store.get();
+    state
+        .telemetry
+        .upload_pending_daily_usage_snapshots(&config)
+        .await;
     app.exit(0);
     Ok(())
 }
@@ -1432,6 +1641,39 @@ fn focus_settings_window_native(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 fn focus_settings_window_native(_window: &tauri::WebviewWindow) {}
 
+const SETTINGS_MIN_WIDTH: f64 = 980.0;
+const SETTINGS_MIN_HEIGHT: f64 = 640.0;
+const SETTINGS_DEFAULT_WIDTH: f64 = 1280.0;
+const SETTINGS_DEFAULT_HEIGHT: f64 = 840.0;
+
+fn normalize_settings_window_frame(window: &tauri::WebviewWindow) {
+    let min_size = tauri::Size::Logical(tauri::LogicalSize::new(
+        SETTINGS_MIN_WIDTH,
+        SETTINGS_MIN_HEIGHT,
+    ));
+    let _ = window.set_min_size(Some(min_size));
+
+    let should_restore_size = window
+        .outer_size()
+        .ok()
+        .and_then(|size| {
+            window.scale_factor().ok().map(|scale| {
+                let width = size.width as f64 / scale;
+                let height = size.height as f64 / scale;
+                width < SETTINGS_MIN_WIDTH || height < SETTINGS_MIN_HEIGHT
+            })
+        })
+        .unwrap_or(true);
+
+    if should_restore_size {
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+            SETTINGS_DEFAULT_WIDTH,
+            SETTINGS_DEFAULT_HEIGHT,
+        )));
+        let _ = window.center();
+    }
+}
+
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
@@ -1441,6 +1683,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         }
 
         if let Some(window) = handle.get_webview_window("settings") {
+            normalize_settings_window_frame(&window);
             apply_settings_window_for_spaces(&window);
             let _ = window.show();
             let _ = window.set_focus();
@@ -2616,26 +2859,9 @@ fn reposition_notch_to_display(
         .or_else(|| window.primary_monitor().ok().flatten());
 
     if let Some(monitor) = monitor {
-        let config = config_store.config_store.get();
-        if config.island_surface_mode == "pet" {
-            if let Ok(size) = window.outer_size() {
-                let use_saved_origin = display_id != "auto";
-                position_pet_window(
-                    &window,
-                    &monitor,
-                    size.width as f64,
-                    size.height as f64,
-                    if use_saved_origin {
-                        config.island_pet_window_origin.as_ref()
-                    } else {
-                        None
-                    },
-                );
-                configure_notch_window_for_spaces(app);
-                return Ok(());
-            }
-        }
-
+        // The pet now lives in its own dedicated window (label: "pet"); the
+        // notch window always uses the standard island top-center geometry,
+        // regardless of surface mode.
         let current_scale = window
             .current_monitor()
             .ok()
@@ -2769,11 +2995,63 @@ fn set_notch_window_frame(
     Ok(())
 }
 
-const PET_HIT_SIZE: f64 = 160.0;
-const PET_HIT_RIGHT_INSET: f64 = 112.0;
-const PET_HIT_BOTTOM_INSET: f64 = 44.0;
 const PET_DEFAULT_TRAILING_INSET: f64 = 24.0;
 const PET_DEFAULT_BOTTOM_INSET: f64 = 36.0;
+
+/// Show / position / hide the pet companion window based on the active
+/// island surface mode. The pet is its own Tauri window so dragging it
+/// doesn't drag the island shell along with it.
+pub fn sync_pet_window_visibility(app: &tauri::AppHandle, config: &config::AppConfig) {
+    let handle = app.clone();
+    let is_pet_mode = config.island_surface_mode == "pet";
+    let saved_origin = config.island_pet_window_origin.clone();
+
+    let _ = app.run_on_main_thread(move || {
+        sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
+    });
+}
+
+/// Inner logic for pet/island window switching. **Must be called on the main thread.**
+pub fn sync_pet_window_visibility_inner(
+    handle: &tauri::AppHandle,
+    is_pet_mode: bool,
+    saved_origin: Option<&config::WindowOrigin>,
+) {
+    let Some(pet_window) = handle.get_webview_window("pet") else {
+        return;
+    };
+    if !is_pet_mode {
+        let _ = pet_window.hide();
+        if let Some(notch_window) = handle.get_webview_window("notch") {
+            let _ = notch_window.show();
+            apply_notch_window_for_spaces(&notch_window);
+        }
+        return;
+    }
+
+    if let Some(notch_window) = handle.get_webview_window("notch") {
+        let _ = notch_window.hide();
+    }
+
+    let monitor = pet_window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| pet_window.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        if let Ok(size) = pet_window.outer_size() {
+            position_pet_window(
+                &pet_window,
+                &monitor,
+                size.width as f64,
+                size.height as f64,
+                saved_origin,
+            );
+        }
+    }
+    let _ = pet_window.show();
+    apply_notch_window_for_spaces(&pet_window);
+}
 
 fn position_pet_window(
     window: &tauri::WebviewWindow,
@@ -2790,27 +3068,24 @@ fn position_pet_window(
         return;
     }
 
+    // Pet now lives in its own window; the whole window IS the pet area, so
+    // we just place it near the bottom-right of the monitor.
     let pos = monitor.position();
     let size = monitor.size();
+    let scale = monitor.scale_factor();
+    let trailing_inset = PET_DEFAULT_TRAILING_INSET * scale;
+    let bottom_inset = PET_DEFAULT_BOTTOM_INSET * scale;
+    let margin = 8.0 * scale;
     let monitor_x = pos.x as f64;
     let monitor_y = pos.y as f64;
     let monitor_width = size.width as f64;
     let monitor_height = size.height as f64;
-    let scale = monitor.scale_factor();
-    let hit_size = PET_HIT_SIZE * scale;
-    let hit_right_inset = PET_HIT_RIGHT_INSET * scale;
-    let hit_bottom_inset = PET_HIT_BOTTOM_INSET * scale;
-    let trailing_inset = PET_DEFAULT_TRAILING_INSET * scale;
-    let bottom_inset = PET_DEFAULT_BOTTOM_INSET * scale;
-    let hit_left = width - hit_right_inset - hit_size;
-    let hit_top = height - hit_bottom_inset - hit_size;
-    let margin = 8.0 * scale;
-    let desired_x = monitor_x + monitor_width - trailing_inset - hit_left - hit_size;
-    let desired_y = monitor_y + monitor_height - bottom_inset - hit_top - hit_size;
-    let min_x = monitor_x + margin - hit_left;
-    let max_x = monitor_x + monitor_width - margin - hit_left - hit_size;
-    let min_y = monitor_y + margin - hit_top;
-    let max_y = monitor_y + monitor_height - margin - hit_top - hit_size;
+    let desired_x = monitor_x + monitor_width - trailing_inset - width;
+    let desired_y = monitor_y + monitor_height - bottom_inset - height;
+    let min_x = monitor_x + margin;
+    let max_x = monitor_x + monitor_width - margin - width;
+    let min_y = monitor_y + margin;
+    let max_y = monitor_y + monitor_height - margin - height;
     let x = desired_x.clamp(min_x, max_x.max(min_x)).round();
     let y = desired_y.clamp(min_y, max_y.max(min_y)).round();
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
@@ -3015,7 +3290,7 @@ async fn end_notch_drag(app: tauri::AppHandle) -> Result<Option<f64>, String> {
 
 #[tauri::command]
 async fn start_pet_drag(app: tauri::AppHandle) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window("notch") else {
+    let Some(window) = app.get_webview_window("pet") else {
         return Ok(false);
     };
     let cursor = app.cursor_position().map_err(|e| e.to_string())?;
@@ -3056,7 +3331,7 @@ async fn start_pet_drag(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window("notch") else {
+    let Some(window) = app.get_webview_window("pet") else {
         return Ok(false);
     };
     let cursor = app.cursor_position().map_err(|e| e.to_string())?;
@@ -3139,26 +3414,9 @@ async fn resize_notch(
             .or_else(|| window.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {
-            if config.island_surface_mode == "pet" {
-                let _ =
-                    window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-                if let Ok(size) = window.outer_size() {
-                    position_pet_window(
-                        &window,
-                        &monitor,
-                        size.width as f64,
-                        size.height as f64,
-                        if display_id == "auto" {
-                            None
-                        } else {
-                            config.island_pet_window_origin.as_ref()
-                        },
-                    );
-                    return Ok(ResizeNotchResult {
-                        anchor_offset_x: 0.0,
-                    });
-                }
-            }
+            // The notch window always uses standard island top-center geometry.
+            // Pet placement is handled by sync_pet_window_visibility / drag commands
+            // on the dedicated "pet" window.
             let (x, y, anchor_offset_x) =
                 notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
             set_notch_window_frame(&app, &window, x, y, width, height)?;
@@ -3173,9 +3431,22 @@ async fn resize_notch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
-
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("agentbro".to_string()),
+                    }),
+                ])
+                .max_file_size(2_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .level(log::LevelFilter::Info)
+                .level_for("agentbro", log::LevelFilter::Info)
+                .level_for("agentbro_lib", log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -3238,6 +3509,11 @@ pub fn run() {
             // Initialize config store
             let mut config_store = ConfigStore::new();
             config_store.set_app_handle(app.handle().clone());
+
+            // Pet window: position to the saved (or default) corner and show
+            // only when pet surface mode is active. The pet lives in its own
+            // Tauri window so dragging it doesn't move the island shell.
+            sync_pet_window_visibility(app.handle(), &config_store.get());
 
             // Bootstrap: discover sessions that were already running before we launched
             {
@@ -3357,6 +3633,14 @@ pub fn run() {
                 if adapter.name() != "claude-code" {
                     continue;
                 }
+                if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
+                    log::info!(
+                        "Skipping startup hook install for {}: {}",
+                        adapter.display_name(),
+                        skip_reason
+                    );
+                    continue;
+                }
                 if let Err(e) = adapter.install_hooks() {
                     log::warn!(
                         "Failed to install hooks for {}: {}",
@@ -3372,6 +3656,7 @@ pub fn run() {
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
             let hook_server = Arc::new(hook_server);
             hook_server.set_app_handle(app.handle().clone());
+            hook_server.set_config_store(config_store.clone());
 
             // Start hook server — exit if port is already in use (another instance running)
             let server = hook_server.clone();
@@ -3508,6 +3793,7 @@ pub fn run() {
             let switch_db = Arc::new(
                 switch::db::SwitchDatabase::open().expect("failed to open switch database"),
             );
+            let telemetry = Arc::new(TelemetryService::new());
 
             let app_state = AppState {
                 session_store,
@@ -3521,8 +3807,16 @@ pub fn run() {
                 diagnostic_buffer,
                 network_monitor,
                 switch_db,
+                telemetry,
                 tray_icon,
             };
+            {
+                let telemetry = app_state.telemetry.clone();
+                let config = app_state.config_store.get();
+                tauri::async_runtime::spawn(async move {
+                    telemetry.record_app_launch(&config).await;
+                });
+            }
             let buddy_device_config = app_state.config_store.get().buddy_device;
             commands::buddy::start_buddy_device_server(
                 buddy_device_config,
@@ -3567,6 +3861,7 @@ pub fn run() {
             commands::jump_to_terminal,
             commands::get_config,
             commands::update_config,
+            commands::set_analytics_enabled,
             commands::set_launch_at_login,
             commands::set_island_feature_flags,
             commands::set_island_surface_options,
@@ -3615,6 +3910,9 @@ pub fn run() {
             end_notch_drag,
             start_pet_drag,
             end_pet_drag,
+            pets::discover_pets,
+            commands::set_active_pet_id,
+            is_cursor_in_window_zones,
             should_suppress,
             get_cursor_position,
             is_cursor_over_notch,
@@ -3635,6 +3933,7 @@ pub fn run() {
             configure_agent_hook_events,
             get_all_hook_status,
             reinstall_all_hooks,
+            uninstall_all_hooks,
             commands::simulate_hook_event,
             list_remote_hosts,
             add_remote_host,

@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const MARKER_PREFIX: &str = "AgentBro managed integration";
+pub(super) const MARKER_PREFIX: &str = "AgentBro managed integration";
 
 #[derive(Clone, Copy)]
 pub enum HookEntryTemplate {
@@ -279,6 +279,23 @@ pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
     },
 ];
 
+// Hook events for Kimi CLI. Schema reference:
+// https://www.kimi.com/code/docs/kimi-code-cli/customization/hooks.html
+//
+// Matcher rules per the official docs:
+// - matcher is a REGEX string (not a glob); empty string = match everything.
+// - `"*"` is invalid regex (quantifier without leading element) and would
+//   trigger a parse error or silent no-match — never use it here.
+// - PreToolUse / PostToolUse / PostToolUseFailure match against tool name.
+// - SessionStart matches source (startup/resume), SessionEnd matches reason.
+// - SubagentStart / SubagentStop match against agent name.
+// - PreCompact / PostCompact match against trigger.
+// - Notification matches sink name.
+// - UserPromptSubmit and Stop do not use a matcher.
+// - StopFailure matches error type.
+//
+// AgentBro registers all hooks with empty matcher (=match all) so events
+// always reach the bridge; finer filtering happens in the parser.
 pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
     HookEventDescriptor {
         name: "UserPromptSubmit",
@@ -287,22 +304,32 @@ pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
     },
     HookEventDescriptor {
         name: "PreToolUse",
-        template: HookEntryTemplate::Matcher("*"),
+        template: HookEntryTemplate::Matcher(""),
         timeout: None,
     },
     HookEventDescriptor {
         name: "PostToolUse",
-        template: HookEntryTemplate::Matcher("*"),
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "PostToolUseFailure",
+        template: HookEntryTemplate::Matcher(""),
         timeout: None,
     },
     HookEventDescriptor {
         name: "Notification",
-        template: HookEntryTemplate::Matcher("*"),
+        template: HookEntryTemplate::Matcher(""),
         timeout: None,
     },
     HookEventDescriptor {
         name: "Stop",
         template: HookEntryTemplate::Plain,
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "StopFailure",
+        template: HookEntryTemplate::Matcher(""),
         timeout: None,
     },
     HookEventDescriptor {
@@ -316,9 +343,24 @@ pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
         timeout: None,
     },
     HookEventDescriptor {
-        name: "PermissionRequest",
-        template: HookEntryTemplate::Matcher("*"),
-        timeout: Some(86_400),
+        name: "SubagentStart",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "SubagentStop",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "PreCompact",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "PostCompact",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
     },
 ];
 
@@ -962,9 +1004,7 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
         }
         InstallationKind::PluginDirectory => contains_marker(path, profile),
         InstallationKind::TomlHooks => std::fs::read_to_string(path)
-            .map(|content| {
-                content.contains(&marker(profile)) || content.contains("agentbro-bridge")
-            })
+            .map(|content| super::toml_hooks::contains_managed(&content))
             .unwrap_or(false),
     }
 }
@@ -1779,19 +1819,56 @@ fn is_plugin_enabled(activation_path: &Path, plugin_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn build_managed_hook_entries(
+    profile: &AgentIntegrationProfile,
+    command: &str,
+) -> Vec<super::toml_hooks::TomlHookEntry> {
+    effective_events(profile)
+        .into_iter()
+        .map(|event| {
+            let matcher = match event.template {
+                HookEntryTemplate::Plain => None,
+                HookEntryTemplate::Matcher(m) => Some(m.to_string()),
+            };
+            super::toml_hooks::TomlHookEntry {
+                event: event.name.to_string(),
+                command: command.to_string(),
+                matcher,
+                timeout: event.timeout,
+            }
+        })
+        .collect()
+}
+
 fn update_toml_hooks(
     profile: &AgentIntegrationProfile,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let command = managed_bridge_command(profile)?;
-    let cleaned = remove_managed_toml_segments(&strip_legacy_sentinel_block(&existing));
-    let mut output = cleaned.trim_end().to_string();
-    if !output.is_empty() {
-        output.push_str("\n\n");
+    let existing_raw = std::fs::read_to_string(path).unwrap_or_default();
+    let pre_cleaned = strip_legacy_sentinel_block(&existing_raw);
+
+    if let Some((line, trigger)) = super::toml_hooks::detect_conflicting_hooks_key(&pre_cleaned) {
+        return Err(format!(
+            "Cannot install {} hooks: existing `{}` at {}:{} conflicts with the [[hooks]] array-of-tables form required by AgentBro. Remove or rename it manually, then try again.",
+            profile.id,
+            trigger,
+            path.display(),
+            line,
+        )
+        .into());
     }
-    output.push_str(&render_toml_hooks(profile, &command));
-    output.push('\n');
+
+    let command = managed_bridge_command(profile)?;
+    let managed = build_managed_hook_entries(profile, &command);
+    let segments = super::toml_hooks::parse_segments(&pre_cleaned);
+    let output = super::toml_hooks::rebuild(&segments, &managed, &marker(profile));
+
+    // mtime guard: skip the write when the file is already byte-identical.
+    // This avoids triggering the hook recovery worker (`hooks/recovery.rs`)
+    // into a reinstall loop on settings-file change notifications.
+    if existing_raw == output {
+        return Ok(());
+    }
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1804,32 +1881,16 @@ fn remove_toml_hooks(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Ok(());
     }
-    let existing = std::fs::read_to_string(path)?;
-    let cleaned = remove_managed_toml_segments(&strip_legacy_sentinel_block(&existing));
-    std::fs::write(path, cleaned)?;
-    Ok(())
-}
-
-fn render_toml_hooks(profile: &AgentIntegrationProfile, command: &str) -> String {
-    let escaped_command = toml_string(command);
-    let mut lines = vec![format!("# {}", marker(profile))];
-    for event in effective_events(profile) {
-        lines.push("[[hooks]]".to_string());
-        lines.push(format!("event = \"{}\"", event.name));
-        if let HookEntryTemplate::Matcher(matcher) = event.template {
-            lines.push(format!("matcher = \"{}\"", matcher));
-        }
-        lines.push(format!("command = \"{}\"", escaped_command));
-        if let Some(timeout) = event.timeout {
-            lines.push(format!("timeout = {}", timeout));
-        }
-        lines.push(String::new());
+    let existing_raw = std::fs::read_to_string(path)?;
+    let pre_cleaned = strip_legacy_sentinel_block(&existing_raw);
+    let segments = super::toml_hooks::parse_segments(&pre_cleaned);
+    // marker placeholder is irrelevant when managed list is empty.
+    let output = super::toml_hooks::rebuild(&segments, &[], MARKER_PREFIX);
+    if existing_raw == output {
+        return Ok(());
     }
-    lines.join("\n")
-}
-
-fn toml_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    std::fs::write(path, output)?;
+    Ok(())
 }
 
 fn strip_legacy_sentinel_block(content: &str) -> String {
@@ -1853,40 +1914,6 @@ fn strip_legacy_sentinel_block(content: &str) -> String {
         }
     }
     result
-}
-
-fn remove_managed_toml_segments(content: &str) -> String {
-    let mut result = Vec::new();
-    let mut current = Vec::new();
-    let mut in_hook = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        let starts_hook = trimmed == "[[hooks]]";
-        let starts_other_table = trimmed.starts_with('[') && !starts_hook;
-
-        if starts_hook || (in_hook && starts_other_table) {
-            flush_toml_segment(&mut result, &mut current, in_hook);
-            in_hook = starts_hook;
-        }
-
-        current.push(line.to_string());
-    }
-    flush_toml_segment(&mut result, &mut current, in_hook);
-
-    result.join("\n").trim_end().to_string()
-}
-
-fn flush_toml_segment(result: &mut Vec<String>, current: &mut Vec<String>, in_hook: bool) {
-    if current.is_empty() {
-        return;
-    }
-    let segment = current.join("\n");
-    let managed = segment.contains("agentbro-bridge") || segment.contains(MARKER_PREFIX);
-    if !in_hook || !managed {
-        result.push(segment);
-    }
-    current.clear();
 }
 
 fn hermes_plugin_files(
@@ -2367,11 +2394,46 @@ command = "/Users/me/.agentbro/bin/agentbro-bridge --source kimi"
 name = "also keep"
 "#;
 
-        let cleaned = remove_managed_toml_segments(input);
+        let segments = super::super::toml_hooks::parse_segments(input);
+        let cleaned = super::super::toml_hooks::rebuild(&segments, &[], MARKER_PREFIX);
         assert!(cleaned.contains("/usr/bin/other"));
         assert!(cleaned.contains("[providers]"));
         assert!(cleaned.contains("[models.default]"));
         assert!(!cleaned.contains("agentbro-bridge"));
+    }
+
+    #[test]
+    fn remove_toml_hooks_cleans_legacy_vibe_island_hooks() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agentbro-kimi-remove-legacy-vibe-{}.toml",
+            std::process::id()
+        ));
+        let original = r#"default_model = "x"
+
+# --- vibe-island Kimi hooks START (managed, do not edit) ---
+[[hooks]]
+event = "UserPromptSubmit"
+command = "/Users/me/.vibe-island/bin/vibe-island-bridge --source kimi"
+timeout = 30
+# --- vibe-island Kimi hooks END ---
+
+[[hooks]]
+event = "PostToolUse"
+command = "/usr/local/bin/user-hook.sh"
+matcher = "Shell"
+"#;
+        std::fs::write(&tmp, original).expect("write fixture");
+
+        remove_toml_hooks(&tmp).expect("remove toml hooks");
+
+        let after = std::fs::read_to_string(&tmp).expect("read after");
+        assert!(after.contains("default_model"));
+        assert!(after.contains("/usr/local/bin/user-hook.sh"));
+        assert!(!after.contains("vibe-island"));
+        assert!(!after.contains(".vibe-island"));
+        assert!(!after.contains("vibe-island-bridge"));
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
@@ -2583,21 +2645,113 @@ name = "also keep"
     #[test]
     fn rendered_kimi_hooks_use_official_event_names() {
         let profile = kimi_profile();
-        let rendered = render_toml_hooks(&profile, "/tmp/agentbro-bridge --source kimi");
-        assert!(rendered.contains("event = \"SessionStart\""));
-        assert!(rendered.contains("event = \"PermissionRequest\""));
-        assert!(rendered.contains("timeout = 86400"));
+        let managed = build_managed_hook_entries(&profile, "/tmp/agentbro-bridge --source kimi");
+        let rendered = super::super::toml_hooks::rebuild(&[], &managed, &marker(&profile));
+
+        // All 13 documented Kimi events present.
+        for event in &[
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Notification",
+            "Stop",
+            "StopFailure",
+            "SessionStart",
+            "SessionEnd",
+            "SubagentStart",
+            "SubagentStop",
+            "PreCompact",
+            "PostCompact",
+        ] {
+            assert!(
+                rendered.contains(&format!("event = \"{}\"", event)),
+                "missing event {} in rendered output:\n{}",
+                event,
+                rendered
+            );
+        }
+
+        // PermissionRequest was a phantom event we used to emit; remove safety.
+        assert!(
+            !rendered.contains("PermissionRequest"),
+            "PermissionRequest is not a real Kimi event, must not appear"
+        );
+
+        // matcher must be empty string (regex "match all"), never "*" (invalid regex).
+        assert!(
+            !rendered.contains("matcher = \"*\""),
+            "matcher = \"*\" is invalid regex per Kimi spec"
+        );
+        assert!(rendered.contains("matcher = \"\""));
+
+        // No bogus huge timeout left over from the PermissionRequest hook.
+        assert!(!rendered.contains("timeout = 86400"));
+
         assert!(rendered.contains(MARKER_PREFIX));
     }
 
     #[test]
     fn rendered_deepseek_hooks_use_deepseek_source() {
         let profile = deepseek_profile();
-        let rendered = render_toml_hooks(&profile, "/tmp/agentbro-bridge --source deepseek");
+        let managed =
+            build_managed_hook_entries(&profile, "/tmp/agentbro-bridge --source deepseek");
+        let rendered = super::super::toml_hooks::rebuild(&[], &managed, &marker(&profile));
         assert!(rendered.contains("event = \"SessionStart\""));
-        assert!(rendered.contains("event = \"PermissionRequest\""));
+        assert!(rendered.contains("event = \"SubagentStart\""));
         assert!(rendered.contains("--source deepseek"));
         assert!(rendered.contains(MARKER_PREFIX));
+    }
+
+    #[test]
+    fn update_toml_hooks_rejects_conflicting_hooks_table_without_modifying_file() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agentbro-kimi-conflict-{}.toml",
+            std::process::id()
+        ));
+        let original = "default_model = \"x\"\n[hooks]\nfoo = \"bar\"\n";
+        std::fs::write(&tmp, original).expect("write fixture");
+
+        let profile = kimi_profile();
+        let result = update_toml_hooks(&profile, &tmp);
+        assert!(result.is_err(), "expected conflict error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("[hooks]"));
+        assert!(err.contains(&tmp.display().to_string()));
+        assert!(
+            err.contains(":2"),
+            "error should report line number 2: {}",
+            err
+        );
+
+        let after = std::fs::read_to_string(&tmp).expect("read after");
+        assert_eq!(after, original, "file must be untouched on conflict");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn update_toml_hooks_is_idempotent() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agentbro-kimi-idempotent-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::write(&tmp, "default_model = \"x\"\n").expect("write fixture");
+
+        let profile = kimi_profile();
+        update_toml_hooks(&profile, &tmp).expect("first install");
+        let after_first = std::fs::read_to_string(&tmp).expect("read after first");
+
+        // Second install with identical state should produce identical bytes.
+        update_toml_hooks(&profile, &tmp).expect("second install");
+        let after_second = std::fs::read_to_string(&tmp).expect("read after second");
+        assert_eq!(after_first, after_second);
+
+        // Marker comment appears exactly once across reinstalls.
+        assert_eq!(after_second.matches(MARKER_PREFIX).count(), 1);
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

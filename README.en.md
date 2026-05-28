@@ -15,6 +15,8 @@
     ·
     <a href="https://github.com/shirenchuang/agentbro/releases">Download</a>
     ·
+    <a href="docs/privacy-policy.md">Privacy</a>
+    ·
     <a href="README.md">中文</a>
   </p>
 
@@ -133,6 +135,19 @@ AgentBro is currently developed, tested, and released for **macOS** first.
 Windows support is planned. The Tauri + React + Rust foundation is portable, but a good Windows release still needs dedicated work for floating window behavior, tray integration, shortcuts, terminal/editor focus detection, hook paths, installers, signing, and release automation.
 
 Linux support is possible later, but it is not part of the first public release target.
+
+## Installation
+
+### Homebrew Cask
+
+```bash
+brew tap shirenchuang/tap
+brew install --cask agentbro
+```
+
+### Download a Release
+
+You can also download the latest DMG from [GitHub Releases](https://github.com/shirenchuang/agentbro/releases).
 
 ## Local Development
 

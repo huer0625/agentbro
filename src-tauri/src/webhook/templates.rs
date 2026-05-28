@@ -8,7 +8,24 @@ pub enum NotificationEvent {
     ToolUse { tool_name: String },
     Completion { summary: String },
     Error { message: String },
+    WaitingApproval { tool_name: String },
+    WaitingInput { question: String },
+    PlanApproval { title: String },
     Custom { title: String, body: String },
+}
+
+pub fn event_key(event: &NotificationEvent) -> &'static str {
+    match event {
+        NotificationEvent::SessionStart => "session_start",
+        NotificationEvent::SessionStop => "session_stop",
+        NotificationEvent::ToolUse { .. } => "tool_use",
+        NotificationEvent::Completion { .. } => "task_complete",
+        NotificationEvent::Error { .. } => "error",
+        NotificationEvent::WaitingApproval { .. } => "waiting_approval",
+        NotificationEvent::WaitingInput { .. } => "waiting_input",
+        NotificationEvent::PlanApproval { .. } => "plan_approval",
+        NotificationEvent::Custom { .. } => "custom",
+    }
 }
 
 /// Build DingTalk markdown message body
@@ -58,6 +75,9 @@ fn event_color(event: &NotificationEvent) -> &'static str {
         NotificationEvent::Completion { .. } => "green",
         NotificationEvent::SessionStart => "blue",
         NotificationEvent::SessionStop => "grey",
+        NotificationEvent::WaitingApproval { .. }
+        | NotificationEvent::WaitingInput { .. }
+        | NotificationEvent::PlanApproval { .. } => "orange",
         _ => "turquoise",
     }
 }
@@ -94,6 +114,27 @@ fn event_to_text(event: &NotificationEvent, source: &str, session_id: &str) -> (
             format!(
                 "**[{}]** Error in session `{}`\n\n> {}",
                 source, short_id, message
+            ),
+        ),
+        NotificationEvent::WaitingApproval { tool_name } => (
+            format!("[{}] Needs approval", source),
+            format!(
+                "**[{}]** Needs approval in session `{}`\n\n> {}",
+                source, short_id, tool_name
+            ),
+        ),
+        NotificationEvent::WaitingInput { question } => (
+            format!("[{}] Needs input", source),
+            format!(
+                "**[{}]** Needs input in session `{}`\n\n> {}",
+                source, short_id, question
+            ),
+        ),
+        NotificationEvent::PlanApproval { title } => (
+            format!("[{}] Plan approval", source),
+            format!(
+                "**[{}]** Plan approval needed in session `{}`\n\n> {}",
+                source, short_id, title
             ),
         ),
         NotificationEvent::Custom { title, body } => (title.clone(), body.clone()),

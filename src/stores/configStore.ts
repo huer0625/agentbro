@@ -59,7 +59,10 @@ export interface WebhookEntry {
   url: string
   secret: string | null
   sources: string[]
+  events: string[]
   enabled: boolean
+  delayEnabled: boolean
+  delayMinutes: number
 }
 
 export interface RemoteHostEntry {
@@ -141,9 +144,14 @@ interface ConfigState {
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
+  analyticsEnabled: boolean
+  analyticsConsentPromptCompleted: boolean
   islandSurfaceMode: 'island' | 'pet'
+  petVitalsEnabled: boolean
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
+  /** Active pet identifier (e.g. 'codex:dewey'). `null` = auto-follow active session's agent type. */
+  islandActivePetId: string | null
 
   // General extras
   followFocus: boolean
@@ -184,6 +192,10 @@ interface ConfigState {
 
   // Idle Timeout
   idleTimeoutMinutes: number // 0 = disabled, otherwise minutes of inactivity before auto-hiding
+
+  // Updates
+  autoCheckUpdate: boolean
+  autoInstallUpdate: boolean
 
   // Notification Mode
   notificationMode: 'turnEnd' | 'every' // turnEnd = only at turn completion, every = every tool call
@@ -398,9 +410,13 @@ function createIslandDefaults(): Partial<ConfigState> {
     tipsEnabled: true,
     pixelCursorEnabled: true,
     confettiEnabled: true,
+    analyticsEnabled: true,
+    analyticsConsentPromptCompleted: true,
     islandSurfaceMode: 'island',
+    petVitalsEnabled: true,
     islandPetScale: 72,
     islandPetWindowOrigin: null,
+    islandActivePetId: null,
     followFocus: false,
     globalShortcut: 'CommandOrControl+Shift+I',
     shortcutApprove: DEFAULT_GLOBAL_APPROVE_SHORTCUT,
@@ -495,9 +511,13 @@ export const useConfigStore = create<ConfigStore>()(
   tipsEnabled: true,
   pixelCursorEnabled: true,
   confettiEnabled: true,
+  analyticsEnabled: true,
+  analyticsConsentPromptCompleted: true,
   islandSurfaceMode: 'island',
+  petVitalsEnabled: true,
   islandPetScale: 72,
   islandPetWindowOrigin: null,
+  islandActivePetId: null,
 
   // General extras
   followFocus: false,
@@ -541,6 +561,10 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Idle Timeout
   idleTimeoutMinutes: 5,
+
+  // Updates
+  autoCheckUpdate: true,
+  autoInstallUpdate: false,
 
   // Notification Mode
   notificationMode: 'turnEnd',

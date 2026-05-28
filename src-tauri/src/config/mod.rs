@@ -144,6 +144,12 @@ pub struct AppConfig {
     /// Show confetti on task completion
     #[serde(default = "default_true")]
     pub confetti_enabled: bool,
+    /// Optional anonymous product analytics.
+    #[serde(default = "default_true")]
+    pub analytics_enabled: bool,
+    /// Whether the user has seen or acted on the analytics consent prompt.
+    #[serde(default = "default_true")]
+    pub analytics_consent_prompt_completed: bool,
     /// Filter sessions by focused terminal window
     #[serde(default)]
     pub follow_focus: bool,
@@ -156,6 +162,9 @@ pub struct AppConfig {
     /// Pet window origin
     #[serde(default)]
     pub island_pet_window_origin: Option<WindowOrigin>,
+    /// Active pet identifier (e.g. "codex:dewey", "user:my-cat"). `None` = auto-follow active session's agent.
+    #[serde(default)]
+    pub island_active_pet_id: Option<String>,
     /// Global keyboard shortcut to toggle island visibility
     #[serde(default = "default_global_shortcut")]
     pub global_shortcut: String,
@@ -269,10 +278,13 @@ impl Default for AppConfig {
             tips_enabled: true,
             pixel_cursor_enabled: true,
             confetti_enabled: true,
+            analytics_enabled: true,
+            analytics_consent_prompt_completed: true,
             follow_focus: false,
             island_surface_mode: default_island_surface_mode(),
             island_pet_scale: default_island_pet_scale(),
             island_pet_window_origin: None,
+            island_active_pet_id: None,
             global_shortcut: "CommandOrControl+Shift+I".to_string(),
             shortcut_approve: default_shortcut_approve(),
             shortcut_approve_enabled: false,
@@ -457,6 +469,8 @@ mod tests {
         assert!(!config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
         assert!(config.boot_sound_default_migrated);
+        assert!(config.analytics_enabled);
+        assert!(config.analytics_consent_prompt_completed);
     }
 
     #[test]

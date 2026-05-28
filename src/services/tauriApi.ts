@@ -4,6 +4,7 @@
 
 import type { RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
+import type { PetMetadata } from '../types/pet'
 import { useConfigStore } from '../stores/configStore'
 
 declare const __APP_VERSION__: string
@@ -286,9 +287,12 @@ export interface BackendConfig {
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
+  analyticsEnabled: boolean
+  analyticsConsentPromptCompleted: boolean
   islandSurfaceMode: 'island' | 'pet'
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
+  islandActivePetId: string | null
   followFocus: boolean
   quietHoursEnabled: boolean
   quietHoursStart: string
@@ -493,9 +497,12 @@ export async function getConfig(): Promise<BackendConfig> {
       tipsEnabled: true,
       pixelCursorEnabled: true,
       confettiEnabled: true,
+      analyticsEnabled: true,
+      analyticsConsentPromptCompleted: true,
       islandSurfaceMode: 'island',
       islandPetScale: 72,
       islandPetWindowOrigin: null,
+      islandActivePetId: null,
       followFocus: false,
       quietHoursEnabled: false,
       quietHoursStart: '22:00',
@@ -519,6 +526,14 @@ export async function updateConfig(config: BackendConfig): Promise<void> {
     return
   }
   return invoke('update_config', { config })
+}
+
+export async function setAnalyticsEnabled(enabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    console.log(`[mock] setAnalyticsEnabled(${enabled})`)
+    return
+  }
+  return invoke('set_analytics_enabled', { enabled })
 }
 
 export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
@@ -665,6 +680,12 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
 export async function setSoundPack(pack: string): Promise<void> {
   if (!isTauri()) return
   return invoke('set_sound_pack', { pack })
+}
+
+/** Play the sound configured for a given event id (e.g. 'permission-request'). No-op outside Tauri. */
+export async function playSound(event: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('play_sound', { event })
 }
 
 export async function previewSound(event: string, sound: string): Promise<void> {
@@ -918,9 +939,12 @@ export async function setNotchFocusable(focusable: boolean): Promise<void> {
   return invoke('set_notch_focusable', { focusable })
 }
 
-export async function setNotchIgnoreCursorEvents(ignore: boolean): Promise<void> {
+export async function setNotchIgnoreCursorEvents(
+  ignore: boolean,
+  windowLabel?: 'notch' | 'pet',
+): Promise<void> {
   if (!isTauri()) return
-  return invoke('set_notch_ignore_cursor_events', { ignore })
+  return invoke('set_notch_ignore_cursor_events', { ignore, windowLabel })
 }
 
 export async function openSettingsWindow(): Promise<void> {
@@ -1021,18 +1045,47 @@ export async function endPetDrag(): Promise<{ x: number; y: number } | null> {
   return invoke<{ x: number; y: number } | null>('end_pet_drag')
 }
 
+// ── Pet Discovery & Selection ────────────────────────────────────
+
+interface PetDiscoveryResult {
+  pets: PetMetadata[]
+  warnings: string[]
+}
+
+export async function discoverPets(): Promise<PetDiscoveryResult> {
+  if (!isTauri()) return { pets: [], warnings: [] }
+  return invoke<PetDiscoveryResult>('discover_pets')
+}
+
+export async function setActivePetId(petId: string | null): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('set_active_pet_id', { petId })
+}
+
+export interface LogicalRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export async function isCursorInWindowZones(
+  zones: LogicalRect[],
+  windowLabel?: 'notch' | 'pet',
+): Promise<boolean> {
+  if (!isTauri() || zones.length === 0) return false
+  return invoke<boolean>('is_cursor_in_window_zones', { zones, windowLabel })
+}
+
 // ── Diagnostics Commands ────────────────────────────────────────
 
-export async function exportDiagnostics(): Promise<string> {
+export async function exportDiagnostics(targetPath: string): Promise<void> {
   if (!isTauri()) {
-    return JSON.stringify({
-      appVersion: await getCurrentAppVersion(),
-      os: navigator.platform,
-      userAgent: navigator.userAgent,
-      timestamp: new Date().toISOString(),
-    }, null, 2)
+    // In browser dev mode, just log — no real zip to create
+    console.log('[mock] exportDiagnostics to:', targetPath)
+    return
   }
-  return invoke<string>('export_diagnostics')
+  return invoke<void>('export_diagnostics', { targetPath })
 }
 
 // ── App Lifecycle ──────────────────────────────────────────
@@ -1182,6 +1235,11 @@ export async function reinstallAllHooks(): Promise<string[]> {
   return invoke<string[]>('reinstall_all_hooks')
 }
 
+export async function uninstallAllHooks(): Promise<string[]> {
+  if (!isTauri()) return []
+  return invoke<string[]>('uninstall_all_hooks')
+}
+
 // ── Remote SSH Management ────────────────────────────────────────
 
 export interface RemoteHost {
@@ -1283,7 +1341,10 @@ export interface WebhookConfig {
   url: string
   secret: string | null
   sources: string[]
+  events: string[]
   enabled: boolean
+  delayEnabled: boolean
+  delayMinutes: number
 }
 
 export async function listWebhooks(): Promise<WebhookConfig[]> {

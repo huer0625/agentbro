@@ -2,9 +2,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { ClaudeHookUiLab } from './components/dev/ClaudeHookUiLab'
 import { NotchPanel } from './components/notch/NotchPanel'
+import { PetApp } from './PetApp'
 import { SettingsApp } from './components/settings'
 import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
+import { usePetStore } from './stores/petStore'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
@@ -27,6 +29,7 @@ function applyPersistedConfig(raw: string | null) {
 async function detectWindowLabel(): Promise<string> {
   // Check URL hash first (works in both Tauri and browser)
   if (window.location.hash === '#settings') return 'settings'
+  if (window.location.hash === '#pet') return 'pet'
 
   // In Tauri, use the real window label
   if (isTauri()) {
@@ -122,6 +125,28 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    function applyPersistedPet(raw: string | null) {
+      if (!raw) return
+      try {
+        const persisted = JSON.parse(raw) as { state?: { activePetId?: string | null } }
+        usePetStore.getState().hydrateFromConfig(persisted.state?.activePetId ?? null)
+      } catch { /* ignore */ }
+    }
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'agentbro-pet') applyPersistedPet(event.newValue)
+    }
+    const handleFocus = () => applyPersistedPet(window.localStorage.getItem('agentbro-pet'))
+
+    handleFocus()
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('focus', handleFocus)
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [])
+
   // Detect window on mount
   useEffect(() => {
     detectWindowLabel().then(setWindowLabel)
@@ -158,6 +183,11 @@ function App() {
 
   // Wait for detection
   if (windowLabel === null) return null
+
+  // Pet companion window — independent, only renders the pet sprite layer.
+  if (windowLabel === 'pet') {
+    return <PetApp />
+  }
 
   // Settings window
   if (windowLabel === 'settings') {

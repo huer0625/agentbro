@@ -7,6 +7,13 @@ cask "agentbro" do
   desc "Menu bar companion for Claude Code, Codex, Gemini CLI and more"
   homepage "https://www.agentbro.net"
 
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on macos: ">= :sonoma"
+
   app "AgentBro.app"
 
   zap trash: [

@@ -15,6 +15,8 @@
     ·
     <a href="https://github.com/shirenchuang/agentbro/releases">下载</a>
     ·
+    <a href="docs/privacy-policy.md">隐私</a>
+    ·
     <a href="README.en.md">English</a>
   </p>
 
@@ -133,6 +135,19 @@ AgentBro 当前优先开发、测试和发布 **macOS** 版本。
 Windows 支持在计划中。Tauri + React + Rust 的基础架构具备跨平台能力，但一个体验良好的 Windows 版本还需要单独适配悬浮窗口、托盘、快捷键、终端/编辑器焦点检测、Hook 路径、安装包、签名和发布流程。
 
 Linux 后续也可以支持，但不属于第一个公开版本的目标。
+
+## 安装
+
+### Homebrew Cask
+
+```bash
+brew tap shirenchuang/tap
+brew install --cask agentbro
+```
+
+### 下载发行版
+
+也可以从 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) 下载最新 DMG。
 
 ## 本地开发
 

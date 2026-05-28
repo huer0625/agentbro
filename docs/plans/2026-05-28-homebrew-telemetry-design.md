@@ -5,7 +5,7 @@ Date: 2026-05-28
 ## Goals
 
 - Publish AgentBro through a first-party Homebrew tap at `shirenchuang/homebrew-tap`.
-- Add opt-in anonymous daily active device telemetry through Alibaba Cloud SLS.
+- Add anonymous daily active device telemetry through Alibaba Cloud SLS, enabled by default and user-disableable in Settings.
 - Keep AgentBro local-first: no prompts, responses, code, diffs, paths, hostnames, IP addresses, raw hook payloads, or secrets are uploaded.
 
 ## Homebrew
@@ -25,10 +25,10 @@ The release workflow requires `HOMEBREW_TAP_TOKEN` with write access to `shirenc
 
 Telemetry is implemented in the Rust backend so the app can persist a daily aggregate and retry uploads outside React view lifecycles. The frontend exposes consent and status only.
 
-Telemetry is disabled unless both conditions are true:
+Telemetry uploads only when both conditions are true:
 
 - The release build includes a complete SLS target.
-- The user has enabled anonymous analytics.
+- Anonymous analytics is enabled in Settings. It is enabled by default for new configs.
 
 The SLS target is injected at release time:
 
@@ -64,6 +64,8 @@ Allowed fields:
 - `client_session_counts`
 - `hook_install_counts`
 - `hook_uninstall_counts`
+- `hook_install_total`
+- `hook_uninstall_total`
 
 Values are sanitized and truncated before upload. Unknown fields are dropped.
 
@@ -85,7 +87,7 @@ Those app uninstall events are outside the app process, so they are not part of 
 
 ## Privacy UX
 
-Settings exposes an anonymous analytics toggle with short explanatory text and links to telemetry/privacy docs. Default behavior is no upload before consent.
+Settings exposes an anonymous analytics toggle with short explanatory text and links to telemetry/privacy docs. New installs default to enabled; turning it off stops uploads and clears local telemetry state.
 
 Turning analytics off clears the queued telemetry aggregate and anonymous device ID.
 
