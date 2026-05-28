@@ -1,0 +1,46 @@
+name: Agent 接入请求
+description: 请求 AgentBro 支持新的 AI 编程 Agent。
+labels: ["agent-request"]
+body:
+  - type: input
+    id: agent_name
+    attributes:
+      label: Agent 名称
+      placeholder: 例如 Aider
+    validations:
+      required: true
+  - type: input
+    id: agent_url
+    attributes:
+      label: Agent 官网 / 仓库
+      placeholder: https://github.com/...
+    validations:
+      required: true
+  - type: dropdown
+    id: hook_type
+    attributes:
+      label: Hook / 事件机制
+      description: 这个 Agent 如何暴露生命周期事件？
+      options:
+        - JSON 配置（类似 Claude Code hooks）
+        - YAML 配置
+        - TOML 配置
+        - CLI 参数 / 环境变量
+        - 其他 / 暂不清楚
+    validations:
+      required: true
+  - type: textarea
+    id: event_examples
+    attributes:
+      label: 事件样例
+      description: 如果有 hook 输出、配置片段或日志样例，请贴在这里。注意删除 token、路径隐私等敏感信息。
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: details
+    attributes:
+      label: 补充信息
+      description: 可以补充 hook 文档链接、安装方式、期望展示的状态，或你已经调研到的限制。
+    validations:
+      required: false

@@ -191,6 +191,17 @@ pnpm tauri:build   # 构建 Tauri 应用
 
 之后 AgentBro 会在灵动岛中展示会话状态、工具调用、权限请求、问题、计划和完成提醒。
 
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- AI Agent 协作指南：[AGENTS.md](AGENTS.md)
+- Claude Code 项目配置：[.claude/CLAUDE.md](.claude/CLAUDE.md)
+
+PR 请提到 `dev` 分支，提交前跑一遍 `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml`。
+
 ## 发布
 
 发布说明和签名要求见 [`docs/release.md`](docs/release.md)。

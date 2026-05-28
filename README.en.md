@@ -191,6 +191,17 @@ pnpm tauri:build   # Build the Tauri app
 
 AgentBro will then show session state, tool activity, approvals, questions, plans, and completions in the island.
 
+## Contributing
+
+Issues and pull requests are welcome!
+
+- Contributing guide: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- AI agent collaboration guide: [AGENTS.md](AGENTS.md)
+- Claude Code project config: [.claude/CLAUDE.md](.claude/CLAUDE.md)
+
+Please target the `dev` branch. Run `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml` before submitting.
+
 ## Release
 
 Release notes and signing requirements live in [`docs/release.md`](docs/release.md).

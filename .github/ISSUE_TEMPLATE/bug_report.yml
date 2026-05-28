@@ -1,0 +1,63 @@
+name: Bug 反馈
+description: 反馈 AgentBro 中不符合预期的行为。
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清楚描述你遇到的问题，以及它影响了哪个功能或使用场景。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你原本期望 AgentBro 怎么表现？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请提供能稳定触发问题的最小步骤。
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 看到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: AgentBro 版本
+      placeholder: 例如 0.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: macOS 版本
+      options:
+        - macOS 15 (Sequoia)
+        - macOS 14 (Sonoma)
+        - macOS 13 (Ventura)
+        - 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: 设备架构
+      options:
+        - Apple Silicon (arm64)
+        - Intel (x86_64)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 请粘贴相关日志，或上传截图、录屏。注意不要包含 token、密钥等敏感信息。
+    validations:
+      required: false
