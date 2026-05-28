@@ -112,6 +112,7 @@ sign_app() {
     echo "==> Signing app bundle..."
     local entitlements="src-tauri/Entitlements.plist"
     local app_path="$DIST_DIR/$APP_NAME.app"
+    local resource_bridge="$app_path/Contents/Resources/agentbro-bridge"
 
     while IFS= read -r binary; do
         if [ ! -x "$binary" ]; then
@@ -123,6 +124,14 @@ sign_app() {
             --sign "$identity" \
             "$binary"
     done < <(find "$app_path/Contents/MacOS" -type f)
+
+    if [ -x "$resource_bridge" ]; then
+        echo "==> Signing executable resource: $resource_bridge"
+        codesign --force --timestamp --options runtime \
+            --entitlements "$entitlements" \
+            --sign "$identity" \
+            "$resource_bridge"
+    fi
 
     echo "==> Signing app container..."
     codesign --force --timestamp --options runtime \
