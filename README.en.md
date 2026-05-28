@@ -140,6 +140,14 @@ Linux support is possible later, but it is not part of the first public release 
 
 ### Homebrew Cask
 
+One-line install:
+
+```bash
+brew tap shirenchuang/tap && brew install --cask agentbro
+```
+
+Step-by-step install:
+
 ```bash
 brew tap shirenchuang/tap
 brew install --cask agentbro

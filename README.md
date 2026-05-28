@@ -140,6 +140,14 @@ Linux 后续也可以支持，但不属于第一个公开版本的目标。
 
 ### Homebrew Cask
 
+一行安装：
+
+```bash
+brew tap shirenchuang/tap && brew install --cask agentbro
+```
+
+分步安装：
+
 ```bash
 brew tap shirenchuang/tap
 brew install --cask agentbro
