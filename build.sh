@@ -79,6 +79,7 @@ build_app_bundle() {
         "$BUILD_DIR/x86_64-apple-darwin/release/agentbro-bridge" \
         -output "$bridge_out"
     cp "$bridge_out" "$BUILD_DIR/agentbro-bridge-resource/agentbro-bridge"
+    chmod +x "$BUILD_DIR/agentbro-bridge-resource/agentbro-bridge"
 
     cargo tauri build \
         --target universal-apple-darwin \
@@ -125,7 +126,8 @@ sign_app() {
             "$binary"
     done < <(find "$app_path/Contents/MacOS" -type f)
 
-    if [ -x "$resource_bridge" ]; then
+    if [ -f "$resource_bridge" ]; then
+        chmod +x "$resource_bridge"
         echo "==> Signing executable resource: $resource_bridge"
         codesign --force --timestamp --options runtime \
             --entitlements "$entitlements" \
