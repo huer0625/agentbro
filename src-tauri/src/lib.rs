@@ -2790,6 +2790,39 @@ async fn remove_marketplace_source_cmd(id: String) -> Result<(), String> {
     skills::registry::remove_marketplace_source(&id)
 }
 
+// ── Display reconfiguration handler ──────────────────────────────
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGDisplayRegisterReconfigurationCallback(
+        callback: unsafe extern "C" fn(u32, u32, *mut std::ffi::c_void),
+        user_info: *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+static DISPLAY_RECONFIG_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn display_reconfig_callback(_display: u32, _flags: u32, _user_info: *mut std::ffi::c_void) {
+    // The callback fires before and after reconfiguration.
+    // Only reposition after the change settles.
+    if _flags & 1 != 0 {
+        return; // kCGDisplayBeginConfigurationFlag — skip, wait for completion callback
+    }
+    if let Some(handle) = DISPLAY_RECONFIG_APP_HANDLE.get() {
+        let handle = handle.clone();
+        // Delay briefly so macOS finishes updating internal display state
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                let _ = reposition_notch_to_display(&h, None, None);
+            });
+        });
+    }
+}
+
 // ── Opacity helpers ─────────────────────────────────────────────
 // macOS breaks transparent window compositing after a hide()/show() cycle,
 // so we manage visibility via opacity instead.
@@ -3518,11 +3551,14 @@ pub fn run() {
                     .or_else(|| window.primary_monitor().ok().flatten());
 
                 if let Some(monitor) = monitor {
-                    let screen_width = monitor.size().width as f64 / monitor.scale_factor();
+                    let scale = monitor.scale_factor();
+                    let screen_width = monitor.size().width as f64 / scale;
+                    let monitor_x = monitor.position().x as f64 / scale;
+                    let monitor_y = monitor.position().y as f64 / scale;
                     let window_width = 420.0; // 400 panel + 20 shadow padding
-                    let x = (screen_width - window_width) / 2.0;
+                    let x = monitor_x + (screen_width - window_width) / 2.0;
                     let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, 0.0),
+                        tauri::LogicalPosition::new(x, monitor_y),
                     ));
                 }
 
@@ -3534,6 +3570,18 @@ pub fn run() {
 
                 // Keep the island above the menu bar and present in fullscreen Spaces.
                 apply_notch_window_for_spaces(&window);
+
+                // Reposition the island when display configuration changes (e.g. external monitor connected/disconnected).
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = DISPLAY_RECONFIG_APP_HANDLE.set(app.handle().clone());
+                    unsafe {
+                        CGDisplayRegisterReconfigurationCallback(
+                            display_reconfig_callback,
+                            std::ptr::null_mut(),
+                        );
+                    }
+                }
             }
 
             // Ensure settings window is hidden on startup
