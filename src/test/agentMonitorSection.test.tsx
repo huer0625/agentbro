@@ -358,13 +358,13 @@ describe('AgentMonitorSection', () => {
     expect(await screen.findByText('event #1')).toBeInTheDocument()
   })
 
-  it('opens Agent management while keeping other unfinished modules out of the menu', async () => {
+  it('keeps unfinished modules out of the settings menu', async () => {
     monitorMocks.getMonitorSessions.mockResolvedValue([])
     monitorMocks.getMonitorSessionDetail.mockResolvedValue(null)
 
     render(<SettingsApp onClose={vi.fn()} />)
 
-    expect(screen.getByText('settings.agents')).toBeInTheDocument()
+    expect(screen.queryByText('settings.agents')).not.toBeInTheDocument()
     expect(screen.queryByText('settings.agentMonitor')).not.toBeInTheDocument()
     expect(screen.queryByText('settings.switch')).not.toBeInTheDocument()
   })

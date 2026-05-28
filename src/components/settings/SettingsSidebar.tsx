@@ -23,7 +23,6 @@ const sidebarGroups: SidebarGroup[] = [
     items: [
       { id: 'general', labelKey: 'settings.general', icon: '⚙', iconBg: '#8E8E93' },
       { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
-      { id: 'agents', labelKey: 'settings.agents', icon: '🤖', iconBg: '#34C759' },
     ],
   },
   {
