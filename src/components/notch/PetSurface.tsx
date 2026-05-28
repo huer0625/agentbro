@@ -27,6 +27,7 @@ import {
 } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
 import { selectActivePet, usePetStore } from '../../stores/petStore'
+import { usePetVitalsDebug } from '../../stores/petVitalsDebugStore'
 import { getSessionTitle } from '../../utils/sessionDisplay'
 import { isBlockingOverlay, isNonBlockingOverlay } from '../../utils/islandInteraction'
 import { MascotRouter } from './mascots'
@@ -296,19 +297,32 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     }
   }, [dragDirection])
   const animationOverride = dragAnimationOverride ?? summon.summonAnimationOverride ?? null
-  const petPriority = getPetPriority({
+  const realPetPriority = getPetPriority({
     actionCount,
     activePetProvider: activePet?.provider,
     doneUntil: codexPetDoneUntil,
     topSession,
   })
-  const contextPressure = topSession?.contextWindow?.usedPercentage ?? 0
-  const energyLevel = useMemo(() => {
+  const vitalsDebug = usePetVitalsDebug()
+  const petPriority = vitalsDebug.enabled && vitalsDebug.phaseOverride
+    ? debugPhaseToPriority(vitalsDebug.phaseOverride)
+    : realPetPriority
+  const realContextPressure = topSession?.contextWindow?.usedPercentage ?? 0
+  const realEnergyLevel = useMemo(() => {
     const limits = sessions.map((s) => s.rateLimits?.fiveHourUsage ?? 0)
     return limits.length > 0 ? Math.max(...limits) : 0
   }, [sessions])
-  const isWorking = topSession?.phase === 'processing'
-  const isSessionIdle = !topSession || topSession.phase === 'idle' || topSession.phase === 'done'
+  const realIsWorking = topSession?.phase === 'processing'
+  const realIsIdle = !topSession || topSession.phase === 'idle' || topSession.phase === 'done'
+
+  const contextPressure = vitalsDebug.enabled ? vitalsDebug.contextPressure : realContextPressure
+  const energyLevel = vitalsDebug.enabled ? vitalsDebug.energyLevel : realEnergyLevel
+  const isWorking = vitalsDebug.enabled && vitalsDebug.phaseOverride
+    ? (vitalsDebug.phaseOverride === 'working' || vitalsDebug.phaseOverride === 'thinking')
+    : realIsWorking
+  const isSessionIdle = vitalsDebug.enabled && vitalsDebug.phaseOverride
+    ? (vitalsDebug.phaseOverride === 'idle' || vitalsDebug.phaseOverride === 'done')
+    : realIsIdle
 
   const finishDrag = useCallback(
     async (pointerId?: number) => {
@@ -1089,4 +1103,16 @@ function useDefensiveRegistryLoad(
     triggered.current = true
     void loadRegistry()
   }, [error, loadRegistry, loading, registrySize])
+}
+
+function debugPhaseToPriority(phase: string): Priority {
+  switch (phase) {
+    case 'working': return PRIORITY.working
+    case 'thinking': return PRIORITY.thinking
+    case 'done': return PRIORITY.done
+    case 'error': return PRIORITY.error
+    case 'attention': return PRIORITY.attention
+    case 'compacting': return PRIORITY.compacting
+    default: return PRIORITY.idle
+  }
 }

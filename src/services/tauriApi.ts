@@ -276,6 +276,7 @@ export interface BackendConfig {
   showTokenUsage: boolean
   usageQueryEnabled: boolean
   theme: string
+  language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'
   displayId: string
   autoHideNoSessions: boolean
   soundEvents: Record<string, boolean>
@@ -290,6 +291,7 @@ export interface BackendConfig {
   analyticsEnabled: boolean
   analyticsConsentPromptCompleted: boolean
   islandSurfaceMode: 'island' | 'pet'
+  petVitalsDebugOpen?: boolean
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
   islandActivePetId: string | null
@@ -465,12 +467,22 @@ export async function sendMessage(sessionId: string, message: string): Promise<v
   return invoke('send_message', { sessionId, message, activateBeforeSend })
 }
 
+let jumpInFlight = false
+
 export async function jumpToTerminal(sessionId: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] jumpToTerminal(${sessionId})`)
     return
   }
-  return invoke('jump_to_terminal', { sessionId })
+  if (jumpInFlight) {
+    return
+  }
+  jumpInFlight = true
+  try {
+    await invoke('jump_to_terminal', { sessionId })
+  } finally {
+    jumpInFlight = false
+  }
 }
 
 // ── Config Commands ──────────────────────────────────────────────
@@ -487,6 +499,7 @@ export async function getConfig(): Promise<BackendConfig> {
       showTokenUsage: true,
       usageQueryEnabled: true,
       theme: 'midnight',
+      language: 'en',
       displayId: 'primary',
       autoHideNoSessions: false,
       soundEvents: {},
@@ -500,6 +513,7 @@ export async function getConfig(): Promise<BackendConfig> {
       analyticsEnabled: true,
       analyticsConsentPromptCompleted: true,
       islandSurfaceMode: 'island',
+      petVitalsDebugOpen: false,
       islandPetScale: 72,
       islandPetWindowOrigin: null,
       islandActivePetId: null,
@@ -526,6 +540,11 @@ export async function updateConfig(config: BackendConfig): Promise<void> {
     return
   }
   return invoke('update_config', { config })
+}
+
+export async function setLanguage(language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_language', { language })
 }
 
 export async function setAnalyticsEnabled(enabled: boolean): Promise<void> {

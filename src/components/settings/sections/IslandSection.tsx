@@ -121,6 +121,12 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
   }).catch((err) => console.error('Failed to persist island surface options:', err))
 }
 
+function persistPetVitalsDebugOpen(open: boolean) {
+  getConfig()
+    .then((backendConfig) => updateBackendConfig({ ...backendConfig, petVitalsDebugOpen: open }))
+    .catch((err) => console.error('Failed to persist pet vitals debug panel setting:', err))
+}
+
 function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
   const state = useConfigStore.getState()
   getConfig()
@@ -326,6 +332,7 @@ type WebhookProvider = 'dingtalk' | 'feishu'
 const WEBHOOK_EVENT_OPTIONS = [
   'session_start', 'task_complete', 'error', 'waiting_approval', 'waiting_input', 'plan_approval',
 ]
+const DEFAULT_WEBHOOK_EVENTS = ['error', 'waiting_approval', 'waiting_input', 'plan_approval']
 
 function WebhookProviderSection({
   provider, labelKey, descKey, urlPlaceholder, iconEmoji,
@@ -337,11 +344,12 @@ function WebhookProviderSection({
     enabled: false,
     url: '',
     secret: '',
-    events: ['task_complete', 'error', 'waiting_approval', 'waiting_input', 'plan_approval'],
+    events: DEFAULT_WEBHOOK_EVENTS,
     delayEnabled: false,
     delayMinutes: 1,
   })
   const [saving, setSaving] = useState(false)
+  const [savingEnabled, setSavingEnabled] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
 
@@ -374,18 +382,33 @@ function WebhookProviderSection({
     }
   }, [provider])
 
-  const save = async () => {
+  const saveConfig = async (nextConfig: WebhookConfig, showSaving = true) => {
     setSaveResult(null)
-    setSaving(true)
+    if (showSaving) setSaving(true)
     try {
-      await invoke('save_webhook_config', { provider, config })
+      await invoke('save_webhook_config', { provider, config: nextConfig })
       setSaveResult('success')
     } catch (e) {
       console.error('Failed to save webhook config:', e)
       setSaveResult('error')
     } finally {
-      setSaving(false)
+      if (showSaving) setSaving(false)
       setTimeout(() => setSaveResult(null), 3000)
+    }
+  }
+
+  const save = () => saveConfig(config)
+
+  const toggleEnabled = async (enabled: boolean) => {
+    const nextConfig = { ...config, enabled }
+    setConfig(nextConfig)
+    if (nextConfig.url.trim()) {
+      setSavingEnabled(true)
+      try {
+        await saveConfig(nextConfig, false)
+      } finally {
+        setSavingEnabled(false)
+      }
     }
   }
 
@@ -406,7 +429,7 @@ function WebhookProviderSection({
   return (
     <SettingGroup label={`${iconEmoji} ${t(labelKey)}`}>
       <SettingRow label={t('settings.webhookEnabled')} description={t(descKey)}>
-        <Toggle checked={config.enabled} onChange={(v) => setConfig(prev => ({ ...prev, enabled: v }))} />
+        <Toggle checked={config.enabled} onChange={(v) => { void toggleEnabled(v) }} disabled={savingEnabled} />
       </SettingRow>
       {config.enabled && (
         <>
@@ -859,6 +882,20 @@ function DisplayTab() {
                 onChange={(v) => config.updateConfig('petVitalsEnabled', v)}
               />
             </SettingRow>
+            {import.meta.env.DEV && (
+              <SettingRow
+                label={t('settings.petVitalsDebug', { defaultValue: '宠物活力调试' })}
+                description={t('settings.petVitalsDebugDesc', { defaultValue: '打开宠物窗口上的调试面板，用 mock 数据预览阶段、上下文压力和体力消耗。' })}
+              >
+                <Toggle
+                  checked={config.petVitalsDebugOpen}
+                  onChange={(v) => {
+                    config.updateConfig('petVitalsDebugOpen', v)
+                    persistPetVitalsDebugOpen(v)
+                  }}
+                />
+              </SettingRow>
+            )}
             <div className="pet-picker-block">
               <div className="pet-picker-block__header">
                 <div className="pet-picker-block__title">

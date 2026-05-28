@@ -965,6 +965,60 @@ fn webhook_config_from_form(
     }
 }
 
+fn upsert_provider_webhook_config(
+    configs: &mut Vec<webhook::WebhookConfig>,
+    config: webhook::WebhookConfig,
+) {
+    let id = config.id.clone();
+    let platform = config.platform.clone();
+    configs.retain(|existing| existing.id != id && existing.platform != platform);
+    configs.push(config);
+}
+
+#[cfg(test)]
+mod webhook_config_tests {
+    use super::*;
+
+    fn webhook_config(
+        id: &str,
+        platform: webhook::WebhookPlatform,
+        enabled: bool,
+    ) -> webhook::WebhookConfig {
+        webhook::WebhookConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            platform,
+            url: format!("https://example.com/{id}"),
+            secret: None,
+            sources: Vec::new(),
+            events: Vec::new(),
+            enabled,
+            delay_enabled: false,
+            delay_minutes: 1,
+        }
+    }
+
+    #[test]
+    fn upsert_provider_webhook_config_removes_duplicate_platform_configs() {
+        let mut configs = vec![
+            webhook_config("legacy-dingtalk", webhook::WebhookPlatform::DingTalk, true),
+            webhook_config("feishu", webhook::WebhookPlatform::Feishu, true),
+        ];
+
+        upsert_provider_webhook_config(
+            &mut configs,
+            webhook_config("dingtalk", webhook::WebhookPlatform::DingTalk, false),
+        );
+
+        assert_eq!(configs.len(), 2);
+        assert!(configs
+            .iter()
+            .any(|config| config.id == "dingtalk" && !config.enabled));
+        assert!(configs.iter().any(|config| config.id == "feishu"));
+        assert!(!configs.iter().any(|config| config.id == "legacy-dingtalk"));
+    }
+}
+
 #[tauri::command]
 async fn list_webhooks(
     state: tauri::State<'_, commands::AppState>,
@@ -1016,11 +1070,7 @@ async fn save_webhook_config(
 ) -> Result<(), String> {
     let wh = webhook_config_from_form(provider, config, false);
     let mut cfg = state.config_store.get();
-
-    match cfg.webhook_configs.iter_mut().find(|w| w.id == wh.id) {
-        Some(existing) => *existing = wh,
-        None => cfg.webhook_configs.push(wh),
-    }
+    upsert_provider_webhook_config(&mut cfg.webhook_configs, wh);
 
     state.config_store.update(cfg)
 }
@@ -1065,7 +1115,9 @@ async fn test_webhook(
         title: "AgentBro Test".to_string(),
         body: "This is a test notification from AgentBro.".to_string(),
     };
-    let results = webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session").await;
+    let language = state.config_store.get().language;
+    let results =
+        webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session", &language).await;
     if let Some((_, result)) = results.first() {
         match result {
             webhook::WebhookResult::Success => {
@@ -3861,6 +3913,7 @@ pub fn run() {
             commands::jump_to_terminal,
             commands::get_config,
             commands::update_config,
+            commands::set_language,
             commands::set_analytics_enabled,
             commands::set_launch_at_login,
             commands::set_island_feature_flags,

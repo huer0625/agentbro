@@ -69,6 +69,7 @@ impl WebhookForwarder {
         event: &NotificationEvent,
         source: &str,
         session_id: &str,
+        language: &str,
     ) -> Vec<(String, WebhookResult)> {
         let mut results = Vec::new();
 
@@ -91,8 +92,10 @@ impl WebhookForwarder {
             }
 
             let result = match cfg.platform {
-                WebhookPlatform::DingTalk => send_dingtalk(cfg, event, source, session_id),
-                WebhookPlatform::Feishu => send_feishu(cfg, event, source, session_id),
+                WebhookPlatform::DingTalk => {
+                    send_dingtalk(cfg, event, source, session_id, language)
+                }
+                WebhookPlatform::Feishu => send_feishu(cfg, event, source, session_id, language),
             };
             results.push((cfg.id.clone(), result));
         }
@@ -108,8 +111,9 @@ fn send_dingtalk(
     event: &NotificationEvent,
     source: &str,
     session_id: &str,
+    language: &str,
 ) -> WebhookResult {
-    let body = templates::dingtalk_markdown(event, source, session_id);
+    let body = templates::dingtalk_markdown(event, source, session_id, language);
     let url = build_dingtalk_url(&cfg.url, cfg.secret.as_deref());
     post_json_curl(&url, &body)
 }
@@ -141,9 +145,10 @@ fn send_feishu(
     event: &NotificationEvent,
     source: &str,
     session_id: &str,
+    language: &str,
 ) -> WebhookResult {
     let timestamp = now_secs();
-    let mut body = templates::feishu_interactive(event, source, session_id);
+    let mut body = templates::feishu_interactive(event, source, session_id, language);
 
     if let Some(secret) = cfg.secret.as_deref() {
         if !secret.is_empty() {

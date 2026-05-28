@@ -148,6 +148,7 @@ interface ConfigState {
   analyticsConsentPromptCompleted: boolean
   islandSurfaceMode: 'island' | 'pet'
   petVitalsEnabled: boolean
+  petVitalsDebugOpen: boolean
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
   /** Active pet identifier (e.g. 'codex:dewey'). `null` = auto-follow active session's agent type. */
@@ -414,6 +415,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     analyticsConsentPromptCompleted: true,
     islandSurfaceMode: 'island',
     petVitalsEnabled: true,
+    petVitalsDebugOpen: false,
     islandPetScale: 72,
     islandPetWindowOrigin: null,
     islandActivePetId: null,
@@ -515,6 +517,7 @@ export const useConfigStore = create<ConfigStore>()(
   analyticsConsentPromptCompleted: true,
   islandSurfaceMode: 'island',
   petVitalsEnabled: true,
+  petVitalsDebugOpen: false,
   islandPetScale: 72,
   islandPetWindowOrigin: null,
   islandActivePetId: null,

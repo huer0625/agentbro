@@ -5,7 +5,7 @@ import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
 import { Toggle } from '../Toggle'
 import { Dropdown } from '../Dropdown'
-import { setAnalyticsEnabled, setLaunchAtLogin } from '../../../services/tauriApi'
+import { setAnalyticsEnabled, setLanguage, setLaunchAtLogin } from '../../../services/tauriApi'
 
 export function GeneralSection() {
   const { t, i18n } = useTranslation()
@@ -34,8 +34,15 @@ export function GeneralSection() {
             })()}
             options={languageOptions}
             onChange={(v) => {
+              const previousLanguage = config.language
+              const nextLanguage = v as 'en' | 'zh' | 'ja' | 'ko' | 'tr'
               i18n.changeLanguage(v)
-              config.updateConfig('language', v as 'en' | 'zh' | 'ja' | 'ko' | 'tr')
+              config.updateConfig('language', nextLanguage)
+              setLanguage(nextLanguage).catch((error) => {
+                console.error('[settings] setLanguage:', error)
+                i18n.changeLanguage(previousLanguage)
+                config.updateConfig('language', previousLanguage)
+              })
             }}
             minWidth={120}
           />

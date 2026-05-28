@@ -2,7 +2,8 @@
  * Listens for backend events and syncs stores. No-ops in browser dev mode.
  */
 import { useEffect } from 'react'
-import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle } from '../services/tauriApi'
+import i18n from 'i18next'
+import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
 import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
@@ -320,6 +321,12 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('smartSuppression', config.smartSuppression)
   store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
   store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
+  if (config.language) {
+    store.updateConfig('language', config.language)
+    if (i18n.language !== config.language) {
+      void i18n.changeLanguage(config.language)
+    }
+  }
   store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)
   store.updateConfig('displayMonitor', config.displayId)
   store.updateConfig('globalShortcut', config.globalShortcut)
@@ -355,6 +362,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('analyticsEnabled', config.analyticsEnabled ?? true)
   store.updateConfig('analyticsConsentPromptCompleted', config.analyticsConsentPromptCompleted ?? true)
   store.updateConfig('islandSurfaceMode', config.islandSurfaceMode ?? 'island')
+  store.updateConfig('petVitalsDebugOpen', import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false)
   store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
   store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
   store.updateConfig('islandActivePetId', config.islandActivePetId ?? null)
@@ -504,12 +512,19 @@ export function useConfigSync() {
     let unlisten: (() => void) | undefined
 
     getConfig().then((config) => {
-      applyBackendConfig(config)
-      syncThemesFromBackend(config.theme)
+      const localLanguage = useConfigStore.getState().language
+      const effectiveConfig = localLanguage && config.language !== localLanguage
+        ? { ...config, language: localLanguage }
+        : config
+      if (effectiveConfig.language !== config.language) {
+        setLanguage(effectiveConfig.language).catch(e => console.error('[tauri] setLanguage:', e))
+      }
+      applyBackendConfig(effectiveConfig)
+      syncThemesFromBackend(effectiveConfig.theme)
       const petStore = usePetStore.getState()
-      petStore.hydrateFromConfig(config.islandActivePetId ?? null)
+      petStore.hydrateFromConfig(effectiveConfig.islandActivePetId ?? null)
       void petStore.loadRegistry()
-      if (!config.soundRules || Object.keys(config.soundRules).length === 0) {
+      if (!effectiveConfig.soundRules || Object.keys(effectiveConfig.soundRules).length === 0) {
         syncSoundEventSettingsToBackend()
       }
       syncQuietHoursToBackend()

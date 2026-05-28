@@ -8,6 +8,7 @@ import { useTauriInit } from './hooks/useTauri'
 import { useSessionStore } from './stores/sessionStore'
 import { useConfigStore } from './stores/configStore'
 import { isTauri } from './services/tauriApi'
+import { PetVitalsLab } from './components/dev/PetVitalsLab'
 import './styles/globals.css'
 
 export function PetApp() {
@@ -30,10 +31,12 @@ export function PetApp() {
   const sessions = useSessionStore((s) => s.sessionList)
   const scale = useConfigStore((s) => s.islandPetScale)
   const surfaceMode = useConfigStore((s) => s.islandSurfaceMode)
+  const petVitalsDebugOpen = useConfigStore((s) => s.petVitalsDebugOpen)
 
   return (
     <div className="pet-window-root">
       <PetSurface sessions={sessions} scale={scale} hidden={isTauri() ? surfaceMode !== 'pet' : false} />
+      {import.meta.env.DEV && petVitalsDebugOpen && <PetVitalsLab />}
     </div>
   )
 }

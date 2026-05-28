@@ -194,6 +194,13 @@ export function OverlayFeedbackPanel({
       inputFocusedRef.current = false
       dismissAfterSendTimerRef.current = setTimeout(() => {
         dismissAfterSendTimerRef.current = null
+        if (pointerInsideRef.current || inputFocusedRef.current) {
+          remainingRef.current = 0
+          dismissPendingRef.current = true
+          setProgressRatio(0)
+          setIsTimerPaused(true)
+          return
+        }
         onDismissRef.current()
       }, 500)
     } catch (error) {

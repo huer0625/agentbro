@@ -465,6 +465,53 @@ impl HookServer {
             .unwrap_or_else(|| "agent".to_string())
     }
 
+    fn approval_detail_for_webhook(tool_name: &str, raw: &serde_json::Value) -> Option<String> {
+        let input = raw.get("tool_input").or_else(|| raw.get("toolInput"))?;
+        let parsed_input = input
+            .as_str()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .unwrap_or_else(|| input.clone());
+
+        let mut lines = vec![format!("> {}", tool_name)];
+        let command = parsed_input
+            .get("command")
+            .or_else(|| parsed_input.get("cmd"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let description = parsed_input
+            .get("description")
+            .or_else(|| parsed_input.get("desc"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if let Some(command) = command {
+            lines.push(String::new());
+            lines.push("```bash".to_string());
+            lines.push(command.chars().take(1200).collect());
+            lines.push("```".to_string());
+        }
+        if let Some(description) = description {
+            lines.push(String::new());
+            lines.push(format!("> {}", description));
+        }
+        if command.is_none() && description.is_none() {
+            let detail = serde_json::to_string_pretty(&parsed_input)
+                .or_else(|_| serde_json::to_string(&parsed_input))
+                .unwrap_or_default();
+            if detail.trim().is_empty() {
+                return None;
+            }
+            lines.push(String::new());
+            lines.push("```json".to_string());
+            lines.push(detail.chars().take(1600).collect());
+            lines.push("```".to_string());
+        }
+
+        Some(lines.join("\n"))
+    }
+
     fn dispatch_webhook_event(
         config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
         store: &Arc<SessionStore>,
@@ -477,7 +524,9 @@ impl HookServer {
             return;
         };
         let event_key = webhook::templates::event_key(&event);
-        let configs = config_store.get().webhook_configs;
+        let app_config = config_store.get();
+        let language = app_config.language.clone();
+        let configs = app_config.webhook_configs;
         let mut immediate = Vec::new();
 
         for cfg in configs {
@@ -510,8 +559,14 @@ impl HookServer {
         }
 
         tokio::spawn(async move {
-            let results =
-                webhook::WebhookForwarder::send(&immediate, &event, &source, &session_id).await;
+            let results = webhook::WebhookForwarder::send(
+                &immediate,
+                &event,
+                &source,
+                &session_id,
+                &language,
+            )
+            .await;
             for (id, result) in results {
                 match result {
                     webhook::WebhookResult::Success => {
@@ -555,7 +610,9 @@ impl HookServer {
                 return;
             }
 
-            let cfg = config_store.get().webhook_configs.into_iter().find(|cfg| {
+            let app_config = config_store.get();
+            let language = app_config.language;
+            let cfg = app_config.webhook_configs.into_iter().find(|cfg| {
                 cfg.id == webhook_id && cfg.delay_enabled && cfg.matches(&event_key, &source)
             });
 
@@ -564,7 +621,8 @@ impl HookServer {
             };
 
             let results =
-                webhook::WebhookForwarder::send(&[cfg], &event, &source, &session_id).await;
+                webhook::WebhookForwarder::send(&[cfg], &event, &source, &session_id, &language)
+                    .await;
             for (id, result) in results {
                 match result {
                     webhook::WebhookResult::Success => log::info!(
@@ -842,6 +900,7 @@ impl HookServer {
                     &store,
                     NotificationEvent::WaitingApproval {
                         tool_name: tool_name.clone(),
+                        detail: Self::approval_detail_for_webhook(tool_name, &raw),
                     },
                     Self::source_for_webhook(&store, &raw, session_id, None),
                     session_id.clone(),

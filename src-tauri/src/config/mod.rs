@@ -77,6 +77,8 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub usage_query_enabled: bool,
     pub theme: String,
+    #[serde(default = "default_language")]
+    pub language: String,
     /// Which display to position on: "primary" or a monitor name
     #[serde(default = "default_display_id")]
     pub display_id: String,
@@ -156,6 +158,9 @@ pub struct AppConfig {
     /// Island surface mode: "island" or "pet"
     #[serde(default = "default_island_surface_mode")]
     pub island_surface_mode: String,
+    /// Dev-only pet vitals debug panel visibility.
+    #[serde(default)]
+    pub pet_vitals_debug_open: bool,
     /// Pet scale percentage
     #[serde(default = "default_island_pet_scale")]
     pub island_pet_scale: u32,
@@ -189,6 +194,10 @@ pub struct AppConfig {
 
 fn default_display_id() -> String {
     "primary".to_string()
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 fn default_true() -> bool {
@@ -255,6 +264,7 @@ impl Default for AppConfig {
             show_token_usage: true,
             usage_query_enabled: true,
             theme: "midnight".to_string(),
+            language: default_language(),
             display_id: "primary".to_string(),
             auto_hide_no_sessions: false,
             sound_events: std::collections::HashMap::new(),
@@ -282,6 +292,7 @@ impl Default for AppConfig {
             analytics_consent_prompt_completed: true,
             follow_focus: false,
             island_surface_mode: default_island_surface_mode(),
+            pet_vitals_debug_open: false,
             island_pet_scale: default_island_pet_scale(),
             island_pet_window_origin: None,
             island_active_pet_id: None,

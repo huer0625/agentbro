@@ -12,29 +12,32 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 60%, rgba(255, 80, 60, var(--flush-intensity, 0)), transparent 70%);
+  background: radial-gradient(circle at 50% 60%, rgba(255, 80, 60, 0.8), transparent 70%);
   mix-blend-mode: multiply;
-  transition: --flush-intensity 0.8s ease;
+  opacity: var(--flush-intensity, 0);
+  transition: opacity 0.8s ease;
 }
 
-/* ── Context pressure bar (top) ── */
+/* ── Context pressure bar (vertical, right side) ── */
 .pet-vitals__pressure-bar {
   position: absolute;
-  top: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 60%;
-  height: 4px;
+  top: 10%;
+  right: 2px;
+  width: 4px;
+  height: 80%;
   border-radius: 2px;
   background: rgba(0, 0, 0, 0.15);
   overflow: hidden;
 }
 
 .pet-vitals__pressure-fill {
+  width: 100%;
   height: 100%;
-  width: var(--pressure-pct, 0%);
   border-radius: 2px;
-  transition: width 1.2s ease, background-color 0.6s ease;
+  transform: scaleY(calc(var(--pressure-pct, 0) / 100));
+  transform-origin: bottom;
+  will-change: transform;
+  transition: transform 1.2s ease, background-color 0.6s ease;
 }
 
 .pet-vitals__pressure-bar[data-tier="low"] .pet-vitals__pressure-fill {
@@ -125,9 +128,12 @@
 
 .pet-vitals__energy-fill {
   height: 100%;
-  width: var(--energy-pct, 100%);
+  width: 100%;
   border-radius: 1.5px;
-  transition: width 2s ease, background-color 1s ease;
+  transform: scaleX(calc(var(--energy-pct, 100) / 100));
+  transform-origin: left;
+  will-change: transform;
+  transition: transform 2s ease, background-color 1s ease;
 }
 
 .pet-vitals__energy[data-tier="full"] .pet-vitals__energy-fill {

@@ -12,13 +12,38 @@ import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
 import './styles/globals.css'
 
+// Fields whose source of truth lives in the Rust backend and is broadcast via
+// the `config-changed` event. We must NOT replay stale values from another
+// window's `storage` snapshot, or a notch window writing localStorage during a
+// `island-layout-preview` race can clobber the settings window's just-changed
+// `islandSurfaceMode`, causing the surface mode toggle to ping-pong.
+const BACKEND_MANAGED_CONFIG_KEYS = new Set<keyof ReturnType<typeof useConfigStore.getState>>([
+  'soundEnabled', 'volume', 'launchAtLogin', 'autoHide', 'smartSuppression',
+  'showUsageQuota', 'usageQueryEnabled', 'language', 'autoHideNoSessions', 'displayMonitor',
+  'globalShortcut',
+  'shortcutApprove', 'shortcutApproveEnabled',
+  'shortcutDeny', 'shortcutDenyEnabled',
+  'shortcutSkip', 'shortcutSkipEnabled',
+  'soundEvents', 'soundRules', 'customSounds', 'soundPack',
+  'probeSessionFilter',
+  'tipsEnabled', 'pixelCursorEnabled', 'confettiEnabled',
+  'analyticsEnabled', 'analyticsConsentPromptCompleted',
+  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandActivePetId',
+  'followFocus', 'quietHours', 'idleTimeoutMinutes',
+])
+
 function applyPersistedConfig(raw: string | null) {
   if (!raw) return
   try {
     const persisted = JSON.parse(raw) as { state?: Partial<ReturnType<typeof useConfigStore.getState>> }
-    if (persisted.state) {
-      useConfigStore.setState({ ...persisted.state, followFocus: false })
+    if (!persisted.state) return
+    const filtered: Partial<ReturnType<typeof useConfigStore.getState>> = {}
+    for (const key of Object.keys(persisted.state) as Array<keyof ReturnType<typeof useConfigStore.getState>>) {
+      if (BACKEND_MANAGED_CONFIG_KEYS.has(key)) continue
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(filtered as any)[key] = (persisted.state as any)[key]
     }
+    useConfigStore.setState(filtered)
   } catch {
     // Ignore malformed persisted config payloads.
   }

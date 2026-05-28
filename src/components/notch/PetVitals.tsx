@@ -65,7 +65,7 @@ export function PetVitals({ contextPressure, energyLevel, isWorking, isIdle, siz
         <div className="pet-vitals__pressure-bar" data-tier={pressureTier}>
           <div
             className="pet-vitals__pressure-fill"
-            style={{ '--pressure-pct': `${pressurePercent}%` } as React.CSSProperties}
+            style={{ '--pressure-pct': pressurePercent } as React.CSSProperties}
           />
         </div>
       )}
@@ -84,7 +84,7 @@ export function PetVitals({ contextPressure, energyLevel, isWorking, isIdle, siz
         <div className="pet-vitals__energy" data-tier={energyTier}>
           <div
             className="pet-vitals__energy-fill"
-            style={{ '--energy-pct': `${energyPercent}%` } as React.CSSProperties}
+            style={{ '--energy-pct': energyPercent } as React.CSSProperties}
           />
         </div>
       )}

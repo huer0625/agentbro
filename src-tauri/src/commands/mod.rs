@@ -2262,12 +2262,31 @@ pub async fn simulate_hook_event(
 
 // ── Terminal Commands ─────────────────────────────────────────────
 
+/// Process-wide lock to serialize jump_to_terminal executions.
+/// A single jump may fork-exec `pgrep`, `lsof`, `osascript`, and `open` and
+/// run AppleScript loops over every iTerm/Ghostty window — running multiple
+/// concurrently (e.g. from a user rage-clicking a stale "jump" button) can
+/// stack into a system-wide stall. We serialize and silently drop overlap.
+static JUMP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 #[tauri::command]
 pub async fn jump_to_terminal(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    let lock = JUMP_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::info!(
+                "Jump already in progress; ignoring duplicate click for session={}",
+                session_id
+            );
+            return Ok(());
+        }
+    };
+
     log::info!("Jump to terminal: session={}", session_id);
     release_notch_keyboard_focus(&app);
 
@@ -2743,6 +2762,17 @@ pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Res
         state.telemetry.handle_consent_changed(&config).await;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_language(state: State<'_, AppState>, language: String) -> Result<(), String> {
+    let language = match language.as_str() {
+        "en" | "zh" | "ja" | "ko" | "tr" => language,
+        other => return Err(format!("Unsupported language: {}", other)),
+    };
+    let mut config = state.config_store.get();
+    config.language = language;
+    state.config_store.update(config)
 }
 
 #[tauri::command]
