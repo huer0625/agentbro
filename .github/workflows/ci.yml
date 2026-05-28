@@ -42,6 +42,10 @@ jobs:
       - name: Install system dependencies
         run: |
           brew install pkg-config
+      - name: Prepare bridge resource
+        run: |
+          mkdir -p src-tauri/target/agentbro-bridge-resource
+          touch src-tauri/target/agentbro-bridge-resource/agentbro-bridge
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
