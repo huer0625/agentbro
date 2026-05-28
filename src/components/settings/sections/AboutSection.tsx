@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
+import { save } from '@tauri-apps/plugin-dialog'
 import { quitApp, exportDiagnostics, getCurrentAppVersion } from '../../../services/tauriApi'
 import type { UpdateStatus } from '../../../hooks/useUpdater'
+import { useConfigStore } from '../../../stores/configStore'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
+import { Toggle } from '../Toggle'
 import { GlassButton } from '../../shared'
 
 interface AboutSectionProps {
@@ -15,47 +18,39 @@ interface AboutSectionProps {
   onCheckForUpdate?: () => void
 }
 
-function AboutLinkIcon({ type }: { type: 'website' | 'github' | 'releases' | 'community' }) {
-  if (type === 'website') {
-    return (
-      <svg aria-hidden="true" className="about-link-icon" fill="none" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="9" />
-        <path d="M3.6 9h16.8M3.6 15h16.8M12 3c2.1 2.35 3.15 5.35 3.15 9S14.1 18.65 12 21M12 3C9.9 5.35 8.85 8.35 8.85 12S9.9 18.65 12 21" />
-      </svg>
-    )
-  }
+const DEVELOPER_GITHUB_URL = 'https://github.com/shirenchuang'
+const REPO_ISSUES_URL = 'https://github.com/shirenchuang/agentbro/issues/new'
+const REPO_RELEASES_URL = 'https://github.com/shirenchuang/agentbro/releases'
+const WEBSITE_URL = 'https://www.agentbro.net'
 
-  if (type === 'github') {
-    return (
-      <svg aria-hidden="true" className="about-link-icon" fill="currentColor" viewBox="0 0 24 24">
-        <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.61-3.37-1.18-3.37-1.18-.45-1.15-1.1-1.46-1.1-1.46-.9-.62.07-.61.07-.61 1 .07 1.53 1.04 1.53 1.04.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.55 9.55 0 0 1 12 6.02c.85 0 1.7.11 2.5.34 1.9-1.29 2.74-1.02 2.74-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.76c0 .26.18.58.69.48A10 10 0 0 0 12 2Z" />
-      </svg>
-    )
-  }
-
-  if (type === 'community') {
-    return (
-      <svg aria-hidden="true" className="about-link-icon" fill="none" viewBox="0 0 24 24">
-        <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2h9A3.5 3.5 0 0 1 20 5.5v7A3.5 3.5 0 0 1 16.5 16H12l-4.5 4v-4A3.5 3.5 0 0 1 4 12.5v-7Z" />
-        <path d="M8 8h.01M12 8h.01M16 8h.01" />
-      </svg>
-    )
-  }
-
+function RowIcon({ tone, children }: { tone: string; children: React.ReactNode }) {
   return (
-    <svg aria-hidden="true" className="about-link-icon" fill="none" viewBox="0 0 24 24">
-      <path d="M20 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5" />
-      <path d="M12 4v10" />
-      <path d="m7 9 5 5 5-5" />
+    <span className="about-row-icon" style={{ background: tone }} aria-hidden="true">
+      {children}
+    </span>
+  )
+}
+
+function ExternalArrow() {
+  return (
+    <svg aria-hidden="true" className="about-row-arrow" viewBox="0 0 16 16" fill="none">
+      <path d="M5 11l6-6M6 5h5v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
 
 export function AboutSection({ updateStatus, updateVersion, updateError, onCheckForUpdate }: AboutSectionProps) {
   const { t } = useTranslation()
-  const [diagStatus, setDiagStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
+  const [diagStatus, setDiagStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [communityOpen, setCommunityOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('...')
+  const communityBtnRef = useRef<HTMLButtonElement>(null)
+  const communityPopoverRef = useRef<HTMLDivElement>(null)
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null)
+
+  const autoCheckUpdate = useConfigStore((s) => s.autoCheckUpdate)
+  const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
+  const updateConfig = useConfigStore((s) => s.updateConfig)
 
   useEffect(() => {
     let cancelled = false
@@ -71,16 +66,64 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
     }
   }, [])
 
+  useEffect(() => {
+    if (!communityOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCommunityOpen(false)
+    }
+    const onScroll = () => updatePopoverPos()
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onScroll)
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onScroll)
+      window.removeEventListener('scroll', onScroll, true)
+    }
+  }, [communityOpen])
+
+  useLayoutEffect(() => {
+    if (communityOpen) updatePopoverPos()
+    else setPopoverPos(null)
+  }, [communityOpen])
+
+  const updatePopoverPos = () => {
+    const btn = communityBtnRef.current
+    if (!btn) return
+    const rect = btn.getBoundingClientRect()
+    const popoverWidth = 380
+    const popoverHeight = 320
+    const margin = 12
+    const anchorCenterX = rect.left + rect.width / 2
+    let left = anchorCenterX - popoverWidth / 2
+    left = Math.max(margin, Math.min(left, window.innerWidth - popoverWidth - margin))
+    let top = rect.bottom + 8
+    if (top + popoverHeight + margin > window.innerHeight) {
+      top = Math.max(margin, rect.top - popoverHeight - 8)
+    }
+    setPopoverPos({ top, left })
+  }
+
   const openExternalLink = (url: string) => {
     open(url).catch((err) => console.warn('[AboutSection] open link:', err))
   }
 
   const handleExportDiagnostics = async () => {
-    setDiagStatus('copying')
+    setDiagStatus('saving')
     try {
-      const json = await exportDiagnostics()
-      await navigator.clipboard.writeText(json)
-      setDiagStatus('copied')
+      const now = new Date()
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const defaultName = `AgentBro-Diagnostics-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.zip`
+      const targetPath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+      })
+      if (!targetPath) {
+        setDiagStatus('idle')
+        return
+      }
+      await exportDiagnostics(targetPath)
+      setDiagStatus('saved')
       setTimeout(() => setDiagStatus('idle'), 2000)
     } catch {
       setDiagStatus('error')
@@ -109,6 +152,139 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
         <div className="about-header__version">Version {appVersion}</div>
       </div>
 
+      <SettingGroup>
+        <SettingRow label={t('settings.checkForUpdates')} description={updateDescription}>
+          <GlassButton
+            variant="secondary"
+            onClick={() => onCheckForUpdate?.()}
+            disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+          >
+            {updateStatus === 'checking' || updateStatus === 'downloading' ? '...' : t('settings.checkNow')}
+          </GlassButton>
+        </SettingRow>
+        <SettingRow
+          label={t('settings.autoCheckUpdate')}
+          description={t('settings.autoCheckUpdateDesc')}
+        >
+          <Toggle checked={autoCheckUpdate} onChange={(v) => updateConfig('autoCheckUpdate', v)} />
+        </SettingRow>
+        <SettingRow
+          label={t('settings.autoInstallUpdate')}
+          description={t('settings.autoInstallUpdateDesc')}
+        >
+          <Toggle checked={autoInstallUpdate} onChange={(v) => updateConfig('autoInstallUpdate', v)} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup>
+        <button type="button" className="about-link-row" onClick={() => openExternalLink(WEBSITE_URL)}>
+          <RowIcon tone="#34C759">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3.6 9h16.8M3.6 15h16.8M12 3c2.1 2.35 3.15 5.35 3.15 9S14.1 18.65 12 21M12 3C9.9 5.35 8.85 8.35 8.85 12S9.9 18.65 12 21" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.website')}</span>
+          <span className="about-link-row__value">agentbro.net</span>
+          <ExternalArrow />
+        </button>
+        <button type="button" className="about-link-row" onClick={() => openExternalLink(DEVELOPER_GITHUB_URL)}>
+          <RowIcon tone="#8E8E93">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.developer')}</span>
+          <span className="about-link-row__value">{t('settings.developerName')}</span>
+          <ExternalArrow />
+        </button>
+        <button type="button" className="about-link-row" onClick={() => openExternalLink(REPO_RELEASES_URL)}>
+          <RowIcon tone="#AF52DE">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+              <path d="m3.27 6.96 8.73 5.05 8.73-5.05M12 22.08V12" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.releases')}</span>
+          <span className="about-link-row__value">GitHub</span>
+          <ExternalArrow />
+        </button>
+        <button ref={communityBtnRef} type="button" className="about-link-row" onClick={() => setCommunityOpen((open) => !open)}>
+          <RowIcon tone="#5856D6">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2h9A3.5 3.5 0 0 1 20 5.5v7A3.5 3.5 0 0 1 16.5 16H12l-4.5 4v-4A3.5 3.5 0 0 1 4 12.5v-7Z" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.community')}</span>
+          <ExternalArrow />
+        </button>
+        <button type="button" className="about-link-row" onClick={() => openExternalLink(REPO_ISSUES_URL)}>
+          <RowIcon tone="#FF9500">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <path d="M8 2v3M16 2v3M5 8h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
+              <path d="M9 13l2 2 4-4" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.reportBug')}</span>
+          <span className="about-link-row__value">GitHub</span>
+          <ExternalArrow />
+        </button>
+        <button
+          type="button"
+          className="about-link-row"
+          onClick={() => openExternalLink(`mailto:${t('settings.feedbackEmail')}`)}
+        >
+          <RowIcon tone="#007AFF">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="m3 7 9 6 9-6" />
+            </svg>
+          </RowIcon>
+          <span className="about-link-row__label">{t('settings.sendFeedback')}</span>
+          <span className="about-link-row__value about-link-row__value--accent">{t('settings.feedbackEmail')}</span>
+          <ExternalArrow />
+        </button>
+      </SettingGroup>
+
+      {communityOpen && (
+        <>
+          <div className="about-community-backdrop" onClick={() => setCommunityOpen(false)} />
+          <div
+            ref={communityPopoverRef}
+            className="about-community-popover"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="about-community-title"
+            style={popoverPos ? { top: popoverPos.top, left: popoverPos.left, visibility: 'visible' } : { visibility: 'hidden' }}
+          >
+            <div className="about-community-popover__header">
+              <h3 id="about-community-title">{t('settings.community')}</h3>
+              <button
+                type="button"
+                className="about-community-popover__close"
+                aria-label={t('settings.communityClose', { defaultValue: '关闭' })}
+                onClick={() => setCommunityOpen(false)}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="about-community-popover__grid">
+              <div className="about-community-popover__item">
+                <img src="/agentbro-wechat-qr.jpg" alt={t('settings.communityWechatAlt', { defaultValue: 'WeChat QR code' })} />
+                <span className="about-community-popover__label">{t('settings.communityWechat', { defaultValue: 'WeChat' })}</span>
+              </div>
+              <div className="about-community-popover__item">
+                <img src="/agentbro-group-qr.png" alt={t('settings.communityGroupAlt', { defaultValue: 'WeChat Group QR code' })} />
+                <span className="about-community-popover__label">{t('settings.communityGroup', { defaultValue: 'WeChat Group' })}</span>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       <SettingGroup label={t('settings.logoMeaning', { defaultValue: 'Logo Meaning' })}>
         <div className="about-logo-meaning">
           <img src="/agentbro-logo.png" alt="" aria-hidden="true" />
@@ -120,54 +296,15 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
       </SettingGroup>
 
       <SettingGroup>
-        <SettingRow label={t('settings.checkForUpdates')} description={updateDescription}>
-          <GlassButton
-            variant="secondary"
-            onClick={() => onCheckForUpdate?.()}
-            disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
-          >
-            {updateStatus === 'checking' || updateStatus === 'downloading' ? '...' : t('settings.checkNow')}
-          </GlassButton>
-        </SettingRow>
         <SettingRow label={t('settings.exportDiagnostics')} description={t('settings.exportDiagnosticsDesc')}>
           <GlassButton
             variant="secondary"
             onClick={handleExportDiagnostics}
-            disabled={diagStatus === 'copying'}
+            disabled={diagStatus === 'saving'}
           >
-            {diagStatus === 'copied' ? 'Copied!' : diagStatus === 'error' ? 'Failed' : t('settings.export')}
+            {diagStatus === 'saved' ? t('settings.exportSaved', { defaultValue: 'Saved!' }) : diagStatus === 'error' ? t('settings.exportFailed', { defaultValue: 'Failed' }) : t('settings.export')}
           </GlassButton>
         </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.links', { defaultValue: 'Links' })}>
-        <div className="about-link-actions">
-          <GlassButton className="about-link-button" variant="secondary" onClick={() => openExternalLink('https://www.agentbro.net')}>
-            <AboutLinkIcon type="website" />
-            {t('settings.website', { defaultValue: 'Website' })}
-          </GlassButton>
-          <GlassButton className="about-link-button" variant="secondary" onClick={() => openExternalLink('https://github.com/shirenchuang/agentbro')}>
-            <AboutLinkIcon type="github" />
-            {t('settings.github', { defaultValue: 'GitHub' })}
-          </GlassButton>
-          <GlassButton className="about-link-button" variant="secondary" onClick={() => openExternalLink('https://github.com/shirenchuang/agentbro/releases')}>
-            <AboutLinkIcon type="releases" />
-            {t('settings.releases', { defaultValue: 'Releases' })}
-          </GlassButton>
-          <GlassButton className="about-link-button" variant="secondary" onClick={() => setCommunityOpen((open) => !open)}>
-            <AboutLinkIcon type="community" />
-            {t('settings.community', { defaultValue: 'AgentBro Community' })}
-          </GlassButton>
-        </div>
-        {communityOpen && (
-          <div className="about-community-card">
-            <img src="/agentbro-wechat-qr.jpg" alt={t('settings.communityQrAlt', { defaultValue: 'AgentBro community WeChat QR code' })} />
-            <div>
-              <strong>{t('settings.communityTitle', { defaultValue: 'Join the AgentBro community' })}</strong>
-              <span>{t('settings.communityDesc', { defaultValue: 'Scan the QR code to add WeChat, then mention AgentBro community.' })}</span>
-            </div>
-          </div>
-        )}
       </SettingGroup>
 
       <SettingGroup label={t('settings.credits')}>
