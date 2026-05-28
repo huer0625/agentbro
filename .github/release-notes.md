@@ -4,12 +4,8 @@ AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次�
 
 ## 主要更新
 
-- 改进 CLI Agent 检测：统一查找可执行文件，并覆盖 Homebrew、npm、Bun、Cargo、nvm 等常见安装路径。
-- 修复 Bridge 打包与安装：将 `agentbro-bridge` 作为应用资源打包，Hook 安装时会给出更清晰的缺失路径提示。
-- 优化 Hook 安装体验：批量安装会跳过不可安装的 CLI，错误提示更易读。
-- 改进更新流程：下载完成后再次点击安装会直接重启应用，避免重复下载。
-- 调整隐私设置入口：匿名分析开关移动到关于页，方便和版本、诊断信息一起管理。
-- 新增项目内 release skill：沉淀 AgentBro 发版流程、版本校验、Release notes 验证和 Homebrew 注意事项。
+- 修复正式发布打包失败：对 `Contents/Resources/agentbro-bridge` 进行 Developer ID 签名，避免 Apple notarization 拒绝未签名的 helper 可执行文件。
+- 保留 v0.1.8 的改进：CLI Agent 检测、Bridge 资源打包、Hook 安装体验、更新重启流程、隐私设置入口和项目内 release skill。
 
 ## 安装与更新
 
