@@ -2806,25 +2806,7 @@ fn launch_agent_path() -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn app_launch_target() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    for ancestor in exe.ancestors() {
-        if ancestor.extension().and_then(|ext| ext.to_str()) == Some("app") {
-            return Ok(ancestor.to_path_buf());
-        }
-    }
-    Ok(exe)
-}
-
-#[cfg(target_os = "macos")]
-fn escape_plist(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
+const APP_BUNDLE_IDENTIFIER: &str = "com.agentbro.desktop";
 
 #[cfg(target_os = "macos")]
 fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
@@ -2833,8 +2815,6 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
         if let Some(parent) = plist_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let target = app_launch_target()?;
-        let target = escape_plist(&target.to_string_lossy());
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2845,7 +2825,8 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/open</string>
-    <string>{target}</string>
+    <string>-b</string>
+    <string>{APP_BUNDLE_IDENTIFIER}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
