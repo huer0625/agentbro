@@ -1,10 +1,11 @@
-// Codex pet asset discovery — replicates evolab/codex-pet-discovery.ts in pure Rust.
+// Pet asset discovery — Codex-compatible sprite atlas loading in pure Rust.
 //
 // Sources, in order of precedence:
-//   1. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp (unpacked)
-//   2. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
-//   3. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (user-defined)
-//   4. ~/Applications/Codex.app/...                         (per-user install fallback)
+//   1. AgentBro bundled resources: <resources>/pets/<id>/pet.json + spritesheet
+//   2. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp
+//   3. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
+//   4. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (user-defined)
+//   5. ~/Applications/Codex.app/...                         (per-user install fallback)
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 const MAX_SPRITESHEET_BYTES: u64 = 10 * 1024 * 1024;
 // asar v1: content starts at 8 + u32@4 (aligned pickle size). Using 16 + u32@12
@@ -43,7 +45,7 @@ pub struct PetMetadata {
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub provider: String, // "codex" | "user"
+    pub provider: String, // "agentbro" | "codex" | "user"
     pub builtin: bool,
     pub spritesheet_data_url: String,
     pub frame_size: FrameSize,
@@ -63,6 +65,18 @@ struct BuiltInCodexPet {
     display_name: &'static str,
     description: &'static str,
 }
+
+struct BuiltInAgentBroPet {
+    id: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+}
+
+const BUILT_IN_AGENTBRO_PETS: &[BuiltInAgentBroPet] = &[BuiltInAgentBroPet {
+    id: "a-bro",
+    display_name: "A-Bro(阿布)",
+    description: "AgentBro's default pet: two cute collaborator halves, charcoal A-side and teal B-side, clasping hands as a living AB handshake mascot.",
+}];
 
 const BUILT_IN_CODEX_PETS: &[BuiltInCodexPet] = &[
     BuiltInCodexPet {
@@ -107,10 +121,36 @@ const BUILT_IN_CODEX_PETS: &[BuiltInCodexPet] = &[
     },
 ];
 
-/// Discover all available pets from Codex.app and user-defined pet directories.
+/// Discover all available pets from AgentBro resources, Codex.app, and user-defined pet directories.
 pub fn discover_all_pets() -> PetDiscoveryResult {
+    discover_all_pets_with_resource_dir(None)
+}
+
+pub fn discover_all_pets_with_resource_dir(
+    agentbro_resources_dir: Option<&Path>,
+) -> PetDiscoveryResult {
     let mut pets = Vec::new();
     let mut warnings = Vec::new();
+
+    let agentbro_resource_dirs = find_agentbro_resource_dirs(agentbro_resources_dir);
+    for builtin in BUILT_IN_AGENTBRO_PETS {
+        let mut loaded = None;
+        for resources_dir in &agentbro_resource_dirs {
+            loaded = read_agentbro_pet(&resources_dir.join("pets").join(builtin.id), builtin);
+            if loaded.is_some() {
+                break;
+            }
+        }
+        match loaded {
+            Some(pet) => pets.push(pet),
+            None => {
+                warnings.push(format!(
+                    "Failed to load AgentBro built-in pet '{}'",
+                    builtin.id
+                ));
+            }
+        }
+    }
 
     if let Some(resources_dir) = find_codex_resources_dir() {
         for builtin in BUILT_IN_CODEX_PETS {
@@ -134,11 +174,29 @@ pub fn discover_all_pets() -> PetDiscoveryResult {
 }
 
 #[tauri::command]
-pub fn discover_pets() -> PetDiscoveryResult {
-    discover_all_pets()
+pub fn discover_pets(app: tauri::AppHandle) -> PetDiscoveryResult {
+    let resource_dir = app.path().resource_dir().ok();
+    discover_all_pets_with_resource_dir(resource_dir.as_deref())
 }
 
-// ── Codex.app resource discovery ─────────────────────────────────────────────
+// ── Resource discovery ───────────────────────────────────────────────────────
+
+fn find_agentbro_resource_dirs(runtime_resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = runtime_resource_dir {
+        candidates.push(path.to_path_buf());
+    }
+
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../src"));
+
+    let mut result = Vec::new();
+    for candidate in candidates {
+        if candidate.join("pets").is_dir() && !result.contains(&candidate) {
+            result.push(candidate);
+        }
+    }
+    result
+}
 
 fn find_codex_resources_dir() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> =
@@ -161,6 +219,51 @@ fn find_user_pets_dir() -> Option<PathBuf> {
 }
 
 // ── Spritesheet readers ──────────────────────────────────────────────────────
+
+fn read_agentbro_pet(root: &Path, builtin: &BuiltInAgentBroPet) -> Option<PetMetadata> {
+    let json_path = root.join("pet.json");
+    let pet_json = if json_path.is_file() {
+        let json_str = fs::read_to_string(&json_path).ok()?;
+        serde_json::from_str::<JsonValue>(&json_str).ok()?
+    } else {
+        JsonValue::Object(Default::default())
+    };
+
+    let sprite_path_rel = pet_json
+        .get("spritesheetPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("spritesheet.webp");
+    let data_url = read_user_spritesheet(root, sprite_path_rel)?;
+
+    let display_name = pet_json
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or(builtin.display_name)
+        .to_string();
+    let description = pet_json
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or(builtin.description)
+        .to_string();
+    let frame_size = parse_frame_size(&pet_json).unwrap_or(FrameSize {
+        width: 192,
+        height: 208,
+    });
+    let animations = parse_animations(&pet_json).unwrap_or_else(default_codex_animations);
+    let state_mapping = parse_state_mapping(&pet_json).unwrap_or_else(default_codex_state_mapping);
+
+    Some(PetMetadata {
+        id: format!("agentbro:{}", builtin.id),
+        display_name,
+        description: Some(description),
+        provider: "agentbro".into(),
+        builtin: true,
+        spritesheet_data_url: data_url,
+        frame_size,
+        animations,
+        state_mapping,
+    })
+}
 
 fn read_builtin_spritesheet_data_url(resources_dir: &Path, asset_ref: &str) -> Option<String> {
     if let Some(url) = read_unpacked_codex_asset(resources_dir, asset_ref) {
@@ -580,6 +683,26 @@ mod tests {
         let states = default_codex_state_mapping();
         assert_eq!(states.get("done").unwrap(), "jumping");
         assert_eq!(states.get("error").unwrap(), "failed");
+    }
+
+    #[test]
+    fn discovers_agentbro_builtin_pet_from_resources() {
+        let resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src");
+        let result = discover_all_pets_with_resource_dir(Some(&resource_dir));
+        let pet = result
+            .pets
+            .iter()
+            .find(|pet| pet.id == "agentbro:a-bro")
+            .expect("A-Bro built-in pet should be discoverable");
+
+        assert_eq!(pet.provider, "agentbro");
+        assert!(pet.builtin);
+        assert_eq!(pet.display_name, "A-Bro(阿布)");
+        assert_eq!(pet.frame_size.width, 192);
+        assert_eq!(pet.frame_size.height, 208);
+        assert!(pet
+            .spritesheet_data_url
+            .starts_with("data:image/webp;base64,"));
     }
 
     /// End-to-end smoke test against the local Codex.app and ~/.codex/pets.

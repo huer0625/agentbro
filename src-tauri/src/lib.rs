@@ -2810,7 +2810,11 @@ extern "C" {
 static DISPLAY_RECONFIG_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
-unsafe extern "C" fn display_reconfig_callback(_display: u32, _flags: u32, _user_info: *mut std::ffi::c_void) {
+unsafe extern "C" fn display_reconfig_callback(
+    _display: u32,
+    _flags: u32,
+    _user_info: *mut std::ffi::c_void,
+) {
     // The callback fires before and after reconfiguration.
     // Only reposition after the change settles.
     if _flags & 1 != 0 {
@@ -2884,6 +2888,43 @@ fn apply_notch_window_for_spaces(window: &tauri::WebviewWindow) {
 
 #[cfg(not(target_os = "macos"))]
 fn apply_notch_window_for_spaces(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+fn apply_pet_window_for_spaces(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
+
+    let _ = window.set_visible_on_all_workspaces(true);
+    if let Ok(ptr) = window.ns_window() {
+        unsafe {
+            let ns_window = ptr as *const NSWindow;
+            let mut behavior = (*ns_window).collectionBehavior();
+
+            behavior &= !(NSWindowCollectionBehavior::Primary
+                | NSWindowCollectionBehavior::Auxiliary
+                | NSWindowCollectionBehavior::Managed
+                | NSWindowCollectionBehavior::Transient
+                | NSWindowCollectionBehavior::FullScreenPrimary
+                | NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenAllowsTiling
+                | NSWindowCollectionBehavior::FullScreenDisallowsTiling
+                | NSWindowCollectionBehavior::MoveToActiveSpace
+                | NSWindowCollectionBehavior::ParticipatesInCycle
+                | NSWindowCollectionBehavior::Stationary);
+            behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::CanJoinAllApplications
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle;
+            (*ns_window).setCollectionBehavior(behavior);
+            (*ns_window).setCanHide(false);
+            (*ns_window).setLevel(NSScreenSaverWindowLevel + 1);
+            (*ns_window).orderFrontRegardless();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_pet_window_for_spaces(_window: &tauri::WebviewWindow) {}
 
 fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
     let handle = app.clone();
@@ -3140,8 +3181,9 @@ pub fn sync_pet_window_visibility_inner(
             );
         }
     }
+    apply_pet_window_for_spaces(&pet_window);
     let _ = pet_window.show();
-    apply_notch_window_for_spaces(&pet_window);
+    apply_pet_window_for_spaces(&pet_window);
 }
 
 fn position_pet_window(

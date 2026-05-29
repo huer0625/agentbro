@@ -138,12 +138,18 @@ describe('PetSurface (companion)', () => {
   })
 
   it('respects a non-default islandPetScale via the --pet-scale CSS variable', () => {
+    usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
+
     const { container } = render(
       <PetSurface hidden={false} scale={100} sessions={[session()]} />,
     )
     const root = container.querySelector('.pet-surface') as HTMLElement
+    const canvas = container.querySelector('.pet-surface__pet canvas') as HTMLCanvasElement
+
     // 100 / 100 = 1.0; clamp keeps it ≤ 1.2
     expect(root.style.getPropertyValue('--pet-scale')).toBe('1')
+    expect(canvas.getAttribute('width')).toBe('160')
+    expect(canvas.style.width).toBe('160px')
   })
 
   it('shows session badges and opens the side session drawer on pet click', () => {

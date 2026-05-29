@@ -131,6 +131,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     [petRegistry, activePetId, sessions],
   )
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
+  const spriteSize = Math.round(PET_SLOT_SIZE * displayScale)
   const actionCount = useMemo(() => getPetActionCount(sessions, activeOverlay), [sessions, activeOverlay])
   const activeSessionCount = useMemo(
     () => sessions.filter((session) => session.phase !== 'idle' && session.phase !== 'done').length,
@@ -580,7 +581,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
                 <SpriteCanvas
                   pet={activePet}
                   priority={petPriority}
-                  size={112}
+                  size={spriteSize}
                   animationOverride={animationOverride}
                   contextPressure={petVitalsEnabled ? contextPressure : 0}
                   energyLevel={petVitalsEnabled ? energyLevel : 0}
@@ -591,7 +592,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
                     energyLevel={energyLevel}
                     isWorking={isWorking}
                     isIdle={isSessionIdle}
-                    size={112}
+                    size={spriteSize}
                   />
                 )}
               </>
@@ -603,7 +604,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
               <MascotRouter
                 toolType={topSession?.agentType ?? 'claude-code'}
                 phase={topSession?.phase ?? 'idle'}
-                size={112}
+                size={spriteSize}
               />
             )}
             <PetStatusBadges actionCount={actionCount} sessionCount={activeSessionCount} />

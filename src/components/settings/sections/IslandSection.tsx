@@ -1183,7 +1183,11 @@ function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint }: Pe
     acc.set(key, bucket)
     return acc
   }, new Map())
-  const orderedProviders = ['codex', 'user', ...Array.from(groups.keys()).filter((k) => k !== 'codex' && k !== 'user')]
+  const preferredProviders = ['agentbro', 'codex', 'user']
+  const orderedProviders = [
+    ...preferredProviders,
+    ...Array.from(groups.keys()).filter((k) => !preferredProviders.includes(k)),
+  ]
 
   return (
     <div className="pet-picker">
