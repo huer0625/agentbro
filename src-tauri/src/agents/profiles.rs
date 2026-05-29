@@ -185,8 +185,17 @@ pub const OPENCODE_EVENTS: &[HookEventDescriptor] = &[
     plain_event("UserPromptSubmit"),
     plain_event("PreToolUse"),
     plain_event("PostToolUse"),
+    plain_event("PostToolUseFailure"),
     plain_event("PermissionRequest"),
     plain_event("Stop"),
+    plain_event("SubagentStart"),
+    plain_event("SubagentStop"),
+    plain_event("ShellExecutionStart"),
+    plain_event("ShellExecutionEnd"),
+    plain_event("Error"),
+    plain_event("TokenUsage"),
+    plain_event("AgentThought"),
+    plain_event("Notification"),
 ];
 
 pub const HERMES_EVENTS: &[HookEventDescriptor] = &[
@@ -743,7 +752,8 @@ pub fn save_event_selection(
     let valid_names: BTreeSet<&str> = profile.events.iter().map(|event| event.name).collect();
     let filtered: Vec<String> = enabled_event_names
         .iter()
-        .filter_map(|name| valid_names.contains(name.as_str()).then(|| name.clone()))
+        .filter(|name| valid_names.contains(name.as_str()))
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -2241,7 +2251,7 @@ const detectedTTY = detectTTY();
 const sessions = new Map();
 const messageRoles = new Map();
 function getSession(sessionID) {{
-  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined }});
+  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined, parentID: undefined }});
   return sessions.get(sessionID);
 }}
 
@@ -2254,6 +2264,7 @@ function mapEvent(event) {{
     const rawSessionID = stableString(properties.info.id);
     const cwd = stableString(properties.info.directory);
     getSession(rawSessionID).cwd = cwd;
+    getSession(rawSessionID).parentID = stableString(properties.info.parentID);
     return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionStart", cwd }});
   }}
   if (type === "session.deleted" && isObject(properties.info) && stableString(properties.info.id)) {{
@@ -2275,6 +2286,9 @@ function mapEvent(event) {{
     const rawSessionID = stableString(properties.sessionID);
     if (properties.status?.type === "idle") {{
       const session = getSession(rawSessionID);
+      if (session.parentID) {{
+        return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SubagentStop", cwd: session.cwd, agent_name: `subagent-${{rawSessionID}}`, description: "Subagent completed" }});
+      }}
       return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Stop", cwd: session.cwd, last_assistant_message: session.lastAssistantText || undefined, session_title: session.pendingTitle || undefined }});
     }}
     return undefined;
@@ -2299,8 +2313,8 @@ function mapEvent(event) {{
       const toolName = capitalize(stableString(properties.part.tool)) ?? "Tool";
       const toolInput = properties.part.state?.input;
       const state = stableString(properties.part.state?.status);
-      if (state === "running" || state === "pending") return makeBasePayload(sessionId, {{ hook_event_name: "PreToolUse", cwd: session.cwd, tool_name: toolName, tool_input: isObject(toolInput) || Array.isArray(toolInput) ? toolInput : undefined }});
-      if (state === "completed" || state === "error") return makeBasePayload(sessionId, {{ hook_event_name: "PostToolUse", cwd: session.cwd, tool_name: toolName, tool_input: isObject(toolInput) || Array.isArray(toolInput) ? toolInput : undefined }});
+      if (state === "running" || state === "pending") return makeBasePayload(sessionId, {{ hook_event_name: "PreToolUse", cwd: session.cwd, tool_name: toolName, tool_input: isObject(toolInput) || Array.isArray(toolInput) ? toolInput : undefined, tool_state: state }});
+      if (state === "completed" || state === "error") return makeBasePayload(sessionId, {{ hook_event_name: "PostToolUse", cwd: session.cwd, tool_name: toolName, tool_input: isObject(toolInput) || Array.isArray(toolInput) ? toolInput : undefined, tool_state: state }});
     }}
   }}
   if (type === "permission.asked" && stableString(properties.id) && stableString(properties.sessionID)) {{
@@ -2310,6 +2324,66 @@ function mapEvent(event) {{
   if (type === "question.asked" && stableString(properties.id) && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
     return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "PermissionRequest", cwd: getSession(rawSessionID).cwd, tool_name: "AskUserQuestion", tool_input: {{ questions: normalizeQuestions(properties.questions) }}, _opencode_request_id: stableString(properties.id) }});
+  }}
+  if (type === "session.error" && isObject(properties) && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const errorMsg = stableString(properties.error?.message) ?? stableString(properties.error) ?? "Session error";
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Error", cwd: getSession(rawSessionID).cwd, message: errorMsg }});
+  }}
+  if (type === "session.compacted" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: "Context compacted" }});
+  }}
+  if (type === "session.next.agent.switched" && stableString(properties.sessionID) && stableString(properties.agent)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SubagentStart", cwd: getSession(rawSessionID).cwd, agent_name: stableString(properties.agent), description: `Subagent: ${{properties.agent}}` }});
+  }}
+  if (type === "session.next.step.ended" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const tokens = isObject(properties.tokens) ? properties.tokens : {{}};
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "TokenUsage", cwd: getSession(rawSessionID).cwd, input_tokens: tokens.input, output_tokens: tokens.output, cost: properties.cost }});
+  }}
+  if (type === "session.next.step.failed" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const errorMsg = stableString(properties.error?.message) ?? "Step failed";
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Error", cwd: getSession(rawSessionID).cwd, message: errorMsg }});
+  }}
+  if (type === "session.next.shell.started" && stableString(properties.sessionID) && stableString(properties.command)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "ShellExecutionStart", cwd: getSession(rawSessionID).cwd, command: properties.command }});
+  }}
+  if (type === "session.next.shell.ended" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "ShellExecutionEnd", cwd: getSession(rawSessionID).cwd, command: "", output: stableString(properties.output) }});
+  }}
+  if (type === "session.next.compaction.started" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const reason = stableString(properties.reason);
+    const reasonText = (reason && reason.length > 0) ? reason : "auto";
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Compacting context (${{reasonText}})` }});
+  }}
+  if (type === "session.next.compaction.ended" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: "Context compaction complete" }});
+  }}
+  if (type === "session.next.tool.failed" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const errorMsg = stableString(properties.error?.message) ?? "Tool failed";
+    const callID = stableString(properties.callID) ?? "unknown";
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "PostToolUseFailure", cwd: getSession(rawSessionID).cwd, tool_name: `tool:${{callID}}`, message: errorMsg }});
+  }}
+  if (type === "session.next.reasoning.ended" && stableString(properties.sessionID) && stableString(properties.text)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "AgentThought", cwd: getSession(rawSessionID).cwd, thought: properties.text }});
+  }}
+  if (type === "session.next.retried" && stableString(properties.sessionID)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    const attempt = properties.attempt ?? "?";
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Retrying (attempt ${{attempt}})` }});
+  }}
+  if (type === "todo.updated" && stableString(properties.sessionID) && Array.isArray(properties.todos)) {{
+    const rawSessionID = stableString(properties.sessionID);
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Todo updated: ${{properties.todos.length}} items` }});
   }}
   return undefined;
 }}
