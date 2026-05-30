@@ -1798,18 +1798,74 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
             let _ = handle.set_activation_policy(tauri::ActivationPolicy::Regular);
         }
 
-        if let Some(window) = handle.get_webview_window("settings") {
-            normalize_settings_window_frame(&window);
-            apply_settings_window_for_spaces(&window);
-            let _ = window.show();
-            let _ = window.set_focus();
+        // Create the settings webview on demand. The window was previously
+        // declared in tauri.conf.json with `visible: false`, which spun the
+        // process up at app launch (~170 MB resident, idle forever). Building
+        // it lazily here means we only pay the cost the first time the user
+        // opens settings, and `attach_settings_close_handler` rigs it to
+        // `destroy()` on close so the process exits when they leave.
+        let window = match handle.get_webview_window("settings") {
+            Some(existing) => existing,
+            None => match build_settings_window(&handle) {
+                Ok(w) => w,
+                Err(e) => {
+                    log::warn!("Failed to create settings window: {e}");
+                    return;
+                }
+            },
+        };
 
-            #[cfg(target_os = "macos")]
-            activate_agentbro_app();
-            focus_settings_window_native(&window);
-        }
+        normalize_settings_window_frame(&window);
+        apply_settings_window_for_spaces(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+
+        #[cfg(target_os = "macos")]
+        activate_agentbro_app();
+        focus_settings_window_native(&window);
     })
     .map_err(|e| e.to_string())
+}
+
+/// Build the settings webview from scratch. Mirrors the descriptor that used
+/// to live in `tauri.conf.json::app.windows[settings]`. Kept in one place so
+/// the parameters don't drift between create-and-show paths.
+fn build_settings_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "settings",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("AgentBro")
+    .inner_size(SETTINGS_DEFAULT_WIDTH, SETTINGS_DEFAULT_HEIGHT)
+    .min_inner_size(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT)
+    .center()
+    .background_color(tauri::webview::Color(0, 0, 0, 0))
+    .visible(false)
+    .build()
+    .map_err(|e| format!("settings window: {e}"))?;
+
+    attach_settings_close_handler(app, &window);
+    Ok(window)
+}
+
+/// Wire the settings webview's close-button to `destroy()` so the process
+/// actually exits when the user is done. Previously the handler called
+/// `prevent_close` + `hide`, which left the renderer + GPU XPC processes
+/// resident (~170 MB) for the lifetime of the app.
+fn attach_settings_close_handler(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let app_handle = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            if let Some(notch) = app_handle.get_webview_window("notch") {
+                let _ = notch.show();
+            }
+            // Don't `prevent_close()`: let Tauri tear the webview down. The
+            // next `show_settings_window` call will rebuild it via
+            // `build_settings_window`.
+        }
+    });
 }
 
 #[tauri::command]
@@ -3317,17 +3373,31 @@ pub fn sync_pet_window_visibility_inner(
     saved_origin: Option<&config::WindowOrigin>,
     pet_scale: f64,
 ) {
-    let Some(pet_window) = handle.get_webview_window("pet") else {
-        return;
-    };
     if !is_pet_mode {
-        let _ = pet_window.hide();
+        // Leaving pet mode: destroy the webview entirely instead of hiding it.
+        // The descriptor lives in `build_pet_window`, so the next switch back
+        // to pet mode recreates it. This drops ~74 MB resident plus the
+        // associated WebKit XPC processes when the user is back on the notch.
+        if let Some(pet_window) = handle.get_webview_window("pet") {
+            let _ = pet_window.destroy();
+        }
         if let Some(notch_window) = handle.get_webview_window("notch") {
             let _ = notch_window.show();
             apply_notch_window_for_spaces(&notch_window);
         }
         return;
     }
+
+    let pet_window = match handle.get_webview_window("pet") {
+        Some(existing) => existing,
+        None => match build_pet_window(handle) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("Failed to create pet window: {e}");
+                return;
+            }
+        },
+    };
 
     if let Some(notch_window) = handle.get_webview_window("notch") {
         let _ = notch_window.hide();
@@ -3341,7 +3411,7 @@ pub fn sync_pet_window_visibility_inner(
     if let Some(monitor) = monitor {
         if let Ok(size) = pet_window.outer_size() {
             position_pet_window(
-                &handle,
+                handle,
                 &pet_window,
                 &monitor,
                 size.width as f64,
@@ -3358,6 +3428,27 @@ pub fn sync_pet_window_visibility_inner(
     // monitor the cursor is on right now rather than waiting for the next
     // monitor transition.
     follow_pet_window_to_cursor_monitor(handle);
+}
+
+/// Build the pet webview on demand. Mirrors the descriptor that used to live
+/// in `tauri.conf.json::app.windows[pet]`. We rebuild it every time the user
+/// switches into pet mode rather than parking the process idle on the notch.
+fn build_pet_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    tauri::WebviewWindowBuilder::new(app, "pet", tauri::WebviewUrl::App("index.html".into()))
+        .title("AgentBro Pet")
+        .inner_size(820.0, 360.0)
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .accept_first_mouse(true)
+        .background_color(tauri::webview::Color(0, 0, 0, 0))
+        .visible(false)
+        .build()
+        .map_err(|e| format!("pet window: {e}"))
 }
 
 fn position_pet_window(
@@ -4212,22 +4303,8 @@ pub fn run() {
                 }
             }
 
-            // Ensure settings window is hidden on startup
-            if let Some(settings_window) = app.get_webview_window("settings") {
-                let _ = settings_window.hide();
-                let app_handle = app.handle().clone();
-                settings_window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = app_handle.get_webview_window("settings").map(|w| w.hide());
-                        let _ =
-                            app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                        if let Some(notch) = app_handle.get_webview_window("notch") {
-                            let _ = notch.show();
-                        }
-                    }
-                });
-            }
+            // Settings window is created on demand by `show_settings_window`.
+            // No setup work needed here — it doesn't exist at launch anymore.
 
             // Initialize session store
             let mut session_store = SessionStore::new();

@@ -226,7 +226,10 @@ function App() {
           const { getCurrentWindow } = await import('@tauri-apps/api/window')
           const { invoke } = await import('@tauri-apps/api/core')
           await invoke('set_dock_visible', { visible: false })
-          getCurrentWindow().hide()
+          // Destroy (not hide) so the WebView XPC processes actually exit.
+          // The backend's `open_settings_window` rebuilds the window via
+          // `build_settings_window` next time the user reopens settings.
+          getCurrentWindow().destroy()
         } catch {
           // fallback: do nothing
         }

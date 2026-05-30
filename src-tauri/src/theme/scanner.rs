@@ -469,10 +469,14 @@ mod tests {
         assert_eq!(theme["displayName"], "Nami");
         assert_eq!(theme["character"]["frameSize"]["width"], 192);
         assert_eq!(theme["character"]["frameSize"]["height"], 208);
-        assert!(theme["character"]["spriteSheet"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/webp;base64,"));
+        // spriteSheet now carries an absolute filesystem path; the frontend
+        // wraps it in convertFileSrc() to obtain an asset:// URL. We refuse
+        // to emit base64 data URLs here — see the file-level comment.
+        let sprite = theme["character"]["spriteSheet"].as_str().unwrap();
+        assert!(!sprite.starts_with("data:"), "spriteSheet must be a path, got {sprite}");
+        assert!(sprite.ends_with("spritesheet.webp"));
+        let sprite_url = theme["character"]["spriteSheetUrl"].as_str().unwrap();
+        assert_eq!(sprite, sprite_url);
 
         fs::remove_dir_all(&dir).ok();
     }
