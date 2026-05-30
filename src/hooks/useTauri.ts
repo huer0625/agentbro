@@ -806,17 +806,49 @@ export function useConversationUpdates() {
     let unlisten: (() => void) | undefined
 
     import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ sessionId: string; result: { allMessages: ParsedMessage[]; newMessages: ParsedMessage[]; clearDetected: boolean } }>(
+      listen<{
+        sessionId: string
+        result: {
+          allMessages: ParsedMessage[]
+          newMessages: ParsedMessage[]
+          clearDetected: boolean
+          truncated?: boolean
+          totalCount?: number
+        }
+      }>(
         'conversation-update',
         (event) => {
           const { sessionId, result } = event.payload
           const store = useSessionStore.getState()
 
-          // Only update if this session exists in our store
           if (!store.sessions[sessionId]) return
 
-          const chatMessages = mapParsedMessages(result.allMessages)
-          store.setChatHistory(sessionId, chatMessages)
+          if (result.clearDetected) {
+            store.setChatHistory(sessionId, mapParsedMessages(result.allMessages))
+            return
+          }
+
+          // Truncated payload: backend trimmed older messages from the
+          // streaming buffer, so allMessages is just the tail. Replacing the
+          // store with the tail would erase older history the UI already has
+          // (e.g. from getChatHistoryTail / "load more"), causing a flash.
+          // Append only the genuinely-newer delta instead, keyed off the
+          // existing tail timestamp to avoid duplicating the initial-load
+          // window when the watcher fires for the first time.
+          if (result.truncated && result.newMessages.length > 0) {
+            const session = store.sessions[sessionId]
+            const lastTs = session.chatHistory.length > 0
+              ? session.chatHistory[session.chatHistory.length - 1].timestamp
+              : 0
+            const newChat = mapParsedMessages(result.newMessages)
+              .filter((m) => m.timestamp > lastTs)
+            if (newChat.length === 0) return
+            store.setChatHistory(sessionId, [...session.chatHistory, ...newChat])
+            return
+          }
+
+          // Non-truncated: allMessages is authoritative for the whole session.
+          store.setChatHistory(sessionId, mapParsedMessages(result.allMessages))
         },
       ).then(fn => { unlisten = fn })
         .catch(e => console.error('[tauri] listen conversation-update:', e))

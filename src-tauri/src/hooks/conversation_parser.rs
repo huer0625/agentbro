@@ -66,6 +66,14 @@ pub struct IncrementalParseResult {
     pub byte_offset: u64,
     /// Number of raw JSONL lines read in this batch
     pub lines_read: usize,
+    /// Total messages parsed so far across the whole file (including any that
+    /// were evicted from `all_messages` by the retention cap).
+    #[serde(default)]
+    pub total_count: usize,
+    /// True when `all_messages` is a tail window because older messages were
+    /// evicted to keep memory bounded.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Cache TTL metadata inferred from the latest main-agent assistant JSONL entry.
@@ -121,6 +129,16 @@ pub struct TranscriptSubagentInfo {
 
 // ── Parser ──────────────────────────────────────────────────────
 
+/// Upper bound on messages retained per session in the streaming buffer.
+/// Long conversations would otherwise grow `messages` (and every
+/// `all_messages.clone()` shipped to the frontend) without limit. Older
+/// messages stay on disk and can be re-fetched via `parse_full`.
+const MAX_RETAINED_MESSAGES: usize = 500;
+
+/// Upper bound on `seen_tool_ids` so the dedup set can't grow forever in
+/// very long sessions. Old IDs almost never collide with new ones.
+const MAX_SEEN_TOOL_IDS: usize = 4_000;
+
 /// Incremental JSONL conversation parser.
 ///
 /// Tracks file offset so that repeated calls only parse newly-appended lines.
@@ -129,6 +147,8 @@ pub struct ConversationParser {
     file_path: PathBuf,
     last_offset: u64,
     messages: Vec<ParsedMessage>,
+    /// Count of messages ever parsed (including any evicted from `messages`).
+    total_parsed: usize,
     seen_tool_ids: HashSet<String>,
 }
 
@@ -139,6 +159,7 @@ impl ConversationParser {
             file_path,
             last_offset: 0,
             messages: Vec::new(),
+            total_parsed: 0,
             seen_tool_ids: HashSet::new(),
         }
     }
@@ -170,13 +191,7 @@ impl ConversationParser {
         let file = match File::open(&self.file_path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(IncrementalParseResult {
-                    new_messages: vec![],
-                    all_messages: self.messages.clone(),
-                    clear_detected: false,
-                    byte_offset: self.last_offset,
-                    lines_read: 0,
-                });
+                return Ok(self.build_result(vec![], false, self.last_offset, 0));
             }
             Err(e) => return Err(e),
         };
@@ -187,18 +202,13 @@ impl ConversationParser {
         if file_size < self.last_offset {
             self.last_offset = 0;
             self.messages.clear();
+            self.total_parsed = 0;
             self.seen_tool_ids.clear();
         }
 
         // Nothing new
         if file_size == self.last_offset {
-            return Ok(IncrementalParseResult {
-                new_messages: vec![],
-                all_messages: self.messages.clone(),
-                clear_detected: false,
-                byte_offset: self.last_offset,
-                lines_read: 0,
-            });
+            return Ok(self.build_result(vec![], false, self.last_offset, 0));
         }
 
         let mut reader = BufReader::new(file);
@@ -225,6 +235,7 @@ impl ConversationParser {
             // Detect /clear command
             if line.contains("<command-name>/clear</command-name>") {
                 self.messages.clear();
+                self.total_parsed = 0;
                 self.seen_tool_ids.clear();
                 clear_detected = true;
                 new_messages.clear();
@@ -246,37 +257,122 @@ impl ConversationParser {
 
             if let Some(msg) = self.parse_line(&json) {
                 new_messages.push(msg.clone());
-                self.messages.push(msg);
+                self.push_message(msg);
             }
         }
 
         self.last_offset = file_size;
+        self.compact_seen_tool_ids();
 
-        Ok(IncrementalParseResult {
+        Ok(self.build_result(new_messages, clear_detected, file_size, lines_read))
+    }
+
+    /// Push a freshly-parsed message into the retention buffer, dropping the
+    /// oldest entries if we are already at `MAX_RETAINED_MESSAGES`.
+    fn push_message(&mut self, msg: ParsedMessage) {
+        self.total_parsed = self.total_parsed.saturating_add(1);
+        if self.messages.len() >= MAX_RETAINED_MESSAGES {
+            let drop_count = self.messages.len() + 1 - MAX_RETAINED_MESSAGES;
+            self.messages.drain(0..drop_count);
+        }
+        self.messages.push(msg);
+    }
+
+    /// Keep `seen_tool_ids` bounded. We trade a vanishing chance of
+    /// re-emitting a very old duplicate tool_use for a guaranteed memory
+    /// ceiling. Tool IDs are random per invocation so collisions across
+    /// a reset are not a practical concern.
+    fn compact_seen_tool_ids(&mut self) {
+        if self.seen_tool_ids.len() > MAX_SEEN_TOOL_IDS {
+            self.seen_tool_ids.clear();
+        }
+    }
+
+    fn build_result(
+        &self,
+        new_messages: Vec<ParsedMessage>,
+        clear_detected: bool,
+        byte_offset: u64,
+        lines_read: usize,
+    ) -> IncrementalParseResult {
+        IncrementalParseResult {
             new_messages,
             all_messages: self.messages.clone(),
             clear_detected,
-            byte_offset: file_size,
+            byte_offset,
             lines_read,
-        })
+            total_count: self.total_parsed,
+            truncated: self.total_parsed > self.messages.len(),
+        }
     }
 
     /// Parse the entire file from scratch (ignores previous offset).
-    /// Useful for initial load of a conversation.
+    /// Useful for initial load of a conversation. Returns the full message
+    /// list — `parse_full` is intentionally not subject to the in-memory
+    /// retention cap, so user-initiated "open this session" still surfaces
+    /// complete history. Internal state is left primed with only the tail,
+    /// so subsequent `parse_incremental` calls stay bounded.
     pub fn parse_full(&mut self) -> Result<Vec<ParsedMessage>, std::io::Error> {
-        // Reset state
         self.last_offset = 0;
         self.messages.clear();
+        self.total_parsed = 0;
         self.seen_tool_ids.clear();
 
-        let result = self.parse_incremental()?;
-        Ok(result.all_messages)
+        let file = match File::open(&self.file_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let file_size = file.metadata()?.len();
+
+        let mut reader = BufReader::new(file);
+        let mut all = Vec::new();
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break;
+            }
+            let line = line_buf.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if line.contains("<command-name>/clear</command-name>") {
+                all.clear();
+                self.seen_tool_ids.clear();
+                continue;
+            }
+            let json: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "Skipping malformed JSONL line in {}: {}",
+                        self.file_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if let Some(msg) = self.parse_line(&json) {
+                all.push(msg);
+            }
+        }
+
+        self.last_offset = file_size;
+        self.total_parsed = all.len();
+        let tail_start = all.len().saturating_sub(MAX_RETAINED_MESSAGES);
+        self.messages = all[tail_start..].to_vec();
+        self.compact_seen_tool_ids();
+
+        Ok(all)
     }
 
     /// Reset parser state (useful when conversation is cleared or reloaded).
     pub fn reset(&mut self) {
         self.last_offset = 0;
         self.messages.clear();
+        self.total_parsed = 0;
         self.seen_tool_ids.clear();
     }
 
@@ -2723,5 +2819,92 @@ mod tests {
             }
             _ => panic!("Expected Image block"),
         }
+    }
+
+    fn write_assistant_text_lines(name: &str, count: usize) -> PathBuf {
+        let mut body = String::new();
+        for i in 0..count {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"u{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"m{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        write_temp_jsonl(name, &body)
+    }
+
+    #[test]
+    fn parse_incremental_retains_only_tail_under_cap() {
+        let total = MAX_RETAINED_MESSAGES + 50;
+        let path = write_assistant_text_lines("retain-tail", total);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let result = parser.parse_incremental().expect("parse incremental");
+
+        assert_eq!(result.total_count, total);
+        assert_eq!(result.all_messages.len(), MAX_RETAINED_MESSAGES);
+        assert!(result.truncated);
+
+        let last = result.all_messages.last().expect("tail present");
+        match &last.blocks[0] {
+            MessageBlock::Text { text } => assert_eq!(text, &format!("m{}", total - 1)),
+            other => panic!("unexpected block: {other:?}"),
+        }
+
+        let first = result.all_messages.first().expect("first present");
+        match &first.blocks[0] {
+            MessageBlock::Text { text } => assert_ne!(text, "m0"),
+            other => panic!("unexpected block: {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_full_returns_complete_history_then_primes_tail() {
+        let total = MAX_RETAINED_MESSAGES + 25;
+        let path = write_assistant_text_lines("parse-full", total);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let full = parser.parse_full().expect("parse full");
+        assert_eq!(full.len(), total, "parse_full must return everything");
+
+        let follow_up = parser.parse_incremental().expect("incremental follow-up");
+        assert_eq!(follow_up.total_count, total);
+        assert_eq!(follow_up.all_messages.len(), MAX_RETAINED_MESSAGES);
+        assert!(follow_up.truncated);
+        assert!(
+            follow_up.new_messages.is_empty(),
+            "no new bytes since parse_full"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn clear_command_resets_total_count_and_truncated_flag() {
+        let mut body = String::new();
+        for i in 0..3 {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"a{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"m{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        body.push_str("<command-name>/clear</command-name>\n");
+        for i in 0..2 {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"b{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"after{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        let path = write_temp_jsonl("clear-reset", &body);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let result = parser.parse_incremental().expect("parse incremental");
+        assert!(result.clear_detected);
+        assert_eq!(result.all_messages.len(), 2);
+        assert_eq!(result.total_count, 2, "/clear should reset total_parsed");
+        assert!(!result.truncated);
+
+        let _ = std::fs::remove_file(path);
     }
 }
