@@ -1,7 +1,7 @@
 /* AgentBro — Shared TypeScript Types */
 
 export type AgentType =
-  | 'claude-code' | 'codex' | 'gemini-cli'
+  | 'claude-code' | 'cline' | 'codex' | 'gemini-cli'
   | 'cursor' | 'cursor-cli'
   | 'copilot'
   | 'trae' | 'traecli' | 'traecn'
@@ -195,6 +195,7 @@ export interface SessionState {
   responseText?: string
   taskCompletedAt?: number // timestamp when task completed
   isYoloMode?: boolean
+  model?: string
   notice?: SessionNotice
   lastActivityAt?: number // timestamp for processing timeout
 }

@@ -4,7 +4,7 @@ import type { SessionState } from '../../types/agent'
 import { AgentIcon } from './AgentIcon'
 import { StatusDot } from '../shared'
 import { formatDurationShort } from '../../utils/time'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import './ChatHeader.css'
 
 interface ChatHeaderProps {
@@ -45,6 +45,9 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
           </span>
         )}
         {terminalLabel && <span className="chat-header__badge">{terminalLabel}</span>}
+        {session.model && (
+          <span className="chat-header__badge chat-header__badge--model">{formatModelName(session.model)}</span>
+        )}
         <span className="chat-header__badge chat-header__badge--time">{formatDurationShort(session.duration)}</span>
         {onJump && (
           <button className="chat-header__jump" onClick={onJump} aria-label={t('notch.jumpToTerminal')}>

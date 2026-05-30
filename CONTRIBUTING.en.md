@@ -114,7 +114,7 @@ One commit, one logical change. PRs that include "while I was here, I cleaned up
 2. Open the PR against `dev`. Title should clearly state what changed (English or Chinese).
 3. Fill in the PR template: changes / motivation / implementation / verification / screenshots / checklist.
 4. CI runs `ci.yml` (lint + test + cargo check/clippy/fmt + cargo test) and `build.yml` (macOS dual-arch build). Both must be green.
-5. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to ping maintainers in the PR.
+5. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to nudge maintainers in the PR.
 6. Merge is squash; maintainers normalize the commit message to Conventional Commits.
 
 ---

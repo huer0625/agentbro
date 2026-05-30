@@ -4,6 +4,7 @@ import { PetSurface } from '../components/notch/PetSurface'
 import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import { usePetStore } from '../stores/petStore'
+import { useConfigStore } from '../stores/configStore'
 import type { SessionState } from '../types/agent'
 import type { PetOption } from '../types/pet'
 
@@ -73,6 +74,8 @@ function makePet(): PetOption {
     animations: {
       idle: { row: 0, frames: 1, fps: 1 },
       running: { row: 7, frames: 1, fps: 1 },
+      'running-left': { row: 2, frames: 1, fps: 1 },
+      'running-right': { row: 1, frames: 1, fps: 1 },
       jumping: { row: 4, frames: 1, fps: 1 },
     },
     stateMapping: { working: 'running' },
@@ -94,6 +97,7 @@ describe('PetSurface (companion)', () => {
     useThemeStore.getState().loadThemes([])
     useThemeStore.getState().setActiveTheme('default')
     usePetStore.setState({ registry: [], activePetId: null })
+    useConfigStore.setState({ tipsEnabled: true })
   })
 
   it('renders the pet button with sprite when an active pet is selected', () => {
@@ -104,7 +108,7 @@ describe('PetSurface (companion)', () => {
     )
 
     expect(container.querySelector('.pet-surface__pet')).toBeInTheDocument()
-    expect(container.querySelector('.pet-surface__pet canvas')).toBeInTheDocument()
+    expect(container.querySelector('.pet-surface__pet .sprite-canvas')).toBeInTheDocument()
   })
 
   it('falls back to MascotRouter when no pet registry is loaded', () => {
@@ -137,6 +141,68 @@ describe('PetSurface (companion)', () => {
     expect(container.querySelector('.pet-surface')?.getAttribute('data-hidden')).toBe('true')
   })
 
+  it('shows a pet tip after dwell and then hides it', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(
+        <PetSurface hidden={false} scale={72} sessions={[]} />,
+      )
+
+      expect(container.querySelector('.pet-surface__idle-tip')).not.toBeInTheDocument()
+
+      act(() => {
+        vi.advanceTimersByTime(1200)
+      })
+
+      expect(container.querySelector('.pet-surface__idle-tip')).toBeInTheDocument()
+      expect(container.querySelector('.pet-surface__idle-tip-label')).toHaveTextContent('Tips')
+
+      act(() => {
+        vi.advanceTimersByTime(8000)
+      })
+
+      expect(container.querySelector('.pet-surface__idle-tip')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not show pet tips when tips are disabled', () => {
+    vi.useFakeTimers()
+    try {
+      useConfigStore.setState({ tipsEnabled: false })
+      const disabled = render(
+        <PetSurface hidden={false} scale={72} sessions={[]} />,
+      )
+
+      act(() => {
+        vi.advanceTimersByTime(1200)
+      })
+
+      expect(disabled.container.querySelector('.pet-surface__idle-tip')).not.toBeInTheDocument()
+      disabled.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not show pet tips while a session is active', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(
+        <PetSurface hidden={false} scale={72} sessions={[session({ phase: 'processing' })]} />,
+      )
+
+      act(() => {
+        vi.advanceTimersByTime(1200)
+      })
+
+      expect(container.querySelector('.pet-surface__idle-tip')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('respects a non-default islandPetScale via the --pet-scale CSS variable', () => {
     usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
 
@@ -144,12 +210,11 @@ describe('PetSurface (companion)', () => {
       <PetSurface hidden={false} scale={100} sessions={[session()]} />,
     )
     const root = container.querySelector('.pet-surface') as HTMLElement
-    const canvas = container.querySelector('.pet-surface__pet canvas') as HTMLCanvasElement
+    const sprite = container.querySelector('.pet-surface__pet .sprite-canvas') as HTMLElement
 
     // 100 / 100 = 1.0; clamp keeps it ≤ 1.2
     expect(root.style.getPropertyValue('--pet-scale')).toBe('1')
-    expect(canvas.getAttribute('width')).toBe('160')
-    expect(canvas.style.width).toBe('160px')
+    expect(sprite.style.width).toBe('160px')
   })
 
   it('shows session badges and opens the side session drawer on pet click', () => {
@@ -165,7 +230,28 @@ describe('PetSurface (companion)', () => {
     fireEvent.click(button)
 
     expect(container.querySelector('.pet-surface__drawer')).toBeInTheDocument()
+    expect(container.querySelector('.pet-surface__drawer')).toHaveAttribute('data-placement', 'left')
     expect(getByText('agentbro · Build pet HUD')).toBeInTheDocument()
+  })
+
+  it('keeps the last drag direction while the pointer is held still', () => {
+    usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
+
+    const { container } = render(
+      <PetSurface hidden={false} scale={72} sessions={[session()]} />,
+    )
+
+    const button = container.querySelector('.pet-surface__pet') as HTMLElement
+    fireEvent.pointerDown(button, { button: 0, pointerId: 8, clientX: 100, clientY: 100, screenX: 100 })
+    fireEvent.pointerMove(button, { pointerId: 8, clientX: 90, clientY: 100, screenX: 90 })
+
+    const sprite = container.querySelector('.pet-surface__pet .sprite-canvas') as HTMLElement
+    expect(sprite).toHaveAttribute('data-pet-animation', 'running-left')
+    expect(sprite).toHaveAttribute('data-pet-animation-mode', 'continuous')
+
+    fireEvent.pointerMove(button, { pointerId: 8, clientX: 90, clientY: 100, screenX: 90 })
+
+    expect(sprite).toHaveAttribute('data-pet-animation', 'running-left')
   })
 
   it('auto hides the session panel on pointer leave without hiding the pet', () => {
@@ -190,6 +276,23 @@ describe('PetSurface (companion)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('closes the pet session panel on Escape without hiding the pet', () => {
+    usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
+
+    const { container } = render(
+      <PetSurface hidden={false} scale={72} sessions={[session()]} />,
+    )
+
+    fireEvent.click(container.querySelector('.pet-surface__pet') as HTMLElement)
+    expect(container.querySelector('.pet-surface__drawer--sessions')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(container.querySelector('.pet-surface__drawer--sessions')).not.toBeInTheDocument()
+    expect(container.querySelector('.pet-surface__pet')).toBeInTheDocument()
+    expect(useSessionStore.getState().activeSessionId).toBeNull()
   })
 
   it('opens pet-local session detail instead of the island panel when a session row is clicked', () => {
@@ -320,10 +423,37 @@ describe('PetSurface (companion)', () => {
     const toast = container.querySelector('.pet-surface__toast--message') as HTMLElement
     expect(toast).toBeInTheDocument()
     expect(toast).toHaveAttribute('data-placement', 'left')
-    expect(toast.style.getPropertyValue('--pet-toast-top')).not.toBe('')
+    expect(toast.style.getPropertyValue('--pet-panel-top')).not.toBe('')
     expect(container.querySelector('.overlay-feedback--response')).toBeInTheDocument()
     expect(container.querySelector('.overlay-feedback__input')).toBeInTheDocument()
     expect(toast).toHaveTextContent('Response')
+  })
+
+  it('dismisses non-blocking pet message overlays on Escape', () => {
+    const base = session({ responseText: 'Response' })
+    useSessionStore.setState({
+      sessions: { s1: base },
+      sessionList: [base],
+      activeOverlay: {
+        id: 'response-s1',
+        sessionId: 's1',
+        type: 'response',
+        data: { responseText: 'Response' },
+        createdAt: Date.now(),
+      },
+      overlayQueue: [],
+    })
+
+    const { container } = render(
+      <PetSurface hidden={false} scale={72} sessions={[base]} />,
+    )
+
+    expect(container.querySelector('.pet-surface__toast--message')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(container.querySelector('.pet-surface__toast--message')).not.toBeInTheDocument()
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
   })
 
   it('renders blocking permission overlays as actionable pet prompts', () => {
@@ -351,6 +481,34 @@ describe('PetSurface (companion)', () => {
     fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement)
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+  })
+
+  it('hides blocking pet prompts on Escape without dismissing or approving them', () => {
+    const target = session({ phase: 'processing' })
+    useSessionStore.setState({
+      sessions: { s1: target },
+      sessionList: [target],
+      activeOverlay: {
+        id: 'perm-s1',
+        sessionId: 's1',
+        type: 'permission',
+        data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+        createdAt: Date.now(),
+      },
+      overlayQueue: [],
+    })
+
+    const { container } = render(
+      <PetSurface hidden={false} scale={72} sessions={[target]} />,
+    )
+
+    expect(container.querySelector('.pet-surface__overlay')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(container.querySelector('.pet-surface__overlay')).not.toBeInTheDocument()
+    expect(useSessionStore.getState().activeOverlay?.id).toBe('perm-s1')
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
   })
 
   it('triggers pet permission approval on mouse down so desktop click-through cannot swallow it', () => {

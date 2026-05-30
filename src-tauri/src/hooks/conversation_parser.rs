@@ -1015,6 +1015,8 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
     let main_transcript_path = path.to_string_lossy().to_string();
     let session_id = path.file_stem().and_then(|v| v.to_str()).unwrap_or("");
     let mut pending: HashMap<String, PendingSubagentTool> = HashMap::new();
+    let mut pending_codex_spawns: HashMap<String, PendingSubagentTool> = HashMap::new();
+    let mut codex_agents: HashMap<String, TranscriptSubagentInfo> = HashMap::new();
     let mut subagents: Vec<TranscriptSubagentInfo> = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
@@ -1029,6 +1031,49 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
 
         for tool in subagent_tool_uses_from_json(&json) {
             pending.insert(tool.tool_use_id.clone(), tool);
+        }
+        if let Some(tool) = codex_spawn_agent_call_from_json(&json) {
+            pending_codex_spawns.insert(tool.tool_use_id.clone(), tool);
+        }
+        if let Some(subagent) =
+            codex_spawn_agent_output_from_json(&json, &main_transcript_path, &pending_codex_spawns)
+        {
+            codex_agents.insert(subagent.agent_id.clone(), subagent.clone());
+            upsert_transcript_subagent(&mut subagents, subagent);
+        }
+        for completion in codex_subagent_completions_from_json(&json) {
+            let started = codex_agents.get(&completion.agent_id).cloned().or_else(|| {
+                pending_codex_spawns
+                    .values()
+                    .find(|tool| tool.tool_use_id == completion.agent_id)
+                    .map(|tool| {
+                        transcript_subagent_from_pending_codex_tool(
+                            tool,
+                            &main_transcript_path,
+                            None,
+                            None,
+                        )
+                    })
+            });
+            let mut subagent = started.unwrap_or_else(|| TranscriptSubagentInfo {
+                agent_id: completion.agent_id.clone(),
+                launch_tool_use_id: None,
+                name: None,
+                agent_type: None,
+                description: "Subagent".to_string(),
+                transcript_path: Some(main_transcript_path.clone()),
+                agent_transcript_path: None,
+                last_assistant_message: None,
+                started_at: timestamp_seconds(&json),
+                completed_at: None,
+                status: "running".to_string(),
+                tools: Vec::new(),
+            });
+            subagent.status = completion.status;
+            subagent.last_assistant_message = completion.last_assistant_message;
+            subagent.completed_at = Some(timestamp_seconds(&json));
+            codex_agents.insert(subagent.agent_id.clone(), subagent.clone());
+            upsert_transcript_subagent(&mut subagents, subagent);
         }
 
         if let Some(mut subagent) =
@@ -1062,6 +1107,17 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             },
         );
     }
+    for tool in pending_codex_spawns.into_values() {
+        if codex_agents.values().any(|subagent| {
+            subagent.launch_tool_use_id.as_deref() == Some(tool.tool_use_id.as_str())
+        }) {
+            continue;
+        }
+        upsert_transcript_subagent(
+            &mut subagents,
+            transcript_subagent_from_pending_codex_tool(&tool, &main_transcript_path, None, None),
+        );
+    }
 
     subagents.sort_by(|a, b| {
         a.started_at
@@ -1069,6 +1125,199 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             .then(a.agent_id.cmp(&b.agent_id))
     });
     subagents
+}
+
+#[derive(Debug, Clone)]
+struct CodexSubagentCompletion {
+    agent_id: String,
+    status: String,
+    last_assistant_message: Option<String>,
+}
+
+fn codex_spawn_agent_call_from_json(json: &serde_json::Value) -> Option<PendingSubagentTool> {
+    let payload = json.get("payload")?;
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item")
+        || payload.get("type").and_then(|v| v.as_str()) != Some("function_call")
+        || payload.get("name").and_then(|v| v.as_str()) != Some("spawn_agent")
+    {
+        return None;
+    }
+
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let input = codex_arguments_value(payload.get("arguments")).unwrap_or(serde_json::Value::Null);
+    let prompt = string_field(&input, &["message", "prompt", "task", "description"])
+        .unwrap_or_else(|| "Subagent".to_string());
+
+    Some(PendingSubagentTool {
+        tool_use_id: call_id,
+        name: string_field(&input, &["name", "agent_name", "agentName"]),
+        description: string_field(&input, &["description"]).unwrap_or_default(),
+        prompt,
+        agent_type: string_field(
+            &input,
+            &["agent_type", "agentType", "subagent_type", "subagentType"],
+        ),
+        started_at: timestamp_seconds(json),
+    })
+}
+
+fn codex_spawn_agent_output_from_json(
+    json: &serde_json::Value,
+    main_transcript_path: &str,
+    pending: &HashMap<String, PendingSubagentTool>,
+) -> Option<TranscriptSubagentInfo> {
+    let payload = json.get("payload")?;
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item")
+        || payload.get("type").and_then(|v| v.as_str()) != Some("function_call_output")
+    {
+        return None;
+    }
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())?;
+    let pending_tool = pending.get(call_id)?;
+    let output = codex_output_value(payload.get("output"))?;
+    let agent_id = string_field(&output, &["agent_id", "agentId", "agent_path", "agentPath"])?;
+    let name = string_field(&output, &["nickname", "name", "agent_name", "agentName"])
+        .or_else(|| pending_tool.name.clone());
+
+    Some(transcript_subagent_from_pending_codex_tool(
+        pending_tool,
+        main_transcript_path,
+        Some(agent_id),
+        name,
+    ))
+}
+
+fn codex_subagent_completions_from_json(json: &serde_json::Value) -> Vec<CodexSubagentCompletion> {
+    if let Some(payload) = json.get("payload") {
+        if json.get("type").and_then(|v| v.as_str()) == Some("response_item")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("function_call_output")
+        {
+            if let Some(output) = codex_output_value(payload.get("output")) {
+                if let Some(status) = output.get("status") {
+                    return codex_status_map_to_completions(status);
+                }
+            }
+        }
+    }
+
+    codex_raw_user_text_from_json(json)
+        .and_then(|text| {
+            let text = text.trim();
+            let inner = text
+                .strip_prefix("<subagent_notification>")?
+                .strip_suffix("</subagent_notification>")?
+                .trim();
+            serde_json::from_str::<serde_json::Value>(inner).ok()
+        })
+        .and_then(|notification| {
+            let agent_id = string_field(
+                &notification,
+                &["agent_path", "agentPath", "agent_id", "agentId"],
+            )?;
+            let status = notification.get("status")?;
+            codex_status_entry_to_completion(&agent_id, status)
+        })
+        .into_iter()
+        .collect()
+}
+
+fn codex_raw_user_text_from_json(json: &serde_json::Value) -> Option<String> {
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item") {
+        return None;
+    }
+    let payload = json.get("payload")?;
+    if payload.get("type").and_then(|v| v.as_str()) != Some("message")
+        || payload.get("role").and_then(|v| v.as_str()) != Some("user")
+    {
+        return None;
+    }
+    payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .find_map(|block| {
+            if block.get("type").and_then(|v| v.as_str()) == Some("input_text") {
+                block
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        })
+}
+
+fn codex_status_map_to_completions(status: &serde_json::Value) -> Vec<CodexSubagentCompletion> {
+    status
+        .as_object()
+        .into_iter()
+        .flat_map(|map| map.iter())
+        .filter_map(|(agent_id, value)| codex_status_entry_to_completion(agent_id, value))
+        .collect()
+}
+
+fn codex_status_entry_to_completion(
+    agent_id: &str,
+    value: &serde_json::Value,
+) -> Option<CodexSubagentCompletion> {
+    if let Some(text) = value.get("completed").and_then(|v| v.as_str()) {
+        return Some(CodexSubagentCompletion {
+            agent_id: agent_id.to_string(),
+            status: "completed".to_string(),
+            last_assistant_message: Some(text.to_string()),
+        });
+    }
+    if let Some(text) = value
+        .get("failed")
+        .or_else(|| value.get("error"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(CodexSubagentCompletion {
+            agent_id: agent_id.to_string(),
+            status: "error".to_string(),
+            last_assistant_message: Some(text.to_string()),
+        });
+    }
+    None
+}
+
+fn transcript_subagent_from_pending_codex_tool(
+    tool: &PendingSubagentTool,
+    main_transcript_path: &str,
+    agent_id: Option<String>,
+    name: Option<String>,
+) -> TranscriptSubagentInfo {
+    TranscriptSubagentInfo {
+        agent_id: agent_id.unwrap_or_else(|| tool.tool_use_id.clone()),
+        launch_tool_use_id: Some(tool.tool_use_id.clone()),
+        name,
+        agent_type: tool.agent_type.clone(),
+        description: choose_subagent_description(&tool.description, &tool.prompt),
+        transcript_path: Some(main_transcript_path.to_string()),
+        agent_transcript_path: None,
+        last_assistant_message: None,
+        started_at: tool.started_at,
+        completed_at: None,
+        status: "running".to_string(),
+        tools: Vec::new(),
+    }
+}
+
+fn codex_output_value(output: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    match output? {
+        serde_json::Value::String(raw) => serde_json::from_str(raw).ok(),
+        value @ serde_json::Value::Object(_) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 fn subagent_tool_uses_from_json(json: &serde_json::Value) -> Vec<PendingSubagentTool> {
@@ -1528,6 +1777,7 @@ fn text_from_content(content: &serde_json::Value) -> Option<String> {
 fn useful_text_block(text: &str) -> Option<&str> {
     let trimmed = text.trim();
     if trimmed.is_empty()
+        || trimmed.starts_with("# AGENTS.md instructions")
         || trimmed.starts_with("<command-name>")
         || trimmed.starts_with("<local-command")
         || trimmed.starts_with("<command-message>")
@@ -1979,6 +2229,22 @@ mod tests {
     }
 
     #[test]
+    fn extract_session_title_skips_codex_agent_instructions_context() {
+        let path = write_temp_jsonl(
+            "codex-title-agents-context",
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\nProject rules\n</INSTRUCTIONS>\n<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"创建3个subagent 来计算 1+1  2+2  3+3"}]}}
+"##,
+        );
+
+        assert_eq!(
+            extract_session_title(&path).as_deref(),
+            Some("创建3个subagent 来计算 1+1  2+2  3+3")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_flatten_input_strings() {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), serde_json::json!("ls -la"));
@@ -2308,6 +2574,45 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extracts_subagents_from_codex_multi_agent_transcript() {
+        let path = write_temp_jsonl(
+            "codex-subagents",
+            r#"{"timestamp":"2026-05-29T13:34:17.090Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"multi_agent_v1","arguments":"{\"message\":\"请只计算这个表达式并返回最终结果：1+1。\"}","call_id":"call-a"}}
+{"timestamp":"2026-05-29T13:34:17.093Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"multi_agent_v1","arguments":"{\"message\":\"请只计算这个表达式并返回最终结果：2+2。\"}","call_id":"call-b"}}
+{"timestamp":"2026-05-29T13:34:17.359Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-a","output":"{\"agent_id\":\"019e73f1-5808-7a91-bfd4-2aadc13d2c77\",\"nickname\":\"Laplace\"}"}}
+{"timestamp":"2026-05-29T13:34:17.505Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-b","output":"{\"agent_id\":\"019e73f1-5899-7342-9013-b3ffa5404cac\",\"nickname\":\"Newton\"}"}}
+{"timestamp":"2026-05-29T13:34:24.662Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait-1","output":"{\"status\":{\"019e73f1-5808-7a91-bfd4-2aadc13d2c77\":{\"completed\":\"2\"}},\"timed_out\":false}"}}
+{"timestamp":"2026-05-29T13:34:28.636Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<subagent_notification>\n{\"agent_path\":\"019e73f1-5899-7342-9013-b3ffa5404cac\",\"status\":{\"completed\":\"4\"}}\n</subagent_notification>"}]}}
+"#,
+        );
+
+        let subagents = extract_subagents_from_transcript(&path);
+
+        assert_eq!(subagents.len(), 2);
+        assert_eq!(
+            subagents[0].agent_id,
+            "019e73f1-5808-7a91-bfd4-2aadc13d2c77"
+        );
+        assert_eq!(subagents[0].launch_tool_use_id.as_deref(), Some("call-a"));
+        assert_eq!(subagents[0].name.as_deref(), Some("Laplace"));
+        assert_eq!(
+            subagents[0].description,
+            "请只计算这个表达式并返回最终结果：1+1。"
+        );
+        assert_eq!(subagents[0].status, "completed");
+        assert_eq!(subagents[0].last_assistant_message.as_deref(), Some("2"));
+        assert_eq!(
+            subagents[1].agent_id,
+            "019e73f1-5899-7342-9013-b3ffa5404cac"
+        );
+        assert_eq!(subagents[1].name.as_deref(), Some("Newton"));
+        assert_eq!(subagents[1].status, "completed");
+        assert_eq!(subagents[1].last_assistant_message.as_deref(), Some("4"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

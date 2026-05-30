@@ -105,7 +105,7 @@ fn contains_app_name(haystack: &str, needle: &str) -> bool {
 }
 
 fn is_name_boundary(ch: Option<char>) -> bool {
-    ch.map_or(true, |c| !c.is_ascii_alphanumeric())
+    ch.is_none_or(|c| !c.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]

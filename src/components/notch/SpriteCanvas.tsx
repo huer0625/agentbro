@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PetOption } from '../../types/pet'
 import type { ThemeConfig } from '../../types/theme'
 import type { Priority } from '../../types/priority'
@@ -11,6 +11,8 @@ interface SpriteCanvasProps {
   size: number
   /** Forces a specific animation row regardless of priority/idle state. Arrays are tried in order. */
   animationOverride?: string | readonly string[] | null
+  /** Whether an override should keep looping instead of settling back to idle. */
+  animationOverrideMode?: 'transient' | 'continuous'
   /** Toggle the idle "personality" scheduler (blink/yawn/stretch). Default true. */
   enableIdleBehaviors?: boolean
   /**
@@ -31,6 +33,7 @@ const IDLE_INTERVAL_MIN_MS = 4000
 const IDLE_INTERVAL_MAX_MS = 7000
 const SLEEP_THRESHOLD_MS = 120000
 const SLEEP_FPS_FLOOR = 2
+const ACTIVE_ANIMATION_LOOPS = 3
 
 export function SpriteCanvas({
   pet,
@@ -38,91 +41,127 @@ export function SpriteCanvas({
   priority,
   size,
   animationOverride,
+  animationOverrideMode = 'transient',
   enableIdleBehaviors = true,
   idleSinceMs,
   contextPressure = 0,
   energyLevel = 0,
 }: SpriteCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const frameRef = useRef(0)
-  const lastTimeRef = useRef(0)
-  const imageRef = useRef<HTMLImageElement | null>(null)
+  const [renderedStep, setRenderedStep] = useState<RenderedStep | null>(null)
+  const [atlasGrid, setAtlasGrid] = useState<AtlasGrid | null>(null)
   const [idleBehavior, setIdleBehavior] = useState<string | null>(null)
+  const prefersReducedMotion = usePrefersReducedMotion()
 
   const trackedIdleMs = useTrackedIdleMs(priority)
   const effectiveIdleSinceMs = idleSinceMs && idleSinceMs > 0 ? idleSinceMs : trackedIdleMs
-  const activePet = pet ?? themeToPet(theme)
+  const activePet = useMemo(() => pet ?? themeToPet(theme), [pet, theme])
 
   const pName = priorityName(priority)
   const isIdle = pName === 'idle'
   const isSleeping = isIdle && effectiveIdleSinceMs > SLEEP_THRESHOLD_MS
   const baseAnimName = activePet ? (activePet.stateMapping[pName] ?? 'idle') : 'idle'
 
-  const activeAnimName = pickActiveAnimName({ animationOverride, idleBehavior, baseAnimName, pet: activePet })
+  const overrideAnimName = pickAnimationOverride(animationOverride, activePet)
+  const activeAnimName = pickActiveAnimName({ overrideAnimName, idleBehavior, baseAnimName, pet: activePet })
   const anim = activePet?.animations[activeAnimName] ?? activePet?.animations['idle']
-  const baseFps = anim?.fps ?? 6
-  const vitalsFpsFactor = computeVitalsFpsFactor(contextPressure, energyLevel, isIdle)
-  const fps = isSleeping && activeAnimName === baseAnimName
-    ? Math.max(SLEEP_FPS_FLOOR, baseFps / 2)
-    : Math.max(SLEEP_FPS_FLOOR, baseFps * vitalsFpsFactor)
+  const idleAnim = activePet?.animations['idle']
+  const atlasKey = activePet
+    ? makeAtlasKey(activePet.spritesheetDataUrl, activePet.frameSize.width, activePet.frameSize.height)
+    : null
+  const effectiveAtlasGrid = atlasGrid?.key === atlasKey ? atlasGrid : inferAtlasGrid(activePet)
+  const shouldSettleToIdle = Boolean(
+    anim
+    && idleAnim
+    && activeAnimName !== 'idle'
+    && idleBehavior === null
+    && !(overrideAnimName && animationOverrideMode === 'continuous'),
+  )
 
-  // Spritesheet preload
   useEffect(() => {
-    if (!activePet?.spritesheetDataUrl) {
-      imageRef.current = null
+    if (!activePet?.spritesheetDataUrl || !activePet.frameSize.width || !activePet.frameSize.height) {
       return
     }
+    const key = makeAtlasKey(activePet.spritesheetDataUrl, activePet.frameSize.width, activePet.frameSize.height)
+    let cancelled = false
     const img = new Image()
-    img.src = activePet.spritesheetDataUrl
     img.onload = () => {
-      imageRef.current = img
+      if (cancelled) return
+      const width = img.naturalWidth || img.width
+      const height = img.naturalHeight || img.height
+      if (!width || !height) return
+      setAtlasGrid({
+        key,
+        columns: Math.max(1, Math.round(width / activePet.frameSize.width)),
+        rows: Math.max(1, Math.round(height / activePet.frameSize.height)),
+      })
     }
+    img.src = activePet.spritesheetDataUrl
     return () => {
-      imageRef.current = null
+      cancelled = true
     }
-  }, [activePet?.spritesheetDataUrl])
+  }, [activePet?.frameSize.height, activePet?.frameSize.width, activePet?.spritesheetDataUrl])
 
-  // Animation render loop
   useEffect(() => {
     if (!anim || !activePet) return
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
 
-    frameRef.current = 0
-    lastTimeRef.current = 0
+    let cancelled = false
+    let timer: ReturnType<typeof window.setTimeout> | null = null
+    let frameIndex = 0
 
-    const interval = 1000 / Math.max(1, fps)
     const isOneShot = idleBehavior !== null && activeAnimName === idleBehavior
-    let animId = 0
+    const render = () => {
+      if (cancelled) return
+      const step = getRenderStep({
+        activeAnimName,
+        activeAnim: anim,
+        frameIndex,
+        idleAnim,
+        prefersReducedMotion,
+        shouldSettleToIdle,
+      })
+      setRenderedStep(step)
 
-    const render = (time: number) => {
-      if (time - lastTimeRef.current < interval) {
-        animId = requestAnimationFrame(render)
+      if (prefersReducedMotion) return
+
+      frameIndex += 1
+      if (isOneShot && frameIndex >= anim.frames) {
+        setIdleBehavior(null)
         return
       }
-      lastTimeRef.current = time
 
-      const img = imageRef.current
-      if (img) {
-        const { width, height } = activePet.frameSize
-        const frame = frameRef.current % anim.frames
-        ctx.clearRect(0, 0, size, size)
-        ctx.drawImage(img, frame * width, anim.row * height, width, height, 0, 0, size, size)
-        frameRef.current = frame + 1
-
-        if (isOneShot && frameRef.current >= anim.frames) {
-          setIdleBehavior(null)
-          return
-        }
-      }
-      animId = requestAnimationFrame(render)
+      const fps = computeEffectiveFps({
+        anim: step.anim,
+        activeAnimName: step.animName,
+        baseAnimName,
+        contextPressure,
+        energyLevel,
+        isIdle,
+        isSleeping,
+      })
+      timer = window.setTimeout(render, 1000 / Math.max(1, fps))
     }
 
-    animId = requestAnimationFrame(render)
-    return () => cancelAnimationFrame(animId)
-  }, [anim, activePet, size, fps, activeAnimName, idleBehavior])
+    render()
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [
+    activeAnimName,
+    activePet,
+    animationOverrideMode,
+    anim,
+    baseAnimName,
+    contextPressure,
+    energyLevel,
+    idleAnim,
+    idleBehavior,
+    isIdle,
+    isSleeping,
+    overrideAnimName,
+    prefersReducedMotion,
+    shouldSettleToIdle,
+  ])
 
   // Idle behavior scheduler — picks a random one-shot animation when idle.
   useEffect(() => {
@@ -157,14 +196,37 @@ export function SpriteCanvas({
     activePet,
   ])
 
-  if (!activePet) return null
+  if (!activePet || !anim) return null
+
+  const step = renderedStep ?? getRenderStep({
+    activeAnimName,
+    activeAnim: anim ?? activePet.animations['idle'],
+    frameIndex: 0,
+    idleAnim,
+    prefersReducedMotion,
+    shouldSettleToIdle,
+  })
+  const columns = Math.max(effectiveAtlasGrid?.columns ?? 1, step.frame + 1)
+  const rows = Math.max(effectiveAtlasGrid?.rows ?? 1, step.anim.row + 1)
+  const backgroundPosition = `${toBackgroundPercent(step.frame, columns)}% ${toBackgroundPercent(step.anim.row, rows)}%`
+  const aspectRatio = `${activePet.frameSize.width} / ${activePet.frameSize.height}`
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
+    <div
+      className="sprite-canvas"
+      data-testid="sprite-canvas"
+      data-pet-animation={activeAnimName}
+      data-pet-animation-mode={overrideAnimName ? animationOverrideMode : undefined}
+      data-pet-rendered-animation={step.animName}
+      data-pet-rendered-frame={step.frame}
+      style={{
+        width: size,
+        aspectRatio,
+        backgroundImage: `url(${activePet.spritesheetDataUrl})`,
+        backgroundPosition,
+        backgroundRepeat: 'no-repeat',
+        backgroundSize: `${columns * 100}% ${rows * 100}%`,
+      }}
       aria-hidden
     />
   )
@@ -188,25 +250,138 @@ function themeToPet(theme: ThemeConfig | undefined): PetOption | null {
 }
 
 function pickActiveAnimName({
-  animationOverride,
+  overrideAnimName,
   idleBehavior,
   baseAnimName,
   pet,
 }: {
-  animationOverride: string | readonly string[] | null | undefined
+  overrideAnimName: string | null
   idleBehavior: string | null
   baseAnimName: string
   pet: PetOption | null
 }): string {
+  if (overrideAnimName) return overrideAnimName
+  if (idleBehavior && pet?.animations[idleBehavior]) return idleBehavior
+  return baseAnimName
+}
+
+function pickAnimationOverride(
+  animationOverride: string | readonly string[] | null | undefined,
+  pet: PetOption | null,
+): string | null {
   const overrides = Array.isArray(animationOverride)
     ? animationOverride
     : animationOverride
       ? [animationOverride]
       : []
-  const matchedOverride = overrides.find((name) => pet?.animations[name])
-  if (matchedOverride) return matchedOverride
-  if (idleBehavior && pet?.animations[idleBehavior]) return idleBehavior
-  return baseAnimName
+  return overrides.find((name) => pet?.animations[name]) ?? null
+}
+
+function getRenderStep({
+  activeAnimName,
+  activeAnim,
+  frameIndex,
+  idleAnim,
+  prefersReducedMotion,
+  shouldSettleToIdle,
+}: {
+  activeAnimName: string
+  activeAnim: NonNullable<PetOption['animations'][string]>
+  frameIndex: number
+  idleAnim: PetOption['animations'][string] | undefined
+  prefersReducedMotion: boolean
+  shouldSettleToIdle: boolean
+}): RenderedStep {
+  if (prefersReducedMotion) {
+    return { anim: activeAnim, animName: activeAnimName, frame: 0 }
+  }
+  const settleAfterFrames = activeAnim.frames * ACTIVE_ANIMATION_LOOPS
+  if (shouldSettleToIdle && idleAnim && frameIndex >= settleAfterFrames) {
+    return {
+      anim: idleAnim,
+      animName: 'idle',
+      frame: (frameIndex - settleAfterFrames) % idleAnim.frames,
+    }
+  }
+  return {
+    anim: activeAnim,
+    animName: activeAnimName,
+    frame: frameIndex % activeAnim.frames,
+  }
+}
+
+function computeEffectiveFps({
+  anim,
+  activeAnimName,
+  baseAnimName,
+  contextPressure,
+  energyLevel,
+  isIdle,
+  isSleeping,
+}: {
+  anim: NonNullable<PetOption['animations'][string]>
+  activeAnimName: string
+  baseAnimName: string
+  contextPressure: number
+  energyLevel: number
+  isIdle: boolean
+  isSleeping: boolean
+}): number {
+  const baseFps = anim.fps ?? 6
+  const vitalsFpsFactor = computeVitalsFpsFactor(contextPressure, energyLevel, isIdle)
+  if (isSleeping && activeAnimName === baseAnimName) {
+    return Math.max(SLEEP_FPS_FLOOR, baseFps / 2)
+  }
+  return Math.max(SLEEP_FPS_FLOOR, baseFps * vitalsFpsFactor)
+}
+
+type AtlasGrid = {
+  key: string
+  columns: number
+  rows: number
+}
+
+type RenderedStep = {
+  anim: NonNullable<PetOption['animations'][string]>
+  animName: string
+  frame: number
+}
+
+function inferAtlasGrid(pet: PetOption | null): AtlasGrid | null {
+  if (!pet) return null
+  const animations = Object.values(pet.animations)
+  if (animations.length === 0) return null
+  return {
+    key: makeAtlasKey(pet.spritesheetDataUrl, pet.frameSize.width, pet.frameSize.height),
+    columns: Math.max(1, ...animations.map((anim) => anim.frames)),
+    rows: Math.max(1, ...animations.map((anim) => anim.row + 1)),
+  }
+}
+
+function makeAtlasKey(src: string, frameWidth: number, frameHeight: number): string {
+  return `${src}:${frameWidth}x${frameHeight}`
+}
+
+function toBackgroundPercent(index: number, count: number): number {
+  if (count <= 1) return 0
+  return (index / (count - 1)) * 100
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setPrefersReducedMotion(query.matches)
+    query.addEventListener?.('change', onChange)
+    return () => query.removeEventListener?.('change', onChange)
+  }, [])
+
+  return prefersReducedMotion
 }
 
 /**

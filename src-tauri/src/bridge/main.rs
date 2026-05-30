@@ -487,17 +487,80 @@ fn string_field<'a>(data: &'a serde_json::Value, keys: &[&str]) -> Option<&'a st
         .find_map(|key| data.get(key).and_then(|value| value.as_str()))
 }
 
+fn string_field_with_payload<'a>(
+    data: &'a serde_json::Value,
+    payload: Option<&'a serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    string_field(data, keys).or_else(|| payload.and_then(|value| string_field(value, keys)))
+}
+
+fn value_field_with_payload<'a>(
+    data: &'a serde_json::Value,
+    payload: Option<&'a serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    keys.iter()
+        .find_map(|key| data.get(key))
+        .or_else(|| payload.and_then(|value| keys.iter().find_map(|key| value.get(key))))
+}
+
+fn first_string_array_field<'a>(data: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    data.get(key)
+        .and_then(|value| value.as_array())
+        .and_then(|values| values.iter().find_map(|value| value.as_str()))
+}
+
+fn cline_payload_key(event: &str) -> Option<&'static str> {
+    match event {
+        "UserPromptSubmit" => Some("userPromptSubmit"),
+        "PreToolUse" => Some("preToolUse"),
+        "PostToolUse" => Some("postToolUse"),
+        "TaskStart" => Some("taskStart"),
+        "TaskResume" => Some("taskResume"),
+        "TaskCancel" => Some("taskCancel"),
+        "TaskComplete" => Some("taskComplete"),
+        "PreCompact" => Some("preCompact"),
+        _ => None,
+    }
+}
+
+fn cline_event_payload<'a>(
+    source: &str,
+    event: &str,
+    data: &'a serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    if source != "cline" {
+        return None;
+    }
+    cline_payload_key(event).and_then(|key| data.get(key))
+}
+
 fn normalize_hook_event(event: &str) -> &str {
     match event {
         "session_start" => "SessionStart",
+        "sessionStart" => "SessionStart",
         "session_end" => "SessionEnd",
+        "sessionEnd" => "SessionEnd",
         "user_prompt_submit" => "UserPromptSubmit",
+        "userPromptSubmit" | "userPromptSubmitted" => "UserPromptSubmit",
         "pre_tool_use" => "PreToolUse",
+        "preToolUse" | "BeforeTool" => "PreToolUse",
         "post_tool_use" => "PostToolUse",
+        "postToolUse" | "AfterTool" => "PostToolUse",
         "post_tool_use_failure" => "PostToolUseFailure",
+        "postToolUseFailure" | "errorOccurred" => "PostToolUseFailure",
         "permission_request" => "PermissionRequest",
+        "permissionRequest" => "PermissionRequest",
         "permission_denied" => "PermissionDenied",
+        "permissionDenied" => "PermissionDenied",
         "stop" => "Stop",
+        "agentStop" => "Stop",
+        "ErrorOccurred" => "PostToolUseFailure",
+        "preCompact" => "PreCompact",
+        "subagentStart" => "SubagentStart",
+        "subagentStop" => "SubagentStop",
+        "agentSpawn" => "SessionStart",
         "stop_failure" => "StopFailure",
         other => other,
     }
@@ -521,18 +584,39 @@ fn main() {
         Err(_) => return,
     };
 
-    let session_id = string_field(&data, &["session_id", "sessionId"]).unwrap_or("unknown");
+    let session_id = string_field(
+        &data,
+        &["session_id", "sessionId", "task_id", "taskId", "id"],
+    )
+    .unwrap_or("unknown");
     let hook_event = forced_event
         .as_deref()
         .or_else(|| string_field(&data, &["hook_event_name", "event", "hookType"]))
         .map(normalize_hook_event)
         .unwrap_or("");
-    let cwd = string_field(&data, &["cwd"]).unwrap_or("");
+    let event_payload = cline_event_payload(&source, hook_event, &data);
+    let cwd = string_field(&data, &["cwd"])
+        .or_else(|| first_string_array_field(&data, "workspaceRoots"))
+        .unwrap_or("");
     let tool_input = data
         .get("tool_input")
         .or_else(|| data.get("toolInput"))
+        .or_else(|| data.get("toolArgs"))
+        .or_else(|| data.get("arguments"))
+        .or_else(|| data.get("args"))
+        .or_else(|| event_payload.and_then(|payload| payload.get("parameters")))
+        .or_else(|| event_payload.and_then(|payload| payload.get("toolArgs")))
+        .or_else(|| event_payload.and_then(|payload| payload.get("input")))
+        .or_else(|| event_payload.and_then(|payload| payload.get("arguments")))
+        .or_else(|| event_payload.and_then(|payload| payload.get("args")))
         .cloned()
         .unwrap_or(serde_json::json!({}));
+    let tool_name = string_field_with_payload(
+        &data,
+        event_payload,
+        &["tool_name", "toolName", "tool", "name"],
+    )
+    .unwrap_or("");
     let claude_pid = std::os::unix::process::parent_id();
     let tty = get_tty();
     let engine_label = std::env::var("AGENTBRO_ENGINE_LABEL").ok();
@@ -672,20 +756,18 @@ fn main() {
         "UserPromptSubmit" => {
             obj.insert("status".into(), "processing".into());
             // Forward user prompt text for session title extraction
-            if let Some(prompt) = data.get("user_prompt").or_else(|| data.get("prompt")) {
+            if let Some(prompt) = value_field_with_payload(
+                &data,
+                event_payload,
+                &["user_prompt", "userPrompt", "prompt", "message"],
+            ) {
                 obj.insert("prompt".into(), prompt.clone());
             }
         }
         "PreToolUse" => {
-            let tool_name_str = data
-                .get("tool_name")
-                .or_else(|| data.get("tool"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
             // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
             // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
-            if tool_name_str == "AskUserQuestion" && !is_codex_source(&source) {
+            if tool_name == "AskUserQuestion" && !is_codex_source(&source) {
                 populate_ask_user_question_state(obj, &tool_input);
 
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
@@ -698,7 +780,9 @@ fn main() {
             }
 
             obj.insert("status".into(), "running_tool".into());
-            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
@@ -708,30 +792,50 @@ fn main() {
         }
         "PostToolUse" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
             if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
                 obj.insert("tool_use_id".into(), id.clone());
             }
-            if let Some(response) = data
-                .get("tool_response")
-                .or_else(|| data.get("toolResponse"))
-            {
+            if let Some(response) = value_field_with_payload(
+                &data,
+                event_payload,
+                &[
+                    "tool_response",
+                    "toolResponse",
+                    "tool_result",
+                    "toolResult",
+                    "result",
+                ],
+            ) {
                 obj.insert("tool_response".into(), response.clone());
                 if let Some(error) = tool_response_error(response) {
                     obj.insert("tool_error".into(), error.into());
                 }
             }
+            if event_payload
+                .and_then(|payload| payload.get("success"))
+                .and_then(|value| value.as_bool())
+                .is_some_and(|success| !success)
+            {
+                obj.insert("tool_error".into(), "Tool reported failure".into());
+            }
         }
         "PostToolUseFailure" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(e) = data.get("error").or_else(|| data.get("message")) {
+            if let Some(e) =
+                value_field_with_payload(&data, event_payload, &["error", "message", "result"])
+            {
                 obj.insert("tool_error".into(), e.clone());
             }
             if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
@@ -740,7 +844,9 @@ fn main() {
         }
         "PermissionDenied" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
@@ -749,13 +855,7 @@ fn main() {
             }
         }
         "PermissionRequest" => {
-            let tool_name_str = data
-                .get("tool_name")
-                .or_else(|| data.get("tool"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            if tool_name_str == "AskUserQuestion" {
+            if tool_name == "AskUserQuestion" {
                 // OpenCode asks questions through PermissionRequest and consumes
                 // decision.updatedInput.answers from the bridge response. Claude Code
                 // questions are handled earlier in PreToolUse, where updatedInput is
@@ -775,7 +875,7 @@ fn main() {
             }
 
             // ExitPlanMode: route as a plan approval card with Manual / Accept Edits / Auto.
-            if tool_name_str == "ExitPlanMode" && !is_codex_source(&source) {
+            if tool_name == "ExitPlanMode" && !is_codex_source(&source) {
                 let plan_content = tool_input
                     .get("plan")
                     .or_else(|| tool_input.get("planContent"))
@@ -794,7 +894,7 @@ fn main() {
 
                 obj.insert("event".into(), "PlanApproval".into());
                 obj.insert("status".into(), "waiting_for_approval".into());
-                obj.insert("tool".into(), tool_name_str.into());
+                obj.insert("tool".into(), tool_name.into());
                 obj.insert("tool_input".into(), tool_input.clone());
                 obj.insert("plan_title".into(), plan_title.into());
                 obj.insert("plan_content".into(), plan_content.into());
@@ -810,7 +910,9 @@ fn main() {
 
             // Regular permission request
             obj.insert("status".into(), "waiting_for_approval".into());
-            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
@@ -868,6 +970,28 @@ fn main() {
                 ],
             );
         }
+        "TaskComplete" => {
+            obj.insert("status".into(), "waiting_for_input".into());
+            if let Some(summary) = value_field_with_payload(
+                &data,
+                event_payload,
+                &[
+                    "last_assistant_message",
+                    "lastAssistantMessage",
+                    "summary",
+                    "message",
+                    "task",
+                ],
+            ) {
+                obj.insert("summary".into(), summary.clone());
+            }
+        }
+        "TaskStart" | "TaskResume" => {
+            obj.insert("status".into(), "processing".into());
+        }
+        "TaskCancel" => {
+            obj.insert("status".into(), "interrupted".into());
+        }
         "StopFailure" => {
             obj.insert("status".into(), "waiting_for_input".into());
             if let Some(e) = data.get("error").or_else(|| data.get("message")) {
@@ -879,6 +1003,24 @@ fn main() {
         }
         "SessionEnd" => {
             obj.insert("status".into(), "ended".into());
+        }
+        "BeforeAgent" => {
+            obj.insert("status".into(), "processing".into());
+            copy_optional_field(obj, &data, "message", &["message", "description"]);
+        }
+        "AfterAgent" => {
+            obj.insert("status".into(), "processing".into());
+            copy_optional_field(
+                obj,
+                &data,
+                "summary",
+                &[
+                    "summary",
+                    "last_assistant_message",
+                    "message",
+                    "description",
+                ],
+            );
         }
         "PreCompact" => {
             obj.insert("status".into(), "compacting".into());

@@ -62,6 +62,13 @@ git stash pop
 
 4. Update `.github/release-notes.md` for the actual release. The GitHub Release body and updater `latest.json` notes both come from this file.
 
+   Release notes must be bilingual:
+
+   - English first, under `## English`.
+   - Chinese second, under `## 中文`.
+   - Keep the same facts in both sections. Do not ship an English-only or Chinese-only release body.
+   - The app update dialog selects the Chinese section only when the user's language is Chinese; all other UI languages show the English section.
+
 5. Bump to the next patch version and run validation:
 
 ```bash
@@ -131,6 +138,13 @@ Also verify updater notes:
 ```bash
 curl -fsSL https://github.com/shirenchuang/agentbro/releases/download/vX.Y.Z/latest.json \
   | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const j=JSON.parse(s); console.log({version:j.version, notesLength:j.notes?.length ?? 0});})"
+```
+
+For bilingual release notes, also verify the expected section markers are present:
+
+```bash
+curl -fsSL https://github.com/shirenchuang/agentbro/releases/download/vX.Y.Z/latest.json \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const n=JSON.parse(s).notes||''; console.log({hasEnglish:n.includes('## English'), hasChinese:n.includes('## 中文')});})"
 ```
 
 ## Homebrew

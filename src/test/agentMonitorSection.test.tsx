@@ -133,6 +133,7 @@ const detail = {
     }],
     tasks: [],
     isYoloMode: false,
+    model: null,
     lastUserMessage: null,
     lastResponse: null,
     lastThought: null,

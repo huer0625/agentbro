@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SettingsSidebar } from './SettingsSidebar'
 import { UpdateDialog } from './UpdateDialog'
+import { FirstRunWelcome } from './FirstRunWelcome'
 import { GeneralSection } from './sections/GeneralSection'
 import { IslandSection } from './sections/IslandSection'
 import { AgentsSection } from './sections/AgentsSection'
@@ -27,6 +28,7 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const { t } = useTranslation()
   const updater = useUpdater()
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
+  const analyticsConsentPromptCompleted = useConfigStore((s) => s.analyticsConsentPromptCompleted)
   const [activeSection, setActiveSection] = useState('general')
   const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
@@ -107,8 +109,12 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
             ) : activeSection === 'about' ? (
               <AboutSection
                 updateStatus={updater.status}
+                updateInstallChannel={updater.installChannel}
                 updateVersion={updater.version}
                 updateError={updater.error}
+                updateRestartPending={updater.restartPending}
+                updateRestartBlockedByActivity={updater.restartBlockedByActivity}
+                updateBlockingSessionCount={updater.blockingSessionCount}
                 onCheckForUpdate={updater.checkForUpdate}
               />
             ) : (
@@ -124,12 +130,17 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
           notes={updater.notes}
           date={updater.date}
           status={updater.status}
+          installChannel={updater.installChannel}
           manualDownloadUrl={updater.manualDownloadUrl}
           downloadProgress={updater.downloadProgress}
+          restartPending={updater.restartPending}
+          restartBlockedByActivity={updater.restartBlockedByActivity}
+          blockingSessionCount={updater.blockingSessionCount}
           onInstall={updater.installUpdate}
           onDismiss={updater.dismissUpdate}
         />
       )}
+      {!analyticsConsentPromptCompleted && <FirstRunWelcome />}
     </div>
   )
 }

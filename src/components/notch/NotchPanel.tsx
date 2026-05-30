@@ -12,6 +12,7 @@ import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
+import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
@@ -37,6 +38,10 @@ const closeMorphTransition = {
   ease: [0.2, 0, 0, 1] as const,
 }
 
+const WAKE_GAP_THRESHOLD_MS = 45_000
+const MIN_WAKE_SILENCE_MS = 8_000
+const MAX_WAKE_SILENCE_MS = 60_000
+
 const contentTransition = {
   duration: 0.2,
   ease: 'easeOut' as const,
@@ -61,6 +66,8 @@ const HOVER_PANEL_MIN_HEIGHT = 180
 const EXPANDED_PREVIEW_SESSION_COUNT = 4
 const EXPANDED_PREVIEW_ROW_HEIGHT = 58
 const EXPANDED_PREVIEW_VERTICAL_PADDING = 48
+const PET_SURFACE_WIDTH = 820
+const PET_SURFACE_HEIGHT = 360
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
   return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
 }
@@ -331,6 +338,33 @@ export function NotchPanel() {
   }, [applyIdleTimeout, idleTimeoutMinutes, sessionTimeoutMinutes])
 
   useEffect(() => {
+    let lastSeenAt = Date.now()
+    const silenceMs = Math.min(
+      MAX_WAKE_SILENCE_MS,
+      Math.max(MIN_WAKE_SILENCE_MS, escSilenceDuration * 1000),
+    )
+
+    const checkForWake = () => {
+      const now = Date.now()
+      if (shouldSilenceAfterWake(lastSeenAt, now, WAKE_GAP_THRESHOLD_MS)) {
+        setWakeSilencedUntil(now + silenceMs)
+      }
+      lastSeenAt = now
+    }
+
+    const onVisibleOrFocus = () => checkForWake()
+    const interval = window.setInterval(checkForWake, 10_000)
+    document.addEventListener('visibilitychange', onVisibleOrFocus)
+    window.addEventListener('focus', onVisibleOrFocus)
+
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibleOrFocus)
+      window.removeEventListener('focus', onVisibleOrFocus)
+    }
+  }, [escSilenceDuration, setWakeSilencedUntil])
+
+  useEffect(() => {
     if (!followFocus) {
       setFocusedSessionIds(null)
       return
@@ -360,8 +394,14 @@ export function NotchPanel() {
       }
     }
 
+    const refreshInterval = energyIntervalMs(getAppEnergyMode(sessions), {
+      activeMs: 1000,
+      idleVisibleMs: 3000,
+      quietMs: 8000,
+    })
+
     refreshFocusedSessions()
-    const interval = window.setInterval(refreshFocusedSessions, 1000)
+    const interval = window.setInterval(refreshFocusedSessions, refreshInterval)
     return () => {
       cancelled = true
       window.clearInterval(interval)
@@ -1301,7 +1341,7 @@ export function NotchPanel() {
   )
   const collapsedHeight = getCollapsedIslandHeight(notchHeightMode, customNotchHeight)
   const contentWidth = isPetMode
-    ? 820
+    ? PET_SURFACE_WIDTH
     : previewMode === 'micro'
       ? microPillWidth
       : previewMode === 'compact'
@@ -1361,7 +1401,7 @@ export function NotchPanel() {
       )
   const panelHeight =
     isPetMode
-      ? 360
+      ? PET_SURFACE_HEIGHT
       : previewMode === 'micro' || previewMode === 'compact'
         ? collapsedHeight
         : previewMode === 'completion'
@@ -1427,11 +1467,11 @@ export function NotchPanel() {
   const maxHostSlopX = Math.max(NOTCH_HIT_SLOP_X_COLLAPSED, NOTCH_HIT_SLOP_X_EXPANDED)
   const maxHostSlopY = Math.max(NOTCH_HIT_SLOP_Y_COLLAPSED, NOTCH_HIT_SLOP_Y_EXPANDED)
   const expandedHostContentWidth = isPetMode
-    ? 820
+    ? PET_SURFACE_WIDTH
     : usesWideApprovalOverlay
       ? approvalPanelWidth
       : expandedPanelContentWidth
-  const expandedHostPanelHeight = isPetMode ? 360 : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
+  const expandedHostPanelHeight = isPetMode ? PET_SURFACE_HEIGHT : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
@@ -1636,6 +1676,9 @@ export function NotchPanel() {
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
     let inFlight = false
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+
     const repositionToCursorDisplay = () => {
       if (inFlight) return
       inFlight = true
@@ -1651,9 +1694,27 @@ export function NotchPanel() {
         { force: true },
       )
     }
-    const interval = window.setInterval(repositionToCursorDisplay, 500)
+
+    // One-shot reposition on mount: covers the case where the cursor was
+    // already on a different monitor than the saved one.
     repositionToCursorDisplay()
-    return () => window.clearInterval(interval)
+
+    // Then react to monitor transitions broadcast by the backend tracker.
+    // No more polling from this window.
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      if (cancelled) return
+      listen('cursor-monitor-changed', () => {
+        repositionToCursorDisplay()
+      }).then((fn) => {
+        if (cancelled) { fn(); return }
+        unlisten = fn
+      }).catch(() => {})
+    }).catch(() => {})
+
+    return () => {
+      cancelled = true
+      if (unlisten) unlisten()
+    }
   }, [displayMonitor, effectiveHorizontalOffset, hostHitboxSize.height, hostHitboxSize.width, isDragging, requestNativeHostResize, updateHostAnchorOffset])
 
   const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {

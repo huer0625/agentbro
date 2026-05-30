@@ -39,14 +39,14 @@ export function SwitchProviderList() {
 
   useEffect(() => {
     loadProviders()
-  }, [activeAppType])
+  }, [activeAppType, loadProviders])
 
   useEffect(() => {
     if (error) {
       const t = setTimeout(clearError, 5000)
       return () => clearTimeout(t)
     }
-  }, [error])
+  }, [error, clearError])
 
   const handleNew = () => {
     setEditingProvider(null)

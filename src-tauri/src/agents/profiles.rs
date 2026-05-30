@@ -31,6 +31,7 @@ pub enum InstallationKind {
     YamlHooks,
     CursorSettings,
     KiroAgentFile,
+    ExecutableHookFiles,
     PluginFile,
     PluginDirectory,
     TomlHooks,
@@ -114,12 +115,16 @@ impl HookEventCategory {
 
     pub fn for_event_name(name: &str) -> Self {
         match name {
-            "PreToolUse" | "PermissionRequest" | "PermissionDenied" | "pre_tool_use" => {
-                Self::Approvals
-            }
-            "Notification" | "UserPromptSubmit" | "user_prompt_submit" => Self::Notifications,
+            "PreToolUse" | "PermissionRequest" | "PermissionDenied" | "pre_tool_use"
+            | "preToolUse" | "permissionRequest" => Self::Approvals,
+            "Notification"
+            | "UserPromptSubmit"
+            | "user_prompt_submit"
+            | "userPromptSubmit"
+            | "userPromptSubmitted" => Self::Notifications,
             "SessionStart" | "SessionEnd" | "Stop" | "StopFailure" | "SubagentStart"
-            | "SubagentStop" | "SubagentEnd" | "session_start" | "session_end" => Self::Lifecycle,
+            | "SubagentStop" | "SubagentEnd" | "session_start" | "session_end" | "sessionStart"
+            | "sessionEnd" | "agentSpawn" => Self::Lifecycle,
             _ => Self::Activity,
         }
     }
@@ -151,9 +156,71 @@ pub const CODEBUDDY_EVENTS: &[HookEventDescriptor] = &[
 ];
 
 pub const GEMINI_EVENTS: &[HookEventDescriptor] = &[
-    plain_event("PreToolUse"),
-    plain_event("PostToolUse"),
-    plain_event("Stop"),
+    plain_event("SessionStart"),
+    plain_event("SessionEnd"),
+    plain_event("BeforeTool"),
+    plain_event("AfterTool"),
+    plain_event("BeforeAgent"),
+    plain_event("AfterAgent"),
+];
+
+pub const COPILOT_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("agentStop"),
+    plain_event("errorOccurred"),
+    plain_event("notification"),
+    plain_event("permissionRequest"),
+    plain_event("postToolUseFailure"),
+    plain_event("preCompact"),
+    plain_event("preToolUse"),
+    plain_event("sessionStart"),
+    plain_event("sessionEnd"),
+    plain_event("subagentStart"),
+    plain_event("subagentStop"),
+    plain_event("userPromptSubmitted"),
+    plain_event("postToolUse"),
+];
+
+pub const CLINE_EVENTS: &[HookEventDescriptor] = &[
+    HookEventDescriptor {
+        name: "UserPromptSubmit",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "PreToolUse",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "PostToolUse",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "TaskStart",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "TaskResume",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "TaskCancel",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "TaskComplete",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
+        name: "PreCompact",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
 ];
 
 pub const SNAKE_SESSION_TOOL_EVENTS: &[HookEventDescriptor] = &[
@@ -202,32 +269,27 @@ pub const HERMES_EVENTS: &[HookEventDescriptor] = &[
 
 pub const KIRO_EVENTS: &[HookEventDescriptor] = &[
     HookEventDescriptor {
-        name: "PreToolUse",
+        name: "agentSpawn",
         template: HookEntryTemplate::Plain,
         timeout: Some(10_000),
     },
     HookEventDescriptor {
-        name: "PostToolUse",
+        name: "userPromptSubmit",
         template: HookEntryTemplate::Plain,
         timeout: Some(10_000),
     },
     HookEventDescriptor {
-        name: "Notification",
+        name: "preToolUse",
         template: HookEntryTemplate::Plain,
         timeout: Some(10_000),
     },
     HookEventDescriptor {
-        name: "Stop",
+        name: "postToolUse",
         template: HookEntryTemplate::Plain,
         timeout: Some(10_000),
     },
     HookEventDescriptor {
-        name: "SubagentStart",
-        template: HookEntryTemplate::Plain,
-        timeout: Some(10_000),
-    },
-    HookEventDescriptor {
-        name: "SubagentEnd",
+        name: "stop",
         template: HookEntryTemplate::Plain,
         timeout: Some(10_000),
     },
@@ -237,13 +299,17 @@ pub const CLAUDE_CODE_EVENTS: &[HookEventDescriptor] = &[
     plain_event("UserPromptSubmit"),
     matcher_event("PreToolUse", "*", None),
     matcher_event("PostToolUse", "*", None),
+    matcher_event("PostToolUseFailure", "*", None),
     matcher_event("PermissionRequest", "*", Some(21_600)),
+    matcher_event("PermissionDenied", "*", None),
     matcher_event("Notification", "*", None),
     plain_event("Stop"),
+    plain_event("SubagentStart"),
     plain_event("SubagentStop"),
     plain_event("SessionStart"),
     plain_event("SessionEnd"),
     plain_event("PreCompact"),
+    plain_event("PostCompact"),
 ];
 
 pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
@@ -268,15 +334,45 @@ pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
         timeout: Some(5),
     },
     HookEventDescriptor {
+        name: "PostToolUseFailure",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
         name: "PermissionRequest",
         template: HookEntryTemplate::Plain,
         timeout: Some(21_600),
+    },
+    HookEventDescriptor {
+        name: "PermissionDenied",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
     },
     HookEventDescriptor {
         name: "Stop",
         template: HookEntryTemplate::Plain,
         timeout: Some(5),
     },
+    HookEventDescriptor {
+        name: "SessionEnd",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+];
+
+pub const QWEN_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("UserPromptSubmit"),
+    matcher_event("PreToolUse", "*", None),
+    matcher_event("PostToolUse", "*", None),
+    matcher_event("PostToolUseFailure", "*", None),
+    matcher_event("PermissionRequest", "*", Some(21_600)),
+    matcher_event("Notification", "*", None),
+    plain_event("Stop"),
+    plain_event("SessionStart"),
+    plain_event("SessionEnd"),
+    plain_event("PreCompact"),
+    plain_event("SubagentStart"),
+    plain_event("SubagentStop"),
 ];
 
 // Hook events for Kimi CLI. Schema reference:
@@ -414,6 +510,18 @@ pub fn claude_code_profile() -> AgentIntegrationProfile {
     }
 }
 
+pub fn cline_profile() -> AgentIntegrationProfile {
+    AgentIntegrationProfile {
+        id: "cline",
+        installation_kind: InstallationKind::ExecutableHookFiles,
+        configuration_path: "Documents/Cline/Hooks",
+        activation_path: None,
+        source: "cline",
+        extra_args: &[],
+        events: CLINE_EVENTS,
+    }
+}
+
 pub fn codex_profile() -> AgentIntegrationProfile {
     AgentIntegrationProfile {
         id: "codex",
@@ -454,7 +562,7 @@ pub fn copilot_profile() -> AgentIntegrationProfile {
     command_only_json_profile(
         "copilot",
         ".config/github-copilot/hooks.json",
-        SNAKE_SESSION_TOOL_EVENTS,
+        COPILOT_EVENTS,
     )
 }
 
@@ -518,7 +626,18 @@ pub fn qoder_cli_profile() -> AgentIntegrationProfile {
 }
 
 pub fn qwen_profile() -> AgentIntegrationProfile {
-    command_only_json_profile("qwen", ".qwen/settings.json", SNAKE_SESSION_TOOL_EVENTS)
+    AgentIntegrationProfile {
+        id: "qwen",
+        installation_kind: InstallationKind::JsonHooks {
+            entry: JsonHookEntry::TypedCommand,
+            nested: true,
+        },
+        configuration_path: ".qwen/settings.json",
+        activation_path: None,
+        source: "qwen",
+        extra_args: &[],
+        events: QWEN_EVENTS,
+    }
 }
 
 pub fn stepfun_profile() -> AgentIntegrationProfile {
@@ -674,6 +793,7 @@ pub fn activation_url(profile: &AgentIntegrationProfile) -> Option<PathBuf> {
 pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
     match id {
         "claude-code" => Some(claude_code_profile()),
+        "cline" => Some(cline_profile()),
         "codex" => Some(codex_profile()),
         "antigravity" => Some(antigravity_profile()),
         "codebuddy" => Some(codebuddy_profile()),
@@ -743,7 +863,8 @@ pub fn save_event_selection(
     let valid_names: BTreeSet<&str> = profile.events.iter().map(|event| event.name).collect();
     let filtered: Vec<String> = enabled_event_names
         .iter()
-        .filter_map(|name| valid_names.contains(name.as_str()).then(|| name.clone()))
+        .filter(|name| valid_names.contains(name.as_str()))
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -791,6 +912,9 @@ pub fn install_at(
         }
         InstallationKind::KiroAgentFile => {
             write_kiro_agent_file(profile, path)?;
+        }
+        InstallationKind::ExecutableHookFiles => {
+            write_executable_hook_files(profile, path)?;
         }
         InstallationKind::PluginFile => {
             write_plugin_file(profile, path)?;
@@ -965,6 +1089,9 @@ pub fn uninstall_at(
                 std::fs::remove_file(path)?;
             }
         }
+        InstallationKind::ExecutableHookFiles => {
+            remove_executable_hook_files(profile, path)?;
+        }
         InstallationKind::PluginFile => {
             if contains_marker(path, profile) {
                 let _ = std::fs::remove_file(path);
@@ -994,6 +1121,7 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
         InstallationKind::JsonHooks { .. }
         | InstallationKind::YamlHooks
         | InstallationKind::KiroAgentFile => hook_manager::has_agentbro_hooks(path),
+        InstallationKind::ExecutableHookFiles => executable_hook_files_installed(profile, path),
         InstallationKind::CursorSettings => cursor_settings_enabled(path),
         InstallationKind::PluginFile => {
             let has_plugin = contains_marker(path, profile);
@@ -1021,6 +1149,7 @@ pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookIns
         }
         InstallationKind::CursorSettings => cursor_settings_health(profile, path),
         InstallationKind::KiroAgentFile => kiro_agent_file_health(profile, path),
+        InstallationKind::ExecutableHookFiles => executable_hook_files_health(profile, path),
         InstallationKind::PluginFile => plugin_file_health(profile, path),
         InstallationKind::PluginDirectory => plugin_directory_health(profile, path),
     }
@@ -1118,6 +1247,13 @@ fn json_hooks_health(
         return status;
     }
 
+    if effective_events(profile)
+        .iter()
+        .any(|event| !json_event_has_current_profile_command(hooks, profile, event))
+    {
+        return HookInstallHealth::NeedsReinstall;
+    }
+
     let mut commands = Vec::new();
     collect_json_agentbro_commands(&settings, &mut commands);
     if commands
@@ -1141,6 +1277,21 @@ fn json_hooks_health(
     }
 
     HookInstallHealth::NeedsReinstall
+}
+
+fn json_event_has_current_profile_command(
+    hooks: &serde_json::Map<String, Value>,
+    profile: &AgentIntegrationProfile,
+    event: &HookEventDescriptor,
+) -> bool {
+    let Some(entries) = hooks.get(event.name) else {
+        return false;
+    };
+    let mut commands = Vec::new();
+    collect_json_agentbro_commands(entries, &mut commands);
+    commands
+        .iter()
+        .any(|candidate| agentbro_command_is_current(profile, candidate))
 }
 
 fn collect_json_agentbro_commands(value: &Value, commands: &mut Vec<String>) {
@@ -1714,6 +1865,150 @@ fn write_kiro_agent_file(
         "hooks": hooks,
     });
     hook_manager::write_json_config(path, &content)
+}
+
+fn write_executable_hook_files(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(path)?;
+    let effective = effective_events(profile);
+    let effective_names = effective
+        .iter()
+        .map(|event| event.name)
+        .collect::<BTreeSet<_>>();
+    remove_disabled_executable_hook_files(profile, path, &effective_names)?;
+    for event in effective {
+        let file_path = path.join(event.name);
+        std::fs::write(&file_path, executable_hook_script(profile, &event)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_disabled_executable_hook_files(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    effective_names: &BTreeSet<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for event in profile.events {
+        if effective_names.contains(event.name) {
+            continue;
+        }
+        let file_path = path.join(event.name);
+        let Ok(content) = std::fs::read_to_string(&file_path) else {
+            continue;
+        };
+        if content.contains(&marker(profile)) {
+            let _ = std::fs::remove_file(file_path);
+        }
+    }
+    Ok(())
+}
+
+fn executable_hook_script(
+    profile: &AgentIntegrationProfile,
+    event: &HookEventDescriptor,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let bridge = hook_manager::ensure_bridge_binary()?;
+    let mut args = vec![
+        "--source".to_string(),
+        profile.source.to_string(),
+        "--event".to_string(),
+        event.name.to_string(),
+    ];
+    args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
+    let command = hook_manager::bridge_command_parts(&bridge, &args).join(" ");
+    Ok(format!(
+        "#!/bin/bash\n# {}\nINPUT=$(cat)\nprintf '%s' \"$INPUT\" | {} >/dev/null 2>&1 &\nprintf '{{\"cancel\":false}}'\n",
+        marker(profile),
+        command
+    ))
+}
+
+fn remove_executable_hook_files(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for event in profile.events {
+        let file_path = path.join(event.name);
+        let Ok(content) = std::fs::read_to_string(&file_path) else {
+            continue;
+        };
+        if content.contains(&marker(profile)) {
+            let _ = std::fs::remove_file(file_path);
+        }
+    }
+    Ok(())
+}
+
+fn executable_hook_files_installed(profile: &AgentIntegrationProfile, path: &Path) -> bool {
+    executable_hook_files_health(profile, path) == HookInstallHealth::Installed
+}
+
+fn executable_hook_files_health(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> HookInstallHealth {
+    if !path.is_dir() {
+        return HookInstallHealth::NotInstalled;
+    }
+    let expected_events = effective_events(profile);
+    if expected_events.is_empty() {
+        return HookInstallHealth::NotInstalled;
+    }
+    let expected_names = expected_events
+        .iter()
+        .map(|event| event.name)
+        .collect::<BTreeSet<_>>();
+    let mut saw_any_managed = false;
+    for event in expected_events {
+        let file_path = path.join(event.name);
+        let Ok(content) = std::fs::read_to_string(&file_path) else {
+            return if saw_any_managed {
+                HookInstallHealth::NeedsReinstall
+            } else {
+                HookInstallHealth::NotInstalled
+            };
+        };
+        if !content.contains(&marker(profile)) {
+            return if saw_any_managed {
+                HookInstallHealth::NeedsReinstall
+            } else {
+                HookInstallHealth::NotInstalled
+            };
+        }
+        saw_any_managed = true;
+        match executable_hook_script(profile, &event) {
+            Ok(expected) if expected == content => {}
+            Ok(_) => return HookInstallHealth::NeedsReinstall,
+            Err(_) => return HookInstallHealth::Error,
+        }
+    }
+    if has_disabled_managed_executable_hook_files(profile, path, &expected_names) {
+        return HookInstallHealth::NeedsReinstall;
+    }
+    HookInstallHealth::Installed
+}
+
+fn has_disabled_managed_executable_hook_files(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    expected_names: &BTreeSet<&str>,
+) -> bool {
+    profile.events.iter().any(|event| {
+        if expected_names.contains(event.name) {
+            return false;
+        }
+        let file_path = path.join(event.name);
+        std::fs::read_to_string(&file_path)
+            .map(|content| content.contains(&marker(profile)))
+            .unwrap_or(false)
+    })
 }
 
 fn event_names(events: &[HookEventDescriptor]) -> Vec<&'static str> {
@@ -2640,6 +2935,42 @@ name = "also keep"
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn executable_hook_files_remove_and_report_disabled_managed_files() {
+        const EVENTS: &[HookEventDescriptor] = &[plain_event("Enabled"), plain_event("Disabled")];
+        let profile = AgentIntegrationProfile {
+            id: "test-executable-disabled",
+            installation_kind: InstallationKind::ExecutableHookFiles,
+            configuration_path: "",
+            activation_path: None,
+            source: "test-source",
+            extra_args: &[],
+            events: EVENTS,
+        };
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "agentbro-executable-disabled-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Disabled"), format!("# {}\n", marker(&profile))).unwrap();
+        let effective = BTreeSet::from(["Enabled"]);
+
+        assert!(has_disabled_managed_executable_hook_files(
+            &profile, &dir, &effective
+        ));
+        remove_disabled_executable_hook_files(&profile, &dir, &effective).unwrap();
+
+        assert!(!dir.join("Disabled").exists());
+        assert!(!has_disabled_managed_executable_hook_files(
+            &profile, &dir, &effective
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

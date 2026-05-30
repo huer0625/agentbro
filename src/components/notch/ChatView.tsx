@@ -252,7 +252,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   }, [onBack])
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
-    if (!activeSessionId || !subagent.agentTranscriptPath) return
+    const historyPath = subagent.agentTranscriptPath
+      || (subagent.transcriptPath ? `${subagent.transcriptPath}#agentbro-subagent=${encodeURIComponent(subagent.agentId)}` : undefined)
+    if (!activeSessionId || !historyPath) return
     const title = subagent.name
       ? `@${subagent.name}`
       : (subagent.description || subagent.agentType || 'Subagent')
@@ -267,7 +269,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       messages: [],
       loading: true,
     })
-    getSubagentChatHistory(activeSessionId, subagent.agentTranscriptPath)
+    getSubagentChatHistory(activeSessionId, historyPath)
       .then((parsed) => {
         setSubagentHistory((current) => {
           if (!current || current.sessionId !== activeSessionId || current.agentId !== subagent.agentId) return current
@@ -293,7 +295,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   useEffect(() => {
     if (!initialSubagentId || !activeSession) return
     const subagent = activeSession.subagents.find((item) => item.agentId === initialSubagentId)
-    if (!subagent?.agentTranscriptPath) return
+    if (!subagent || !(subagent.agentTranscriptPath || subagent.transcriptPath)) return
     const id = window.setTimeout(() => {
       handleOpenSubagentHistory(subagent)
       onInitialSubagentHandled?.()

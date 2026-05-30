@@ -1,6 +1,7 @@
 // Agent Adapter Trait & Registry
 pub mod antigravity;
 pub mod claude_code;
+pub mod cline;
 pub mod codebuddy;
 pub mod codebuddycn;
 pub mod codex;
@@ -215,6 +216,7 @@ pub struct AdapterInfo {
 pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
     vec![
         Box::new(claude_code::ClaudeCodeAdapter::new()),
+        Box::new(cline::ClineAdapter::new()),
         Box::new(codex::CodexAdapter::new()),
         Box::new(gemini::GeminiAdapter::new()),
         Box::new(cursor::CursorAdapter::new()),
@@ -256,6 +258,7 @@ macro_rules! impl_default_adapter {
 impl_default_adapter!(
     antigravity::AntiGravityAdapter,
     claude_code::ClaudeCodeAdapter,
+    cline::ClineAdapter,
     codebuddy::CodeBuddyAdapter,
     codebuddycn::CodeBuddyCNAdapter,
     codex::CodexAdapter,

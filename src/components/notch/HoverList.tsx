@@ -14,7 +14,7 @@ import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
@@ -461,19 +461,20 @@ function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: str
         {subagents.map((sa) => {
           const title = sa.name ? `@${sa.name}` : (sa.agentType || `@${sa.agentId.slice(0, 8)}`)
           const detail = sa.description || sa.lastAssistantMessage || sa.agentType || 'Agent'
+          const historyPath = sa.agentTranscriptPath || sa.transcriptPath
 
           return (
             <button
               key={sa.agentId}
               type="button"
-              className={`hover-list__subagent-item${sa.agentTranscriptPath ? ' hover-list__subagent-item--clickable' : ''}`}
-              disabled={!sa.agentTranscriptPath}
-              title={sa.agentTranscriptPath ? 'Open subagent history' : undefined}
+              className={`hover-list__subagent-item${historyPath ? ' hover-list__subagent-item--clickable' : ''}`}
+              disabled={!historyPath}
+              title={historyPath ? 'Open subagent history' : undefined}
               data-no-open
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                if (sa.agentTranscriptPath) onSubagentClick?.(sessionId, sa)
+                if (historyPath) onSubagentClick?.(sessionId, sa)
               }}
             >
               <span className={`hover-list__subagent-dot hover-list__subagent-dot--${sa.status}`} />
@@ -1344,6 +1345,9 @@ function SessionCard({
                 )}
                 {session.isYoloMode && (
                   <span className="hover-list__yolo-badge">YOLO</span>
+                )}
+                {session.model && (
+                  <span className="hover-list__model-badge">{formatModelName(session.model)}</span>
                 )}
                 <span className="hover-list__duration">{formatDurationShort(session.duration)}</span>
                 <button
