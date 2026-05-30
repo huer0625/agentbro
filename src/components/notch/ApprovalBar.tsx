@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -14,9 +15,11 @@ interface ApprovalBarProps {
   onAutoApprove?: () => void
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
+  onJumpToHostApp?: () => void
+  codexAppServerLive?: boolean
 }
 
-export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange }: ApprovalBarProps) {
+export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp, codexAppServerLive }: ApprovalBarProps) {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -292,6 +295,15 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }
 
   // Default: text input
+  const capability = getComposerCapability(session, { codexAppServerLive })
+  if (capability.kind === 'locked') {
+    return (
+      <div className="approval-bar">
+        <ComposerHint reason={capability.reason} onJumpToHostApp={onJumpToHostApp} />
+      </div>
+    )
+  }
+
   return (
     <div className="approval-bar">
       <div className="approval-bar__input-row">
@@ -329,4 +341,53 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
       </div>
     </div>
   )
+}
+
+interface ComposerHintProps {
+  reason: ComposerLockReason
+  onJumpToHostApp?: () => void
+}
+
+function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
+  const { t } = useTranslation()
+  const messageKey = composerHintMessageKey(reason)
+  const ctaKey = composerHintCtaKey(reason)
+  return (
+    <div className="approval-bar__hint" role="note">
+      <span className="approval-bar__hint-text">{t(messageKey)}</span>
+      {ctaKey && onJumpToHostApp && (
+        <button
+          className="approval-bar__hint-cta"
+          type="button"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onJumpToHostApp()
+          }}
+        >
+          {t(ctaKey)}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function composerHintMessageKey(reason: ComposerLockReason): string {
+  switch (reason) {
+    case 'codex-app': return 'notch.composerHintCodexApp'
+    case 'qoder-app': return 'notch.composerHintQoderApp'
+    case 'remote': return 'notch.composerHintRemote'
+    case 'no-terminal': return 'notch.composerHintNoTerminal'
+  }
+}
+
+function composerHintCtaKey(reason: ComposerLockReason): string | null {
+  switch (reason) {
+    case 'codex-app':
+    case 'qoder-app':
+      return 'notch.openHostApp'
+    case 'remote':
+    case 'no-terminal':
+      return null
+  }
 }

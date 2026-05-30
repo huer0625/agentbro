@@ -1,5 +1,6 @@
 // Remote manager — SSH tunnel lifecycle with exponential-backoff auto-reconnect
 
+use super::attach::RemoteAttach;
 use super::installer::RemoteInstaller;
 use super::ssh_tunnel::SshTunnel;
 use std::collections::HashMap;
@@ -58,6 +59,7 @@ fn backoff_delay(attempt: u32) -> Duration {
 
 struct HostState {
     tunnel: Arc<SshTunnel>,
+    attach: Arc<RemoteAttach>,
     reconnect_attempts: u32,
     status: ConnectionStatus,
 }
@@ -158,6 +160,7 @@ impl RemoteManager {
     /// Disconnect and remove tunnel for a host
     pub fn disconnect(&self, id: &str) {
         if let Some(state) = self.states.lock().unwrap().get_mut(id) {
+            state.attach.disconnect();
             state.tunnel.disconnect();
             state.reconnect_attempts = 0;
             state.status = ConnectionStatus::Disconnected;
@@ -185,23 +188,51 @@ impl RemoteManager {
         self.set_status(id, ConnectionStatus::Connecting);
         self.emit_status(id, ConnectionStatus::Connecting);
 
-        let tunnel = {
+        let (attach, tunnel) = {
             let mut states = self.states.lock().unwrap();
             let state = states.entry(id.to_string()).or_insert_with(|| HostState {
                 tunnel: Arc::new(SshTunnel::new()),
+                attach: Arc::new(RemoteAttach::new()),
                 reconnect_attempts: 0,
                 status: ConnectionStatus::Connecting,
             });
-            Arc::clone(&state.tunnel)
+            (Arc::clone(&state.attach), Arc::clone(&state.tunnel))
         };
 
-        // Clean up remote socket, then start tunnel
+        // Prefer the daemon/attach path; fall back to the older reverse tunnel.
         let local_path = self.local_socket_path.clone();
         let id_owned = id.to_string();
         let states = Arc::clone(&self.states);
         let status_cb = Arc::clone(&self.on_status_change);
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
+            let remote_agent_error = match RemoteInstaller::ensure_remote_agent_running(&host).await
+            {
+                Ok(()) => match attach.connect(&host, &local_path) {
+                    Ok(()) => {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        if attach.is_running() {
+                            let status = ConnectionStatus::Connected;
+                            Self::set_status_in(&states, &id_owned, status.clone());
+                            Self::emit_status_callback(&status_cb, &id_owned, status);
+                            return;
+                        }
+                        Some("ssh attach exited immediately".to_string())
+                    }
+                    Err(err) => Some(err),
+                },
+                Err(err) => Some(err),
+            };
+
+            if let Some(ref err) = remote_agent_error {
+                log::warn!(
+                    "Remote agent attach unavailable for {}: {}; falling back to ssh -R",
+                    host.id,
+                    err
+                );
+                RemoteInstaller::stop_remote_agent(&host).await;
+            }
+
             RemoteInstaller::cleanup_remote_socket(&host).await;
 
             // Start the tunnel synchronously (it's just a process spawn).
@@ -210,18 +241,23 @@ impl RemoteManager {
 
             match connect_result {
                 Err(e) => {
-                    let status = ConnectionStatus::Failed { message: e };
+                    let message = remote_agent_error
+                        .map(|err| format!("{err}; ssh -R failed: {e}"))
+                        .unwrap_or(e);
+                    let status = ConnectionStatus::Failed { message };
                     Self::set_status_in(&states, &id_owned, status.clone());
                     Self::emit_status_callback(&status_cb, &id_owned, status);
                 }
                 Ok(()) => {
-                    // Poll for 350ms to see if ssh stays running (mirrors Swift impl)
+                    // Poll briefly to see if ssh stays running.
                     tokio::time::sleep(Duration::from_millis(350)).await;
                     let status = if tunnel.is_running() {
                         ConnectionStatus::Connected
                     } else {
                         ConnectionStatus::Failed {
-                            message: "ssh exited immediately".to_string(),
+                            message: remote_agent_error
+                                .map(|err| format!("{err}; ssh -R exited immediately"))
+                                .unwrap_or_else(|| "ssh -R exited immediately".to_string()),
                         }
                     };
 
@@ -241,6 +277,7 @@ impl RemoteManager {
             let mut states = self.states.lock().unwrap();
             let state = states.entry(id.to_string()).or_insert_with(|| HostState {
                 tunnel: Arc::new(SshTunnel::new()),
+                attach: Arc::new(RemoteAttach::new()),
                 reconnect_attempts: 0,
                 status: ConnectionStatus::Disconnected,
             });
@@ -262,7 +299,7 @@ impl RemoteManager {
             attempt
         );
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             tokio::time::sleep(delay).await;
             log::info!("Reconnect timer fired for {}", id_owned);
             // Caller should listen to status callback and re-call connect()
@@ -304,6 +341,7 @@ impl RemoteManager {
 #[cfg(test)]
 mod tests {
     use super::{ConnectionStatus, HostState, RemoteHost, RemoteManager};
+    use crate::remote::attach::RemoteAttach;
     use crate::remote::ssh_tunnel::SshTunnel;
     use std::sync::Arc;
 
@@ -359,6 +397,7 @@ mod tests {
             "remote-1".to_string(),
             HostState {
                 tunnel: Arc::new(SshTunnel::new()),
+                attach: Arc::new(RemoteAttach::new()),
                 reconnect_attempts: 0,
                 status: ConnectionStatus::Connecting,
             },

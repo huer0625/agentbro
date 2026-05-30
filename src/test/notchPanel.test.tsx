@@ -9,6 +9,7 @@ import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
+  getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   isTerminalFocused: vi.fn((sessionId?: string) => Promise.resolve(Boolean(sessionId && false))),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
   respondPermission: vi.fn(() => Promise.resolve()),
@@ -36,6 +37,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     isTerminalFocused: tauriMocks.isTerminalFocused,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     respondPermission: tauriMocks.respondPermission,
@@ -1505,7 +1507,7 @@ describe('NotchPanel island shell', () => {
     const replyInput = screen.getByPlaceholderText('Send a message...')
     tauriMocks.setNotchFocusable.mockClear()
     tauriMocks.jumpToTerminal.mockClear()
-    expect(fireEvent.mouseDown(replyInput)).toBe(false)
+    expect(fireEvent.mouseDown(replyInput)).toBe(true)
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     expect(tauriMocks.jumpToTerminal).not.toHaveBeenCalled()
 
@@ -1515,6 +1517,32 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', 'thanks, keep going'))
+  })
+
+  it('does not send response replies while an IME composition is active', async () => {
+    mountIsland({
+      id: 'response-s1-ime',
+      sessionId: 's1',
+      type: 'response',
+      data: {
+        responseText: 'Another answer',
+        userMessage: 'Continue again?',
+      },
+      createdAt: Date.now(),
+    })
+
+    const replyInput = screen.getByPlaceholderText('Send a message...')
+    fireEvent.change(replyInput, { target: { value: 'ni' } })
+    fireEvent.compositionStart(replyInput)
+    fireEvent.keyDown(replyInput, { key: 'Enter' })
+
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalled()
+
+    fireEvent.compositionEnd(replyInput, { data: '你' })
+    fireEvent.change(replyInput, { target: { value: '你' } })
+    fireEvent.keyDown(replyInput, { key: 'Enter' })
+
+    await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', '你'))
   })
 
   it('keeps response feedback open after sending a reply until hover leaves', async () => {

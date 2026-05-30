@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CompositionEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -58,6 +58,7 @@ export function OverlayFeedbackPanel({
   const onDismissRef = useRef(onDismiss)
   const pointerInsideRef = useRef(false)
   const inputFocusedRef = useRef(false)
+  const inputComposingRef = useRef(false)
   const dismissPendingRef = useRef(false)
   const remainingRef = useRef(dwellMs)
   const startedAtRef = useRef(0)
@@ -212,6 +213,7 @@ export function OverlayFeedbackPanel({
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation()
+    if (event.nativeEvent.isComposing || inputComposingRef.current) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       void handleSend()
@@ -221,6 +223,15 @@ export function OverlayFeedbackPanel({
       else onDismissRef.current()
     }
   }, [handleSend, inputValue])
+
+  const handleCompositionStart = useCallback(() => {
+    inputComposingRef.current = true
+  }, [])
+
+  const handleCompositionEnd = useCallback((event: CompositionEvent<HTMLInputElement>) => {
+    inputComposingRef.current = false
+    setInputValue(event.currentTarget.value)
+  }, [])
 
   const handleJump = useCallback(() => {
     onJumpToTerminal()
@@ -330,9 +341,10 @@ export function OverlayFeedbackPanel({
           placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
           disabled={sending}
           onChange={(event) => setInputValue(event.target.value)}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
           onKeyDown={handleKeyDown}
           onMouseDown={(event) => {
-            event.preventDefault()
             event.stopPropagation()
             focusInput()
           }}

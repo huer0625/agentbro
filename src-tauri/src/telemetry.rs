@@ -220,45 +220,40 @@ impl TelemetryService {
         config.analytics_enabled && self.configuration.is_enabled()
     }
 
-    fn send_records(
-        &self,
-        records: Vec<TelemetryRecord>,
-    ) -> impl std::future::Future<Output = Result<(), String>> + Send + '_ {
-        async move {
-            let Some(endpoint) = self.configuration.endpoint_url() else {
-                return Ok(());
-            };
-            if records.is_empty() {
-                return Ok(());
-            }
+    async fn send_records(&self, records: Vec<TelemetryRecord>) -> Result<(), String> {
+        let Some(endpoint) = self.configuration.endpoint_url() else {
+            return Ok(());
+        };
+        if records.is_empty() {
+            return Ok(());
+        }
 
-            let mut tags = BTreeMap::new();
-            tags.insert("app".to_string(), "agentbro".to_string());
-            tags.insert("schema".to_string(), SCHEMA_VERSION.to_string());
+        let mut tags = BTreeMap::new();
+        tags.insert("app".to_string(), "agentbro".to_string());
+        tags.insert("schema".to_string(), SCHEMA_VERSION.to_string());
 
-            let payload = SlsPayload {
-                topic: self.configuration.topic.clone(),
-                source: self.configuration.source.clone(),
-                logs: records.into_iter().map(|record| record.fields).collect(),
-                tags,
-            };
-            let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
-            let response = self
-                .client
-                .post(endpoint)
-                .header("Content-Type", "application/json")
-                .header("x-log-apiversion", "0.6.0")
-                .header("x-log-bodyrawsize", body.len().to_string())
-                .body(body)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+        let payload = SlsPayload {
+            topic: self.configuration.topic.clone(),
+            source: self.configuration.source.clone(),
+            logs: records.into_iter().map(|record| record.fields).collect(),
+            tags,
+        };
+        let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+        let response = self
+            .client
+            .post(endpoint)
+            .header("Content-Type", "application/json")
+            .header("x-log-apiversion", "0.6.0")
+            .header("x-log-bodyrawsize", body.len().to_string())
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
-            if response.status().is_success() {
-                Ok(())
-            } else {
-                Err(format!("SLS returned {}", response.status()))
-            }
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("SLS returned {}", response.status()))
         }
     }
 
@@ -411,6 +406,12 @@ impl TelemetryService {
 
     fn clear_state(&self) {
         let _ = std::fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+impl Default for TelemetryService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

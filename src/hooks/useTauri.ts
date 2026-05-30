@@ -3,14 +3,16 @@
  */
 import { useEffect } from 'react'
 import i18n from 'i18next'
-import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage } from '../services/tauriApi'
+import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
+import { useMarketStore } from '../stores/marketStore'
 import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { SoundChoice } from '../stores/configStore'
 import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage, RateLimitInfo } from '../types/agent'
+import { energyIntervalMs, getAppEnergyMode } from '../utils/energyPolicy'
 
 let lastBackendThemeName: string | null = null
 let pendingBackendThemeName: string | null = null
@@ -256,6 +258,7 @@ function transformSession(bs: BackendSession): SessionState {
           : 'pending',
     })),
     isYoloMode: bs.isYoloMode || undefined,
+    model: bs.model ?? existing?.model ?? undefined,
     notice: bs.notice ?? existing?.notice,
     lastUserMessage,
     lastUserMessageAt: lastUserMessage === existing?.lastUserMessage ? existing?.lastUserMessageAt : undefined,
@@ -321,6 +324,8 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('smartSuppression', config.smartSuppression)
   store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
   store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
+  store.updateConfig('codexAppServerSyncEnabled', config.codexAppServerSyncEnabled ?? false)
+  store.updateConfig('codexAppServerSyncIntervalSeconds', config.codexAppServerSyncIntervalSeconds ?? 30)
   if (config.language) {
     store.updateConfig('language', config.language)
     if (i18n.language !== config.language) {
@@ -356,6 +361,12 @@ function applyBackendConfig(config: BackendConfig) {
   }
   store.updateConfig('soundPack', config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom')
   store.updateConfig('probeSessionFilter', config.probeSessionFilter)
+  if (typeof config.excludedHookCwdSubstrings === 'string') {
+    store.updateConfig('excludedHookCwdSubstrings', config.excludedHookCwdSubstrings)
+  }
+  if (Array.isArray(config.sessionSilenceRules)) {
+    store.updateConfig('sessionSilenceRules', config.sessionSilenceRules)
+  }
   store.updateConfig('tipsEnabled', config.tipsEnabled)
   store.updateConfig('pixelCursorEnabled', config.pixelCursorEnabled)
   store.updateConfig('confettiEnabled', config.confettiEnabled)
@@ -366,6 +377,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
   store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
   store.updateConfig('islandActivePetId', config.islandActivePetId ?? null)
+  store.updateConfig('islandAgentPetMap', config.islandAgentPetMap ?? {})
   store.updateConfig('followFocus', config.followFocus)
   store.updateConfig('quietHours', {
     enabled: config.quietHoursEnabled,
@@ -373,6 +385,8 @@ function applyBackendConfig(config: BackendConfig) {
     end: config.quietHoursEnd,
   })
   store.updateConfig('idleTimeoutMinutes', config.idleTimeoutMinutes ?? 5)
+  store.updateConfig('idleInteractionRoutingEnabled', config.idleInteractionRoutingEnabled ?? false)
+  store.updateConfig('idleInteractionRoutingMinutes', config.idleInteractionRoutingMinutes ?? 5)
 }
 
 function syncSoundEventSettingsToBackend() {
@@ -420,12 +434,19 @@ function syncThemesFromBackend(configTheme?: string) {
 let usageRateLimitRefreshInFlight = false
 let usageRateLimitLastRefreshAt = 0
 let usageRateLimitRefreshQueued = false
-const USAGE_RATE_LIMIT_REFRESH_INTERVAL_MS = 60_000
+const USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS = 60_000
+const USAGE_RATE_LIMIT_IDLE_REFRESH_MS = 120_000
+const USAGE_RATE_LIMIT_QUIET_REFRESH_MS = 300_000
 
 function refreshUsageRateLimits(force = false) {
   if (!useConfigStore.getState().usageQueryEnabled) return
   const now = Date.now()
-  if (!force && now - usageRateLimitLastRefreshAt < USAGE_RATE_LIMIT_REFRESH_INTERVAL_MS) return
+  const refreshInterval = energyIntervalMs(getAppEnergyMode(useSessionStore.getState().sessionList), {
+    activeMs: USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS,
+    idleVisibleMs: USAGE_RATE_LIMIT_IDLE_REFRESH_MS,
+    quietMs: USAGE_RATE_LIMIT_QUIET_REFRESH_MS,
+  })
+  if (!force && now - usageRateLimitLastRefreshAt < refreshInterval) return
   if (usageRateLimitRefreshInFlight) {
     usageRateLimitRefreshQueued = true
     return
@@ -454,6 +475,14 @@ function refreshUsageRateLimits(force = false) {
     })
 }
 
+const APP_SERVER_LIVE_POLL_MS = 10_000
+
+function refreshAppServerLiveFlag() {
+  getAppStateFlags()
+    .then(flags => useSessionStore.getState().setCodexAppServerLive(flags.codexAppServerLive))
+    .catch(e => console.error('[tauri] getAppStateFlags:', e))
+}
+
 // ── Hooks ────────────────────────────────────────────────────────
 
 /** Listen for session-update events from the backend and sync sessionStore. */
@@ -462,7 +491,8 @@ export function useSessionEvents() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
-    const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, 60_000)
+    const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
+    const appServerLiveTimer = window.setInterval(refreshAppServerLiveFlag, APP_SERVER_LIVE_POLL_MS)
 
     // Load initial sessions
     getSessions().then(sessions => {
@@ -473,6 +503,8 @@ export function useSessionEvents() {
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
       refreshUsageRateLimits(true)
     }).catch(e => console.error('[tauri] getSessions:', e))
+
+    refreshAppServerLiveFlag()
 
     // Listen for live updates (dynamic import to avoid crash in browser dev mode)
     import('@tauri-apps/api/event').then(({ listen }) => {
@@ -499,6 +531,7 @@ export function useSessionEvents() {
 
     return () => {
       window.clearInterval(usageRateLimitTimer)
+      window.clearInterval(appServerLiveTimer)
       unlisten?.()
     }
   }, [])
@@ -537,6 +570,7 @@ export function useConfigSync() {
       listen<BackendConfig>('config-changed', (event) => {
         applyBackendConfig(event.payload)
         applyBackendThemeChange(event.payload.theme)
+        usePetStore.getState().hydrateFromConfig(event.payload.islandActivePetId ?? null)
       }).then(fn => { unlisten = fn })
         .catch(e => console.error('[tauri] listen config-changed:', e))
     }).catch(e => console.error('[tauri] import event:', e))
@@ -784,17 +818,49 @@ export function useConversationUpdates() {
     let unlisten: (() => void) | undefined
 
     import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ sessionId: string; result: { allMessages: ParsedMessage[]; newMessages: ParsedMessage[]; clearDetected: boolean } }>(
+      listen<{
+        sessionId: string
+        result: {
+          allMessages: ParsedMessage[]
+          newMessages: ParsedMessage[]
+          clearDetected: boolean
+          truncated?: boolean
+          totalCount?: number
+        }
+      }>(
         'conversation-update',
         (event) => {
           const { sessionId, result } = event.payload
           const store = useSessionStore.getState()
 
-          // Only update if this session exists in our store
           if (!store.sessions[sessionId]) return
 
-          const chatMessages = mapParsedMessages(result.allMessages)
-          store.setChatHistory(sessionId, chatMessages)
+          if (result.clearDetected) {
+            store.setChatHistory(sessionId, mapParsedMessages(result.allMessages))
+            return
+          }
+
+          // Truncated payload: backend trimmed older messages from the
+          // streaming buffer, so allMessages is just the tail. Replacing the
+          // store with the tail would erase older history the UI already has
+          // (e.g. from getChatHistoryTail / "load more"), causing a flash.
+          // Append only the genuinely-newer delta instead, keyed off the
+          // existing tail timestamp to avoid duplicating the initial-load
+          // window when the watcher fires for the first time.
+          if (result.truncated && result.newMessages.length > 0) {
+            const session = store.sessions[sessionId]
+            const lastTs = session.chatHistory.length > 0
+              ? session.chatHistory[session.chatHistory.length - 1].timestamp
+              : 0
+            const newChat = mapParsedMessages(result.newMessages)
+              .filter((m) => m.timestamp > lastTs)
+            if (newChat.length === 0) return
+            store.setChatHistory(sessionId, [...session.chatHistory, ...newChat])
+            return
+          }
+
+          // Non-truncated: allMessages is authoritative for the whole session.
+          store.setChatHistory(sessionId, mapParsedMessages(result.allMessages))
         },
       ).then(fn => { unlisten = fn })
         .catch(e => console.error('[tauri] listen conversation-update:', e))
@@ -845,4 +911,50 @@ export function useTauriInit() {
   useConfigSync()
   useConversationUpdates()
   useHookRecoveryEvents()
+  useMarketInstallEvents()
+}
+
+/** Listen for abpets install/uninstall log lines and completion events. */
+export function useMarketInstallEvents() {
+  useEffect(() => {
+    if (!isTauri()) return
+
+    let unlistenLog: (() => void) | undefined
+    let unlistenDone: (() => void) | undefined
+
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<{ jobId: string; stream: 'stdout' | 'stderr'; line: string }>(
+        'market:install_log',
+        (event) => {
+          const { jobId, stream, line } = event.payload
+          if (typeof jobId !== 'string' || typeof line !== 'string') return
+          useMarketStore.getState().appendLog(jobId, stream, line)
+        },
+      )
+        .then(fn => { unlistenLog = fn })
+        .catch(e => console.error('[tauri] listen market:install_log:', e))
+
+      listen<{ jobId: string; success: boolean; exitCode: number | null; error: string | null }>(
+        'market:install_done',
+        (event) => {
+          const { jobId, success, exitCode, error } = event.payload
+          if (typeof jobId !== 'string') return
+          useMarketStore.getState().markDone(jobId, !!success, exitCode ?? null, error ?? null)
+          // Refresh the pet registry on every install/uninstall completion so all
+          // webviews (Settings, PetSurface, Notch) pick up newly-installed pets or
+          // drop uninstalled ones — markDone only reaches the originating webview.
+          if (success) {
+            void usePetStore.getState().loadRegistry()
+          }
+        },
+      )
+        .then(fn => { unlistenDone = fn })
+        .catch(e => console.error('[tauri] listen market:install_done:', e))
+    }).catch(e => console.error('[tauri] import event:', e))
+
+    return () => {
+      unlistenLog?.()
+      unlistenDone?.()
+    }
+  }, [])
 }

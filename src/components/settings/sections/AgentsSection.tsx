@@ -43,6 +43,7 @@ function readableError(error: unknown): string {
 
 const agentVisuals: Record<string, { accent: string; icon: string; emoji: string }> = {
   'claude-code': { accent: '#5856d6', icon: '⚡', emoji: '⚡' },
+  cline: { accent: '#00b87a', icon: 'Cl', emoji: '' },
   codex: { accent: '#34c759', icon: '✦', emoji: '🔮' },
   gemini: { accent: '#ff9500', icon: '◆', emoji: '💎' },
   'gemini-cli': { accent: '#ff9500', icon: '◆', emoji: '💎' },

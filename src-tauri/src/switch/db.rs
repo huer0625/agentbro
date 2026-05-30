@@ -11,15 +11,31 @@ pub struct SwitchDatabase {
 
 impl SwitchDatabase {
     pub fn open() -> anyhow::Result<Self> {
-        let db_dir = Self::db_dir();
+        let db_dir = Self::db_dir()?;
         std::fs::create_dir_all(&db_dir)?;
         let db_path = db_dir.join("switch.db");
         let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        schema::init_tables(&conn)?;
+        Self::init_connection(&conn, true)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        Self::init_connection(&conn, false)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn init_connection(conn: &Connection, persistent: bool) -> anyhow::Result<()> {
+        if persistent {
+            conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        }
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        schema::init_tables(&conn)?;
+        Ok(())
     }
 
     pub fn with_conn<F, R>(&self, f: F) -> anyhow::Result<R>
@@ -45,9 +61,9 @@ impl SwitchDatabase {
         })
     }
 
-    fn db_dir() -> PathBuf {
+    fn db_dir() -> anyhow::Result<PathBuf> {
         dirs::home_dir()
-            .expect("home dir not found")
-            .join(".agentbro")
+            .map(|home| home.join(".agentbro"))
+            .ok_or_else(|| anyhow::anyhow!("home dir not found"))
     }
 }

@@ -204,6 +204,19 @@
   white-space: nowrap;
 }
 
+.hover-list__model-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .hover-list__duration {
   color: var(--island-text-muted);
   font-family: var(--font-mono);

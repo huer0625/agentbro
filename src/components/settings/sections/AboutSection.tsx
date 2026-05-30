@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
 import { save } from '@tauri-apps/plugin-dialog'
 import { quitApp, exportDiagnostics, getCurrentAppVersion, setAnalyticsEnabled } from '../../../services/tauriApi'
-import type { UpdateStatus } from '../../../hooks/useUpdater'
+import { HOMEBREW_UPDATE_COMMAND } from '../../../hooks/useUpdater'
+import type { UpdateInstallChannel, UpdateStatus } from '../../../hooks/useUpdater'
 import { useConfigStore } from '../../../stores/configStore'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -13,8 +14,12 @@ import { GlassButton } from '../../shared'
 
 interface AboutSectionProps {
   updateStatus?: UpdateStatus
+  updateInstallChannel?: UpdateInstallChannel
   updateVersion?: string | null
   updateError?: string | null
+  updateRestartPending?: boolean
+  updateRestartBlockedByActivity?: boolean
+  updateBlockingSessionCount?: number
   onCheckForUpdate?: () => void
 }
 
@@ -39,7 +44,16 @@ function ExternalArrow() {
   )
 }
 
-export function AboutSection({ updateStatus, updateVersion, updateError, onCheckForUpdate }: AboutSectionProps) {
+export function AboutSection({
+  updateStatus,
+  updateInstallChannel = 'direct',
+  updateVersion,
+  updateError,
+  updateRestartPending = false,
+  updateRestartBlockedByActivity = false,
+  updateBlockingSessionCount = 0,
+  onCheckForUpdate,
+}: AboutSectionProps) {
   const { t } = useTranslation()
   const [diagStatus, setDiagStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [communityOpen, setCommunityOpen] = useState(false)
@@ -147,9 +161,26 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
   const updateDescription = (() => {
     switch (updateStatus) {
       case 'checking': return t('settings.updateChecking', { defaultValue: '正在检查更新...' })
-      case 'available': return t('settings.updateAvailable', { version: updateVersion, defaultValue: `发现新版本 ${updateVersion}` })
+      case 'available':
+        return updateInstallChannel === 'homebrew'
+          ? t('settings.updateAvailableHomebrew', { version: updateVersion, command: HOMEBREW_UPDATE_COMMAND, defaultValue: `发现新版本 ${updateVersion}。请运行 ${HOMEBREW_UPDATE_COMMAND}` })
+          : t('settings.updateAvailable', { version: updateVersion, defaultValue: `发现新版本 ${updateVersion}` })
       case 'downloading': return t('settings.updateDownloading', { version: updateVersion, defaultValue: `正在下载 ${updateVersion}...` })
-      case 'ready': return t('settings.updateReady', { version: updateVersion, defaultValue: `新版本 ${updateVersion} 已就绪，重启后生效` })
+      case 'ready':
+        if (updateRestartBlockedByActivity) {
+          return t('settings.updateReadyWaitingIdle', {
+            version: updateVersion,
+            count: updateBlockingSessionCount,
+            defaultValue: `新版本 ${updateVersion} 已就绪，会在当前会话空闲后自动重启安装`,
+          })
+        }
+        if (updateRestartPending) {
+          return t('settings.updateReadyAuto', {
+            version: updateVersion,
+            defaultValue: `新版本 ${updateVersion} 已就绪，会在短暂空闲后自动重启安装`,
+          })
+        }
+        return t('settings.updateReady', { version: updateVersion, defaultValue: `新版本 ${updateVersion} 已就绪，重启后生效` })
       case 'error': return updateError ?? t('settings.updateCheckFailed', { defaultValue: '无法连接更新服务，请稍后重试，或通过“发布版本”手动下载最新版。' })
       case 'up-to-date': return t('settings.latestVersion')
       default: return t('settings.latestVersion')

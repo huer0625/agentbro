@@ -11,13 +11,13 @@ export function SwitchImportPanel() {
 
   useEffect(() => {
     detectCcSwitch()
-  }, [])
+  }, [detectCcSwitch])
 
   useEffect(() => {
     if (ccSwitchDetected) {
       previewImport()
     }
-  }, [ccSwitchDetected])
+  }, [ccSwitchDetected, previewImport])
 
   const currentStep = importResult ? 3 : importing ? 2 : importPreview ? 1 : 0
 

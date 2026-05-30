@@ -71,7 +71,7 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | 任务感知 | 展示工具调用、Subagent 活动、任务摘要，以及支持场景下的 Token / Rate Limit 信息。 |
 | Hook 集成 | 一键安装 Hook，内置 Hook Doctor 诊断，支持自定义 CLI Hook 模板。 |
 | 桌面体验 | 支持全局快捷键、声音、通知、主题、显示器位置和终端焦点智能降噪。 |
-| 本地优先 | Hook Server 默认运行在本机，支持 `/tmp/agentbro.sock` 或 `127.0.0.1:17892`。 |
+| 本地优先 | Hook Server 默认运行在本机，支持 `/tmp/agentbro-<uid>.sock` 或 `127.0.0.1:17894`。 |
 | SSH Remote | 支持把远程 SSH 机器上的 Agent 事件转发回本机灵动岛，适合远程开发场景。 |
 | Webhook 通知 | 支持钉钉 / 飞书 Webhook 通知。 |
 

@@ -168,14 +168,15 @@ fn apply_claude_prompts(prompts: &[&SwitchPrompt]) -> anyhow::Result<()> {
     managed.push_str(marker_end);
 
     let result = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         before.trim_end(),
         if before.trim_end().is_empty() {
             ""
         } else {
             "\n\n"
         },
-        format!("{}{}", managed, after)
+        managed,
+        after
     );
 
     if let Some(parent) = claude_md_path.parent() {

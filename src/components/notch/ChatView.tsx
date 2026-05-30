@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { getChatHistory, getSubagentChatHistory } from '../../services/tauriApi'
+import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { ChatHeader } from './ChatHeader'
 import { SubagentList } from './SubagentList'
@@ -97,12 +97,14 @@ interface ChatViewProps {
 
 export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, onInputDraftStateChange }: ChatViewProps) {
   const activeSession = useSessionStore(selectActiveSession)
+  const codexAppServerLive = useSessionStore((s) => s.codexAppServerLive)
   const contentFontSize = useConfigStore((s) => s.contentFontSize)
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const contentRef = useRef<HTMLDivElement>(null)
   const [userScrolled, setUserScrolled] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [subagentHistory, setSubagentHistory] = useState<{
     sessionId: string
@@ -119,6 +121,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   // Auto-load chat history when ChatView mounts, and refresh it as hook
   // metadata changes so detail view does not look empty while a run is active.
+  // Only loads the tail (~50 messages); older pages are fetched on scroll.
   useEffect(() => {
     if (!activeSessionId) return
 
@@ -126,15 +129,20 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     queueMicrotask(() => {
       if (cancelled) return
       setLoadingHistory(activeSessionChatLength === 0)
-      getChatHistory(activeSessionId)
-        .then((parsed) => {
+      getChatHistoryTail(activeSessionId, { limit: 50 })
+        .then((slice) => {
           if (cancelled) return
-          if (parsed.length > 0) {
-            const messages = mapParsedMessages(parsed)
-            useSessionStore.getState().setChatHistory(activeSessionId, messages)
+          if (slice.messages.length > 0) {
+            const messages = mapParsedMessages(slice.messages)
+            useSessionStore.getState().setChatHistory(activeSessionId, messages, {
+              hasMore: slice.hasMore,
+              firstMessageId: slice.firstMessageId ?? undefined,
+              totalCount: slice.totalCount,
+              transcriptPath: slice.transcriptPath ?? undefined,
+            })
           }
         })
-        .catch((e) => console.warn('[ChatView] getChatHistory:', e))
+        .catch((e) => console.warn('[ChatView] getChatHistoryTail:', e))
         .finally(() => {
           if (!cancelled) setLoadingHistory(false)
         })
@@ -163,7 +171,43 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     if (!contentRef.current) return
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current
     setUserScrolled(scrollHeight - scrollTop - clientHeight > 30)
-  }, [])
+
+    // Load the previous page when the user scrolls near the top.
+    if (scrollTop < 80 && activeSessionId && !loadingMoreHistory) {
+      const session = useSessionStore.getState().sessions[activeSessionId]
+      const meta = session?.chatHistoryMeta
+      if (!meta?.hasMore || !meta.firstMessageId) return
+      const anchorId = meta.firstMessageId
+      const preservedHeight = scrollHeight
+      setLoadingMoreHistory(true)
+      getChatHistoryTail(activeSessionId, { limit: 50, beforeId: anchorId })
+        .then((slice) => {
+          if (slice.messages.length > 0) {
+            const messages = mapParsedMessages(slice.messages)
+            useSessionStore.getState().prependChatHistory(activeSessionId, messages, {
+              hasMore: slice.hasMore,
+              firstMessageId: slice.firstMessageId ?? undefined,
+              totalCount: slice.totalCount,
+              transcriptPath: slice.transcriptPath ?? undefined,
+            })
+            // Preserve scroll position relative to the previously-top message.
+            requestAnimationFrame(() => {
+              const el = contentRef.current
+              if (!el) return
+              el.scrollTop = el.scrollHeight - preservedHeight
+            })
+          } else {
+            // No older messages — flip hasMore off so we stop trying.
+            useSessionStore.getState().setChatHistory(activeSessionId, session.chatHistory, {
+              ...meta,
+              hasMore: false,
+            })
+          }
+        })
+        .catch((e) => console.warn('[ChatView] getChatHistoryTail(more):', e))
+        .finally(() => setLoadingMoreHistory(false))
+    }
+  }, [activeSessionId, loadingMoreHistory])
 
   // Navigate back if session disappears (e.g. session ended)
   useEffect(() => {
@@ -252,7 +296,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   }, [onBack])
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
-    if (!activeSessionId || !subagent.agentTranscriptPath) return
+    const historyPath = subagent.agentTranscriptPath
+      || (subagent.transcriptPath ? `${subagent.transcriptPath}#agentbro-subagent=${encodeURIComponent(subagent.agentId)}` : undefined)
+    if (!activeSessionId || !historyPath) return
     const title = subagent.name
       ? `@${subagent.name}`
       : (subagent.description || subagent.agentType || 'Subagent')
@@ -267,7 +313,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       messages: [],
       loading: true,
     })
-    getSubagentChatHistory(activeSessionId, subagent.agentTranscriptPath)
+    getSubagentChatHistory(activeSessionId, historyPath)
       .then((parsed) => {
         setSubagentHistory((current) => {
           if (!current || current.sessionId !== activeSessionId || current.agentId !== subagent.agentId) return current
@@ -293,7 +339,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   useEffect(() => {
     if (!initialSubagentId || !activeSession) return
     const subagent = activeSession.subagents.find((item) => item.agentId === initialSubagentId)
-    if (!subagent?.agentTranscriptPath) return
+    if (!subagent || !(subagent.agentTranscriptPath || subagent.transcriptPath)) return
     const id = window.setTimeout(() => {
       handleOpenSubagentHistory(subagent)
       onInitialSubagentHandled?.()
@@ -318,6 +364,11 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       )}
 
       <div className="chat-view__messages glass-scroll" ref={contentRef} onScroll={handleScroll} style={{ fontSize: contentFontSize }}>
+        {loadingMoreHistory && (
+          <div className="chat-view__load-more">
+            <span>{t('notch.loadingMoreHistory', '加载更早的消息…')}</span>
+          </div>
+        )}
         {currentSubagentHistory && (
           <div className="chat-view__subagent-history">
             <button className="chat-view__subagent-back" onClick={() => setSubagentHistory(null)}>
@@ -415,6 +466,8 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
           onDraftStateChange={onInputDraftStateChange}
+          onJumpToHostApp={() => jumpToTerminal(activeSession.id).catch((error) => console.warn('[ChatView] jumpToTerminal:', error))}
+          codexAppServerLive={codexAppServerLive}
         />
       )}
 

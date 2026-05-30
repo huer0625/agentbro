@@ -592,6 +592,7 @@ fn default_metadata() -> ProgramMetadata {
 fn display_name_for_agent(id: &str) -> &'static str {
     match id {
         "claude-code" => "Claude Code",
+        "cline" => "Cline",
         "codex" => "OpenAI Codex",
         "gemini" | "gemini-cli" => "Gemini CLI",
         "cursor" => "Cursor",
@@ -718,6 +719,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "/Applications/Cursor.app",
             "~/.cursor",
             "https://cursor.com",
+        ),
+        "cline" => app(
+            "cline",
+            "/Applications/Visual Studio Code.app",
+            "~/Documents/Cline",
+            "https://cline.bot",
         ),
         "trae" => app(
             "trae",

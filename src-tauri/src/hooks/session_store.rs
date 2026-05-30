@@ -325,6 +325,7 @@ pub struct SessionState {
     pub last_thought: Option<String>,
     #[serde(default)]
     pub is_yolo_mode: bool,
+    pub model: Option<String>,
 }
 
 impl SessionState {
@@ -378,6 +379,7 @@ impl SessionState {
             last_response: None,
             last_thought: None,
             is_yolo_mode: false,
+            model: None,
         }
     }
 

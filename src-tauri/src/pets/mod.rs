@@ -1,17 +1,25 @@
-// Codex pet asset discovery — replicates evolab/codex-pet-discovery.ts in pure Rust.
+// Pet asset discovery — Codex-compatible sprite atlas loading in pure Rust.
 //
 // Sources, in order of precedence:
-//   1. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp (unpacked)
-//   2. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
-//   3. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (user-defined)
-//   4. ~/Applications/Codex.app/...                         (per-user install fallback)
+//   1. ~/.agentbro/pets/<id>/pet.json + <spritesheetPath>   (AgentBro user-defined)
+//   2. AgentBro bundled resources: <resources>/pets/<id>/pet.json + spritesheet
+//   3. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp
+//   4. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
+//   5. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (Codex user-defined)
+//   6. ~/Applications/Codex.app/...                         (per-user install fallback)
+//
+// All sources return an absolute filesystem path to the spritesheet. The
+// frontend uses `convertFileSrc` to map that into the `asset://` protocol so
+// WebView streams the image directly instead of holding the entire base64
+// payload in the JS heap (the data-URL approach was 30+ MB per pet × 17 pets
+// on disk, exploding to 1+ GB once React kept refs through useEffect deps).
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 const MAX_SPRITESHEET_BYTES: u64 = 10 * 1024 * 1024;
 // asar v1: content starts at 8 + u32@4 (aligned pickle size). Using 16 + u32@12
@@ -43,9 +51,12 @@ pub struct PetMetadata {
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub provider: String, // "codex" | "user"
+    pub provider: String, // "agentbro" | "codex" | "user"
     pub builtin: bool,
-    pub spritesheet_data_url: String,
+    /// Absolute filesystem path to the spritesheet image. The frontend wraps
+    /// this in `convertFileSrc()` to obtain an `asset://` URL. We deliberately
+    /// do NOT embed the bytes here — see the file header for why.
+    pub spritesheet_path: String,
     pub frame_size: FrameSize,
     pub animations: HashMap<String, AnimationDef>,
     pub state_mapping: HashMap<String, String>,
@@ -63,6 +74,18 @@ struct BuiltInCodexPet {
     display_name: &'static str,
     description: &'static str,
 }
+
+struct BuiltInAgentBroPet {
+    id: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+}
+
+const BUILT_IN_AGENTBRO_PETS: &[BuiltInAgentBroPet] = &[BuiltInAgentBroPet {
+    id: "a-bro",
+    display_name: "A-Bro(阿布)",
+    description: "AgentBro's default pet: two cute collaborator halves, charcoal A-side and teal B-side, clasping hands as a living AB handshake mascot.",
+}];
 
 const BUILT_IN_CODEX_PETS: &[BuiltInCodexPet] = &[
     BuiltInCodexPet {
@@ -107,15 +130,46 @@ const BUILT_IN_CODEX_PETS: &[BuiltInCodexPet] = &[
     },
 ];
 
-/// Discover all available pets from Codex.app and user-defined pet directories.
+/// Discover all available pets from AgentBro resources, Codex.app, and user-defined pet directories.
 pub fn discover_all_pets() -> PetDiscoveryResult {
+    discover_all_pets_with_dirs(None, None)
+}
+
+pub fn discover_all_pets_with_dirs(
+    agentbro_resources_dir: Option<&Path>,
+    asar_cache_dir: Option<&Path>,
+) -> PetDiscoveryResult {
     let mut pets = Vec::new();
     let mut warnings = Vec::new();
 
+    if let Some(user_dir) = find_agentbro_user_pets_dir() {
+        pets.extend(discover_user_pets(&user_dir, "agentbro"));
+    }
+
+    let agentbro_resource_dirs = find_agentbro_resource_dirs(agentbro_resources_dir);
+    for builtin in BUILT_IN_AGENTBRO_PETS {
+        let mut loaded = None;
+        for resources_dir in &agentbro_resource_dirs {
+            loaded = read_agentbro_pet(&resources_dir.join("pets").join(builtin.id), builtin);
+            if loaded.is_some() {
+                break;
+            }
+        }
+        match loaded {
+            Some(pet) => pets.push(pet),
+            None => {
+                warnings.push(format!(
+                    "Failed to load AgentBro built-in pet '{}'",
+                    builtin.id
+                ));
+            }
+        }
+    }
+
     if let Some(resources_dir) = find_codex_resources_dir() {
         for builtin in BUILT_IN_CODEX_PETS {
-            match read_builtin_spritesheet_data_url(&resources_dir, builtin.id) {
-                Some(data_url) => pets.push(make_codex_builtin_pet(builtin, data_url)),
+            match read_builtin_spritesheet_path(&resources_dir, builtin.id, asar_cache_dir) {
+                Some(path) => pets.push(make_codex_builtin_pet(builtin, path)),
                 None => warnings.push(format!(
                     "Failed to load spritesheet for built-in pet '{}'",
                     builtin.id
@@ -126,33 +180,68 @@ pub fn discover_all_pets() -> PetDiscoveryResult {
         warnings.push("Codex.app not found — built-in pets unavailable".into());
     }
 
-    if let Some(user_dir) = find_user_pets_dir() {
-        pets.extend(discover_user_pets(&user_dir));
+    if let Some(user_dir) = find_codex_user_pets_dir() {
+        pets.extend(discover_user_pets(&user_dir, "user"));
     }
+
+    let pets = dedupe_pets_by_raw_id(pets);
 
     PetDiscoveryResult { pets, warnings }
 }
 
 #[tauri::command]
-pub fn discover_pets() -> PetDiscoveryResult {
-    discover_all_pets()
+pub fn discover_pets(app: tauri::AppHandle) -> PetDiscoveryResult {
+    let resource_dir = app.path().resource_dir().ok();
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .map(|p| p.join("pet-asar-cache"));
+    discover_all_pets_with_dirs(resource_dir.as_deref(), cache_dir.as_deref())
 }
 
-// ── Codex.app resource discovery ─────────────────────────────────────────────
+// ── Resource discovery ───────────────────────────────────────────────────────
+
+fn find_agentbro_resource_dirs(runtime_resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = runtime_resource_dir {
+        candidates.push(path.to_path_buf());
+    }
+
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../src"));
+
+    let mut result = Vec::new();
+    for candidate in candidates {
+        if candidate.join("pets").is_dir() && !result.contains(&candidate) {
+            result.push(candidate);
+        }
+    }
+    result
+}
 
 fn find_codex_resources_dir() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> =
-        vec![PathBuf::from("/Applications/Codex.app/Contents/Resources")];
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join("Applications/Codex.app/Contents/Resources"));
-    }
+    let candidates: Vec<PathBuf> = {
+        let mut v = vec![PathBuf::from("/Applications/Codex.app/Contents/Resources")];
+        if let Some(home) = dirs::home_dir() {
+            v.push(home.join("Applications/Codex.app/Contents/Resources"));
+        }
+        v
+    };
     candidates
         .into_iter()
         .find(|c| c.join("app.asar").exists() || c.join("webview").join("assets").is_dir())
 }
 
-fn find_user_pets_dir() -> Option<PathBuf> {
-    let path = dirs::home_dir()?.join(".codex").join("pets");
+fn find_agentbro_user_pets_dir() -> Option<PathBuf> {
+    find_home_pets_dir(".agentbro")
+}
+
+fn find_codex_user_pets_dir() -> Option<PathBuf> {
+    find_home_pets_dir(".codex")
+}
+
+fn find_home_pets_dir(home_child: &str) -> Option<PathBuf> {
+    let path = dirs::home_dir()?.join(home_child).join("pets");
     if path.is_dir() {
         Some(path)
     } else {
@@ -160,22 +249,93 @@ fn find_user_pets_dir() -> Option<PathBuf> {
     }
 }
 
+fn dedupe_pets_by_raw_id(pets: Vec<PetMetadata>) -> Vec<PetMetadata> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::with_capacity(pets.len());
+    for pet in pets {
+        if seen.insert(raw_pet_id(&pet.id).to_string()) {
+            result.push(pet);
+        }
+    }
+    result
+}
+
+fn raw_pet_id(id: &str) -> &str {
+    id.split_once(':').map(|(_, raw)| raw).unwrap_or(id)
+}
+
 // ── Spritesheet readers ──────────────────────────────────────────────────────
 
-fn read_builtin_spritesheet_data_url(resources_dir: &Path, asset_ref: &str) -> Option<String> {
-    if let Some(url) = read_unpacked_codex_asset(resources_dir, asset_ref) {
-        return Some(url);
+fn read_agentbro_pet(root: &Path, builtin: &BuiltInAgentBroPet) -> Option<PetMetadata> {
+    let json_path = root.join("pet.json");
+    let pet_json = if json_path.is_file() {
+        let json_str = fs::read_to_string(&json_path).ok()?;
+        serde_json::from_str::<JsonValue>(&json_str).ok()?
+    } else {
+        JsonValue::Object(Default::default())
+    };
+
+    let sprite_path_rel = pet_json
+        .get("spritesheetPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("spritesheet.webp");
+    let sprite_path = resolve_user_spritesheet_path(root, sprite_path_rel)?;
+
+    let display_name = pet_json
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or(builtin.display_name)
+        .to_string();
+    let description = pet_json
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or(builtin.description)
+        .to_string();
+    let frame_size = parse_frame_size(&pet_json).unwrap_or(FrameSize {
+        width: 192,
+        height: 208,
+    });
+    let animations = parse_animations(&pet_json).unwrap_or_else(default_codex_animations);
+    let state_mapping = parse_state_mapping(&pet_json).unwrap_or_else(default_codex_state_mapping);
+
+    Some(PetMetadata {
+        id: format!("agentbro:{}", builtin.id),
+        display_name,
+        description: Some(description),
+        provider: "agentbro".into(),
+        builtin: true,
+        spritesheet_path: path_to_string(&sprite_path),
+        frame_size,
+        animations,
+        state_mapping,
+    })
+}
+
+/// Try to resolve a built-in Codex pet's spritesheet to an absolute filesystem
+/// path. Unpacked Codex assets are referenced directly; asar-packed assets are
+/// extracted on first access into `asar_cache_dir` so they too become regular
+/// files the asset protocol can serve.
+fn read_builtin_spritesheet_path(
+    resources_dir: &Path,
+    asset_ref: &str,
+    asar_cache_dir: Option<&Path>,
+) -> Option<String> {
+    if let Some(path) = find_unpacked_codex_asset_path(resources_dir, asset_ref) {
+        return Some(path_to_string(&path));
     }
 
     let asar = resources_dir.join("app.asar");
     if asar.is_file() {
-        return read_asar_asset_data_url(&asar, asset_ref);
+        if let Some(cache_dir) = asar_cache_dir {
+            return extract_asar_asset_to_cache(&asar, asset_ref, cache_dir)
+                .map(|p| path_to_string(&p));
+        }
     }
 
     None
 }
 
-fn read_unpacked_codex_asset(resources_dir: &Path, asset_ref: &str) -> Option<String> {
+fn find_unpacked_codex_asset_path(resources_dir: &Path, asset_ref: &str) -> Option<PathBuf> {
     let assets = resources_dir.join("webview").join("assets");
     let prefix = format!("{}-spritesheet-", asset_ref);
     let entries = fs::read_dir(&assets).ok()?;
@@ -190,16 +350,34 @@ fn read_unpacked_codex_asset(resources_dir: &Path, asset_ref: &str) -> Option<St
         if !meta.is_file() || meta.len() > MAX_SPRITESHEET_BYTES {
             continue;
         }
-        let bytes = fs::read(&path).ok()?;
-        return Some(format!(
-            "data:image/webp;base64,{}",
-            STANDARD.encode(&bytes)
-        ));
+        return Some(path);
     }
     None
 }
 
-fn read_asar_asset_data_url(asar_path: &Path, asset_ref: &str) -> Option<String> {
+/// Extract a single spritesheet from a Codex.app asar bundle into our cache
+/// directory and return the path. Subsequent calls reuse the cached file as
+/// long as the source asar hasn't changed (we key the cache filename by the
+/// asar's modification time so a Codex upgrade naturally invalidates it).
+fn extract_asar_asset_to_cache(
+    asar_path: &Path,
+    asset_ref: &str,
+    cache_dir: &Path,
+) -> Option<PathBuf> {
+    let asar_mtime = fs::metadata(asar_path)
+        .ok()?
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let cached_name = format!("{}-{}.webp", asset_ref, asar_mtime);
+    let cached_path = cache_dir.join(&cached_name);
+    if cached_path.is_file() {
+        return Some(cached_path);
+    }
+
     let data = fs::read(asar_path).ok()?;
     if data.len() < ASAR_JSON_START + 4 {
         return None;
@@ -245,7 +423,9 @@ fn read_asar_asset_data_url(asar_path: &Path, asset_ref: &str) -> Option<String>
     }
 
     let bytes = &data[file_start..file_end];
-    Some(format!("data:image/webp;base64,{}", STANDARD.encode(bytes)))
+    fs::create_dir_all(cache_dir).ok()?;
+    fs::write(&cached_path, bytes).ok()?;
+    Some(cached_path)
 }
 
 struct AsarFile {
@@ -283,7 +463,7 @@ fn find_asar_file<F: Fn(&str) -> bool>(
 
 // ── User-defined pets ────────────────────────────────────────────────────────
 
-fn discover_user_pets(dir: &Path) -> Vec<PetMetadata> {
+fn discover_user_pets(dir: &Path, provider: &str) -> Vec<PetMetadata> {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
@@ -338,8 +518,8 @@ fn discover_user_pets(dir: &Path) -> Vec<PetMetadata> {
             .and_then(|v| v.as_str())
             .unwrap_or("spritesheet.webp");
 
-        let data_url = match read_user_spritesheet(&path, sprite_path_rel) {
-            Some(d) => d,
+        let sprite_path = match resolve_user_spritesheet_path(&path, sprite_path_rel) {
+            Some(p) => p,
             None => continue,
         };
 
@@ -352,12 +532,12 @@ fn discover_user_pets(dir: &Path) -> Vec<PetMetadata> {
             parse_state_mapping(&pet_json).unwrap_or_else(default_codex_state_mapping);
 
         pets.push(PetMetadata {
-            id: format!("user:{}", id),
+            id: format!("{}:{}", provider, id),
             display_name,
             description,
-            provider: "user".into(),
+            provider: provider.into(),
             builtin: false,
-            spritesheet_data_url: data_url,
+            spritesheet_path: path_to_string(&sprite_path),
             frame_size,
             animations,
             state_mapping,
@@ -367,7 +547,11 @@ fn discover_user_pets(dir: &Path) -> Vec<PetMetadata> {
     pets
 }
 
-fn read_user_spritesheet(root: &Path, rel_path: &str) -> Option<String> {
+/// Resolve `<root>/<rel>` to an absolute, canonicalized path, refusing to
+/// escape `root` and refusing anything other than a real PNG/WebP file under
+/// the byte limit. Returns the path so callers can hand it to the asset
+/// protocol without ever loading bytes into memory.
+fn resolve_user_spritesheet_path(root: &Path, rel_path: &str) -> Option<PathBuf> {
     let absolute = root.join(rel_path);
     let canonical_root = fs::canonicalize(root).ok()?;
     let canonical = fs::canonicalize(&absolute).ok()?;
@@ -381,14 +565,15 @@ fn read_user_spritesheet(root: &Path, rel_path: &str) -> Option<String> {
     }
 
     let ext = canonical.extension()?.to_str()?.to_lowercase();
-    let mime = match ext.as_str() {
-        "webp" => "image/webp",
-        "png" => "image/png",
-        _ => return None,
-    };
+    if !matches!(ext.as_str(), "webp" | "png") {
+        return None;
+    }
 
-    let bytes = fs::read(&canonical).ok()?;
-    Some(format!("data:{};base64,{}", mime, STANDARD.encode(&bytes)))
+    Some(canonical)
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn parse_frame_size(json: &JsonValue) -> Option<FrameSize> {
@@ -504,21 +689,21 @@ fn default_codex_state_mapping() -> HashMap<String, String> {
     m.insert("done".into(), "jumping".into());
     m.insert("thinking".into(), "review".into());
     m.insert("working".into(), "running".into());
-    m.insert("compacting".into(), "review".into());
+    m.insert("compacting".into(), "failed".into());
     m.insert("attention".into(), "waiting".into());
     m.insert("error".into(), "failed".into());
     m.insert("needsYou".into(), "waiting".into());
     m
 }
 
-fn make_codex_builtin_pet(builtin: &BuiltInCodexPet, data_url: String) -> PetMetadata {
+fn make_codex_builtin_pet(builtin: &BuiltInCodexPet, sprite_path: String) -> PetMetadata {
     PetMetadata {
         id: format!("codex:{}", builtin.id),
         display_name: builtin.display_name.into(),
         description: Some(builtin.description.into()),
         provider: "codex".into(),
         builtin: true,
-        spritesheet_data_url: data_url,
+        spritesheet_path: sprite_path,
         frame_size: FrameSize {
             width: 192,
             height: 208,
@@ -531,6 +716,46 @@ fn make_codex_builtin_pet(builtin: &BuiltInCodexPet, data_url: String) -> PetMet
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("agentbro-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_test_pet(root: &Path, id: &str, display_name: &str) {
+        let pet_dir = root.join(id);
+        fs::create_dir_all(&pet_dir).unwrap();
+        fs::write(pet_dir.join("spritesheet.webp"), b"WEBP").unwrap();
+        fs::write(
+            pet_dir.join("pet.json"),
+            format!(
+                r#"{{
+                  "id": "{id}",
+                  "displayName": "{display_name}",
+                  "spritesheetPath": "spritesheet.webp"
+                }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn test_pet(id: &str, provider: &str) -> PetMetadata {
+        PetMetadata {
+            id: id.into(),
+            display_name: id.into(),
+            description: None,
+            provider: provider.into(),
+            builtin: false,
+            spritesheet_path: format!("/tmp/{id}/spritesheet.webp"),
+            frame_size: FrameSize {
+                width: 192,
+                height: 208,
+            },
+            animations: HashMap::new(),
+            state_mapping: HashMap::new(),
+        }
+    }
 
     #[test]
     fn matches_codex_asset_path_pattern() {
@@ -582,6 +807,70 @@ mod tests {
         assert_eq!(states.get("error").unwrap(), "failed");
     }
 
+    #[test]
+    fn discovers_agentbro_user_pets_with_agentbro_provider() {
+        let root = temp_test_dir("agentbro-user-pets");
+        write_test_pet(&root, "luffy", "Luffy");
+
+        let pets = discover_user_pets(&root, "agentbro");
+
+        assert_eq!(pets.len(), 1);
+        assert_eq!(pets[0].id, "agentbro:luffy");
+        assert_eq!(pets[0].provider, "agentbro");
+        assert!(!pets[0].builtin);
+        assert!(pets[0].spritesheet_path.ends_with("spritesheet.webp"));
+        assert!(!pets[0].spritesheet_path.starts_with("data:"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dedupe_keeps_agentbro_priority_by_raw_id() {
+        let pets = vec![
+            test_pet("agentbro:luffy", "agentbro"),
+            test_pet("codex:luffy", "codex"),
+            test_pet("user:luffy", "user"),
+            test_pet("codex:codex", "codex"),
+        ];
+
+        let result = dedupe_pets_by_raw_id(pets);
+        let ids: Vec<&str> = result.iter().map(|pet| pet.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["agentbro:luffy", "codex:codex"]);
+    }
+
+    #[test]
+    fn discovers_agentbro_builtin_pet_from_resources() {
+        let resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src");
+        let pet = read_agentbro_pet(
+            &resource_dir.join("pets").join("a-bro"),
+            &BUILT_IN_AGENTBRO_PETS[0],
+        )
+        .expect("A-Bro built-in pet should be discoverable");
+
+        assert_eq!(pet.provider, "agentbro");
+        assert!(pet.builtin);
+        assert_eq!(pet.display_name, "A-Bro(阿布)");
+        assert_eq!(pet.frame_size.width, 192);
+        assert_eq!(pet.frame_size.height, 208);
+        assert!(pet.spritesheet_path.ends_with(".webp"));
+        assert!(!pet.spritesheet_path.starts_with("data:"));
+    }
+
+    #[test]
+    fn user_spritesheet_rejects_path_traversal() {
+        let root = temp_test_dir("agentbro-traversal");
+        fs::write(root.join("spritesheet.webp"), b"WEBP").unwrap();
+
+        let resolved = resolve_user_spritesheet_path(&root, "spritesheet.webp");
+        assert!(resolved.is_some());
+
+        let escape = resolve_user_spritesheet_path(&root, "../etc/passwd");
+        assert!(escape.is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// End-to-end smoke test against the local Codex.app and ~/.codex/pets.
     /// Run with: `cargo test --lib pets -- --ignored --nocapture`
     #[test]
@@ -598,20 +887,16 @@ mod tests {
         }
         for pet in &result.pets {
             println!(
-                "  {:>22}  provider={}  builtin={}  data_url_len={}  frame={}x{}",
+                "  {:>22}  provider={}  builtin={}  path={}  frame={}x{}",
                 pet.id,
                 pet.provider,
                 pet.builtin,
-                pet.spritesheet_data_url.len(),
+                pet.spritesheet_path,
                 pet.frame_size.width,
                 pet.frame_size.height
             );
-            assert!(pet.spritesheet_data_url.starts_with("data:image/"));
-            assert!(
-                pet.spritesheet_data_url.len() > 1000,
-                "spritesheet too small for {}",
-                pet.id
-            );
+            assert!(!pet.spritesheet_path.is_empty());
+            assert!(!pet.spritesheet_path.starts_with("data:"));
         }
         assert!(
             !result.pets.is_empty(),

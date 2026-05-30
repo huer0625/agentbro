@@ -159,7 +159,7 @@
   overflow: hidden;
 }
 
-.collapsed-bar__theme-avatar canvas {
+.collapsed-bar__theme-avatar .sprite-canvas {
   display: block;
 }
 

@@ -72,30 +72,51 @@ impl AgentAdapter for KiroAdapter {
         &self,
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw
-            .get("session_id")
-            .and_then(|v| v.as_str())
+        let session_id = string_field(raw, &["session_id", "sessionId"])
             .unwrap_or("unknown")
             .to_string();
-        let event = raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        let event = string_field(raw, &["event", "hook_event_name", "hookEventName"]).unwrap_or("");
+        let cwd = string_field(raw, &["cwd"]).unwrap_or("").to_string();
+        let tool_name = string_field(raw, &["tool", "tool_name", "toolName"])
+            .unwrap_or("Tool")
+            .to_string();
+        let tool_input = raw
+            .get("tool_input")
+            .or_else(|| raw.get("toolInput"))
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         match event {
-            "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
+            "agentSpawn" | "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_string(),
-                cwd: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                terminal: "".to_string(),
+                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                cwd,
+                terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "kiro".to_string(),
             }),
-            "session_end" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "userPromptSubmit" | "UserPromptSubmit" => Ok(AgentEvent::Processing {
+                session_id,
+                description: string_field(raw, &["prompt", "user_prompt", "message"])
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| format!("Prompt: {}", value.chars().take(80).collect::<String>()))
+                    .unwrap_or_else(|| "User prompt submitted".to_string()),
+            }),
+            "preToolUse" | "PreToolUse" => Ok(AgentEvent::ToolUse {
+                session_id,
+                tool_name,
+                tool_input,
+                tool_target: None,
+                status: "running".to_string(),
+            }),
+            "postToolUse" | "PostToolUse" => Ok(AgentEvent::ToolUse {
+                session_id,
+                tool_name,
+                tool_input,
+                tool_target: None,
+                status: "success".to_string(),
+            }),
+            "session_end" | "SessionEnd" | "stop" | "Stop" => {
+                Ok(AgentEvent::SessionEnd { session_id })
+            }
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),
@@ -106,4 +127,9 @@ impl AgentAdapter for KiroAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.agent_file_path()]
     }
+}
+
+fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| raw.get(key).and_then(|value| value.as_str()))
 }

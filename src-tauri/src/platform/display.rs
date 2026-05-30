@@ -246,7 +246,7 @@ fn cursor_position() -> Option<(f64, f64)> {
     None
 }
 
-fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+pub fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     if let Ok(cursor) = app.cursor_position() {
         if let Ok(monitors) = app.available_monitors() {
             if let Some(monitor) = monitors.iter().find(|m| {

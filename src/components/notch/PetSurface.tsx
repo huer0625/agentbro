@@ -43,6 +43,17 @@ import { OverlayResponseCard } from '../overlay/OverlayResponseCard'
 import { OverlayCompletionCard } from '../overlay/OverlayCompletionCard'
 import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { usePetSummon } from './usePetSummon'
+import { buildTips, shuffleTips } from './tips'
+import {
+  petStageAnchorFromWindow,
+  DEFAULT_PET_STAGE_ANCHOR,
+  PET_STAGE_WIDTH,
+  PET_STAGE_HEIGHT,
+  PET_SLOT_SIZE,
+  PET_ANCHOR_RIGHT,
+  PET_ANCHOR_BOTTOM,
+  type PetStageAnchor,
+} from './petStageAnchor'
 import './PetSurface.css'
 
 type DragDirection = 'left' | 'right' | 'running' | null
@@ -64,15 +75,24 @@ interface PetSurfaceProps {
 const PET_DRAG_THRESHOLD = 4
 const CODEX_PET_DONE_ANIMATION_MS = 1800
 const PET_PANEL_AUTO_HIDE_DELAY_MS = 650
-const PET_STAGE_WIDTH = 820
-const PET_STAGE_HEIGHT = 360
-const PET_SLOT_SIZE = 160
-const PET_ANCHOR_RIGHT = 132
-const PET_ANCHOR_BOTTOM = 44
-const PET_MESSAGE_TOAST_WIDTH = 480
+const PET_PANEL_GAP = 14
+const PET_PANEL_MARGIN = 8
+const PET_TIP_WIDTH = 260
+const PET_TIP_HEIGHT = 64
+const PET_ACTION_TOAST_WIDTH = 268
+const PET_ACTION_TOAST_HEIGHT = 84
+const PET_MESSAGE_TOAST_WIDTH = 460
 const PET_MESSAGE_TOAST_HEIGHT = 316
-const PET_MESSAGE_TOAST_GAP = 14
-const PET_MESSAGE_TOAST_MARGIN = 8
+const PET_SESSION_LIST_WIDTH = 520
+const PET_SESSION_LIST_HEIGHT = 316
+const PET_EMPTY_PANEL_WIDTH = 218
+const PET_EMPTY_PANEL_HEIGHT = 64
+const PET_DETAIL_PANEL_WIDTH = 520
+const PET_DETAIL_PANEL_HEIGHT = 328
+const PET_IDLE_TIP_DELAY_MS = 1200
+const PET_IDLE_TIP_VISIBLE_MS = 8000
+const PET_IDLE_TIP_INTERVAL_MS = 15000
+const PET_IDLE_TIPS_REQUIRE_QUIET = true
 
 function clearPermissionAfter(sessionId: string, work: Promise<void>) {
   work
@@ -92,6 +112,8 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [codexPetDoneUntil, setCodexPetDoneUntil] = useState(0)
   const [hasInputDraft, setHasInputDraft] = useState(false)
+  const [petHovered, setPetHovered] = useState(false)
+  const [suppressedOverlayId, setSuppressedOverlayId] = useState<string | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragLastScreenXRef = useRef<number | null>(null)
@@ -106,6 +128,14 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const petVitalsEnabled = useConfigStore((s) => s.petVitalsEnabled)
+  const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
+  const globalShortcut = useConfigStore((s) => s.globalShortcut)
+  const shortcutApprove = useConfigStore((s) => s.shortcutApprove)
+  const shortcutApproveEnabled = useConfigStore((s) => s.shortcutApproveEnabled)
+  const shortcutDeny = useConfigStore((s) => s.shortcutDeny)
+  const shortcutDenyEnabled = useConfigStore((s) => s.shortcutDenyEnabled)
+  const shortcutSkip = useConfigStore((s) => s.shortcutSkip)
+  const shortcutSkipEnabled = useConfigStore((s) => s.shortcutSkipEnabled)
   const petRegistry = usePetStore((s) => s.registry)
   const activePetId = usePetStore((s) => s.activePetId)
   const loadPetRegistry = usePetStore((s) => s.loadRegistry)
@@ -126,32 +156,89 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     [selectedSessionId, sortedSessions],
   )
   const topSession = sortedSessions[0]
+  const agentPetMap = useConfigStore((s) => s.islandAgentPetMap)
   const activePet = useMemo(
-    () => selectActivePet(petRegistry, activePetId, sessions),
-    [petRegistry, activePetId, sessions],
+    () => selectActivePet(petRegistry, activePetId, sessions, agentPetMap),
+    [petRegistry, activePetId, sessions, agentPetMap],
   )
+  const visibleActiveOverlay = activeOverlay && activeOverlay.id !== suppressedOverlayId ? activeOverlay : null
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
-  const actionCount = useMemo(() => getPetActionCount(sessions, activeOverlay), [sessions, activeOverlay])
+  const [stageAnchor, setStageAnchor] = usePetStageAnchor(!hidden, displayScale, dragging)
+  const spriteSize = Math.round(PET_SLOT_SIZE * displayScale)
+  const actionCount = useMemo(() => getPetActionCount(sessions, visibleActiveOverlay), [sessions, visibleActiveOverlay])
   const activeSessionCount = useMemo(
     () => sessions.filter((session) => session.phase !== 'idle' && session.phase !== 'done').length,
     [sessions],
   )
   const actionSession = useMemo(
-    () => sortedSessions.find(sessionNeedsPetPrompt) ?? (isBlockingOverlay(activeOverlay) ? getOverlaySession(activeOverlay, sessions) : null),
-    [activeOverlay, sessions, sortedSessions],
+    () => sortedSessions.find(sessionNeedsPetPrompt) ?? (isBlockingOverlay(visibleActiveOverlay) ? getOverlaySession(visibleActiveOverlay, sessions) : null),
+    [sessions, sortedSessions, visibleActiveOverlay],
   )
   const blockingOverlaySession = useMemo(
-    () => (activeOverlay && isBlockingOverlay(activeOverlay) ? getOverlaySession(activeOverlay, sessions) : null),
-    [activeOverlay, sessions],
+    () => (visibleActiveOverlay && isBlockingOverlay(visibleActiveOverlay) ? getOverlaySession(visibleActiveOverlay, sessions) : null),
+    [sessions, visibleActiveOverlay],
   )
-  const showBlockingOverlay = !hidden && !hudOpen && Boolean(activeOverlay && isBlockingOverlay(activeOverlay) && blockingOverlaySession)
-  const showActionToast = !hidden && !hudOpen && Boolean(actionSession || (activeOverlay && isBlockingOverlay(activeOverlay)))
-  const showMessageToast = !hidden && !hudOpen && shouldShowPetMessageToast(activeOverlay, taskCompleteDwellSeconds)
+  const showBlockingOverlay = !hidden && !hudOpen && Boolean(visibleActiveOverlay && isBlockingOverlay(visibleActiveOverlay) && blockingOverlaySession)
+  const showActionToast = !hidden && !hudOpen && Boolean(actionSession || (visibleActiveOverlay && isBlockingOverlay(visibleActiveOverlay)))
+  const showMessageToast = !hidden && !hudOpen && shouldShowPetMessageToast(visibleActiveOverlay, taskCompleteDwellSeconds)
   const messageToastPlacement = useMemo(
-    () => getPetMessageToastPlacement(displayScale),
-    [displayScale],
+    () => getPetPanelPlacement(getPetSidePanelWidth(displayScale, PET_MESSAGE_TOAST_WIDTH, stageAnchor), PET_MESSAGE_TOAST_HEIGHT, displayScale, stageAnchor),
+    [displayScale, stageAnchor],
   )
   const showHud = !hidden && hudOpen
+  const sessionPanelPlacement = useMemo(() => getPetPanelPlacement(
+    selectedSession
+      ? getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor)
+      : visibleSessions.length > 0
+        ? getPetSidePanelWidth(displayScale, PET_SESSION_LIST_WIDTH, stageAnchor)
+        : PET_EMPTY_PANEL_WIDTH,
+    selectedSession
+      ? PET_DETAIL_PANEL_HEIGHT
+      : visibleSessions.length > 0
+        ? PET_SESSION_LIST_HEIGHT
+        : PET_EMPTY_PANEL_HEIGHT,
+    displayScale,
+    stageAnchor,
+  ), [displayScale, selectedSession, stageAnchor, visibleSessions.length])
+  const blockingOverlayPlacement = useMemo(
+    () => getPetPanelPlacement(getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor), PET_DETAIL_PANEL_HEIGHT, displayScale, stageAnchor),
+    [displayScale, stageAnchor],
+  )
+  const actionToastPlacement = useMemo(
+    () => getPetPanelPlacement(PET_ACTION_TOAST_WIDTH, PET_ACTION_TOAST_HEIGHT, displayScale, stageAnchor),
+    [displayScale, stageAnchor],
+  )
+  const idleTipPlacement = useMemo(
+    () => getPetPanelPlacement(PET_TIP_WIDTH, PET_TIP_HEIGHT, displayScale, stageAnchor),
+    [displayScale, stageAnchor],
+  )
+  const allSessionsQuiet = sessions.length === 0 || sessions.every(sessionIsQuiet)
+  const petTips = useMemo(() => buildTips({
+    globalShortcut,
+    shortcutApprove,
+    shortcutApproveEnabled,
+    shortcutDeny,
+    shortcutDenyEnabled,
+    shortcutSkip,
+    shortcutSkipEnabled,
+  }, 'pet'), [
+    globalShortcut,
+    shortcutApprove,
+    shortcutApproveEnabled,
+    shortcutDeny,
+    shortcutDenyEnabled,
+    shortcutSkip,
+    shortcutSkipEnabled,
+  ])
+  const idleTip = usePetIdleTip(
+    tipsEnabled
+    && !hidden
+    && (!PET_IDLE_TIPS_REQUIRE_QUIET || allSessionsQuiet)
+    && !hudOpen
+    && !dragging
+    && !visibleActiveOverlay,
+    petTips,
+  )
 
   useEffect(() => {
     hasInputDraftRef.current = hasInputDraft
@@ -296,7 +383,11 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
         return null
     }
   }, [dragDirection])
-  const animationOverride = dragAnimationOverride ?? summon.summonAnimationOverride ?? null
+  const hoverAnimationOverride = petHovered && !dragging
+    ? (['jumping', 'waving', 'stretch'] as const)
+    : null
+  const animationOverride = dragAnimationOverride ?? summon.summonAnimationOverride ?? hoverAnimationOverride
+  const animationOverrideMode = dragAnimationOverride ? 'continuous' : 'transient'
   const realPetPriority = getPetPriority({
     actionCount,
     activePetProvider: activePet?.provider,
@@ -334,20 +425,26 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       dragPointerIdRef.current = null
       dragCandidateRef.current = null
       dragLastScreenXRef.current = null
-      setDragging(false)
       draggingRef.current = false
       setDragDirection(null)
       try {
-        const origin = await endPetDrag()
-        if (origin) updateConfig('islandPetWindowOrigin', origin)
+        const result = await endPetDrag()
+        if (result) {
+          setStageAnchor({
+            x: result.anchorLeft ? 'left' : 'right',
+            y: result.anchorTop ? 'top' : 'bottom',
+          })
+          updateConfig('islandPetWindowOrigin', result.origin)
+        }
       } catch (err) {
         console.warn('[PetSurface] endPetDrag:', err)
       }
+      setDragging(false)
       window.setTimeout(() => {
         suppressClickRef.current = false
       }, 0)
     },
-    [updateConfig],
+    [updateConfig, setStageAnchor],
   )
 
   useEffect(() => {
@@ -378,12 +475,43 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   }, [])
 
   const closeSessionPanel = useCallback(() => {
-    if (draggingRef.current || hasInputDraftRef.current || petPanelHasFocusedEditable()) return
+    if (draggingRef.current || hasInputDraftRef.current || petPanelHasFocusedEditable()) return false
+    clearPanelLeaveTimer()
     setHudOpen(false)
     setSelectedSessionId(null)
     setHasInputDraft(false)
     useSessionStore.getState().setActiveSession(null)
-  }, [])
+    return true
+  }, [clearPanelLeaveTimer])
+
+  const hideCurrentPetSurface = useCallback(() => {
+    if (draggingRef.current) return false
+    if (hudOpen) return closeSessionPanel()
+    if (!visibleActiveOverlay) return false
+
+    if (isNonBlockingOverlay(visibleActiveOverlay)) {
+      dismissOverlay(visibleActiveOverlay.id)
+      return true
+    }
+
+    if (isBlockingOverlay(visibleActiveOverlay)) {
+      setSuppressedOverlayId(visibleActiveOverlay.id)
+      return true
+    }
+
+    return false
+  }, [closeSessionPanel, dismissOverlay, hudOpen, visibleActiveOverlay])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (!hideCurrentPetSurface()) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hideCurrentPetSurface])
 
   const panelHoverHandlers = useMemo<PetPanelHoverHandlers>(() => ({
     onPointerEnter: clearPanelLeaveTimer,
@@ -428,8 +556,13 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     dragLastScreenXRef.current = event.screenX
     setDragging(true)
     draggingRef.current = true
-    updateDragDirection(signedDx, setDragDirection)
-    startPetDrag()
+    if (Math.abs(signedDx) < 2) {
+      setDragDirection('running')
+    } else {
+      updateDragDirection(signedDx, setDragDirection)
+    }
+    const dpr = window.devicePixelRatio || 1
+    startPetDrag(event.screenX * dpr, event.screenY * dpr)
       .then((started) => {
         if (!started) {
           console.warn('[PetSurface] startPetDrag returned false - Rust drag loop did not arm')
@@ -461,6 +594,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       suppressClickRef.current = false
       return
     }
+    setSuppressedOverlayId(null)
     setHudOpen((current) => {
       const next = !current
       if (!next) {
@@ -488,6 +622,8 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       className="pet-surface"
       data-hidden={hidden ? 'true' : 'false'}
       data-hud-open={showHud ? 'true' : 'false'}
+      data-anchor-x={stageAnchor.x}
+      data-anchor-y={stageAnchor.y}
       style={{ '--pet-scale': displayScale } as CSSProperties}
     >
       <div className="pet-surface__stage">
@@ -495,6 +631,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
           <PetSessionPanel
             sessions={visibleSessions}
             selectedSession={selectedSession}
+            placement={sessionPanelPlacement}
             onBack={() => {
               setSelectedSessionId(null)
               setHasInputDraft(false)
@@ -514,12 +651,13 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
           />
         )}
 
-        {showBlockingOverlay && activeOverlay && blockingOverlaySession && (
+        {showBlockingOverlay && visibleActiveOverlay && blockingOverlaySession && (
           <PetBlockingOverlay
-            overlay={activeOverlay}
+            overlay={visibleActiveOverlay}
             session={blockingOverlaySession}
+            placement={blockingOverlayPlacement}
             sessionCount={sessions.length}
-            onClose={() => dismissOverlay(activeOverlay.id)}
+            onClose={() => dismissOverlay(visibleActiveOverlay.id)}
             onShowSessions={() => setHudOpen(true)}
           />
         )}
@@ -527,8 +665,9 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
         {!showBlockingOverlay && showActionToast && (
           <PetActionToast
             actionCount={actionCount}
-            overlay={activeOverlay}
+            overlay={visibleActiveOverlay}
             session={actionSession}
+            placement={actionToastPlacement}
             onOpen={() => {
               if (actionSession) openSessionDetail(actionSession.id)
               else setHudOpen(true)
@@ -536,11 +675,11 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
           />
         )}
 
-        {showMessageToast && activeOverlay && (
+        {showMessageToast && visibleActiveOverlay && (
           <PetMessageToast
-            overlay={activeOverlay}
-            session={getOverlaySession(activeOverlay, sessions) ?? topSession}
-            onDismiss={() => dismissOverlay(activeOverlay.id)}
+            overlay={visibleActiveOverlay}
+            session={getOverlaySession(visibleActiveOverlay, sessions) ?? topSession}
+            onDismiss={() => dismissOverlay(visibleActiveOverlay.id)}
             onInputDraftStateChange={setHasInputDraft}
             onPointerEnter={() => {
               messageToastInsideRef.current = true
@@ -554,6 +693,8 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
             sessionCount={sessions.length}
           />
         )}
+
+        <PetIdleTip tip={idleTip} placement={idleTipPlacement} />
 
         <button
           type="button"
@@ -573,6 +714,8 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
           onPointerMove={handlePointerMove}
           onPointerUp={(event) => void finishDrag(event.pointerId)}
           onPointerCancel={(event) => void finishDrag(event.pointerId)}
+          onPointerEnter={() => setPetHovered(true)}
+          onPointerLeave={() => setPetHovered(false)}
         >
           <span className="pet-surface__sprite-shell" style={{ position: 'relative' }}>
             {activePet ? (
@@ -580,8 +723,9 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
                 <SpriteCanvas
                   pet={activePet}
                   priority={petPriority}
-                  size={112}
+                  size={spriteSize}
                   animationOverride={animationOverride}
+                  animationOverrideMode={animationOverrideMode}
                   contextPressure={petVitalsEnabled ? contextPressure : 0}
                   energyLevel={petVitalsEnabled ? energyLevel : 0}
                 />
@@ -591,7 +735,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
                     energyLevel={energyLevel}
                     isWorking={isWorking}
                     isIdle={isSessionIdle}
-                    size={112}
+                    size={spriteSize}
                   />
                 )}
               </>
@@ -603,7 +747,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
               <MascotRouter
                 toolType={topSession?.agentType ?? 'claude-code'}
                 phase={topSession?.phase ?? 'idle'}
-                size={112}
+                size={spriteSize}
               />
             )}
             <PetStatusBadges actionCount={actionCount} sessionCount={activeSessionCount} />
@@ -618,6 +762,21 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
         />
       </div>
     </div>
+  )
+}
+
+function PetIdleTip({ tip, placement }: { tip: string | null; placement: PetPanelPlacement }) {
+  if (!tip) return null
+  return (
+    <aside
+      className="pet-surface__idle-tip"
+      data-placement={placement.placement}
+      style={petPanelStyle(placement)}
+      aria-live="polite"
+    >
+      <span className="pet-surface__idle-tip-label">Tips</span>
+      <span className="pet-surface__idle-tip-text">{tip}</span>
+    </aside>
   )
 }
 
@@ -642,6 +801,7 @@ function PetBadge({ count, tone }: { count: number; tone: 'action' | 'session' }
 function PetSessionPanel({
   sessions,
   selectedSession,
+  placement,
   onBack,
   onClose,
   onJumpToTerminal,
@@ -651,6 +811,7 @@ function PetSessionPanel({
 }: {
   sessions: SessionState[]
   selectedSession: SessionState | null
+  placement: PetPanelPlacement
   onBack: () => void
   onClose: () => void
   onJumpToTerminal: (sessionId: string) => void
@@ -665,6 +826,7 @@ function PetSessionPanel({
         onClose={onClose}
         onInputDraftStateChange={onInputDraftStateChange}
         hoverHandlers={hoverHandlers}
+        placement={placement}
       />
     )
   }
@@ -674,6 +836,8 @@ function PetSessionPanel({
       <button
         type="button"
         className="pet-surface__drawer pet-surface__drawer--empty pet-surface__interactive"
+        data-placement={placement.placement}
+        style={petPanelStyle(placement)}
         onClick={onClose}
         {...hoverHandlers}
       >
@@ -684,7 +848,13 @@ function PetSessionPanel({
   }
 
   return (
-    <section className="pet-surface__drawer pet-surface__drawer--sessions pet-surface__interactive" aria-label="Pet sessions" {...hoverHandlers}>
+    <section
+      className="pet-surface__drawer pet-surface__drawer--sessions pet-surface__interactive"
+      data-placement={placement.placement}
+      style={petPanelStyle(placement)}
+      aria-label="Pet sessions"
+      {...hoverHandlers}
+    >
       <button type="button" className="pet-surface__icon-button pet-surface__icon-button--floating" aria-label="Close sessions" onClick={onClose}>
         x
       </button>
@@ -706,14 +876,22 @@ function PetSessionDetail({
   onClose,
   onInputDraftStateChange,
   hoverHandlers,
+  placement,
 }: {
   onBack: () => void
   onClose: () => void
   onInputDraftStateChange: (hasDraft: boolean) => void
   hoverHandlers: PetPanelHoverHandlers
+  placement: PetPanelPlacement
 }) {
   return (
-    <section className="pet-surface__drawer pet-surface__drawer--detail pet-surface__interactive" aria-label="Pet session detail" {...hoverHandlers}>
+    <section
+      className="pet-surface__drawer pet-surface__drawer--detail pet-surface__interactive"
+      data-placement={placement.placement}
+      style={petPanelStyle(placement)}
+      aria-label="Pet session detail"
+      {...hoverHandlers}
+    >
       <button type="button" className="pet-surface__icon-button pet-surface__icon-button--floating" aria-label="Close session detail" onClick={onClose}>
         x
       </button>
@@ -725,12 +903,14 @@ function PetSessionDetail({
 function PetBlockingOverlay({
   overlay,
   session,
+  placement,
   sessionCount,
   onClose,
   onShowSessions,
 }: {
   overlay: OverlayItem
   session: SessionState
+  placement: PetPanelPlacement
   sessionCount: number
   onClose: () => void
   onShowSessions: () => void
@@ -738,7 +918,13 @@ function PetBlockingOverlay({
   const showSessions = sessionCount > 1 ? onShowSessions : undefined
 
   return (
-    <section className="pet-surface__overlay pet-surface__interactive" aria-label="Pet action prompt" data-overlay-type={overlay.type}>
+    <section
+      className="pet-surface__overlay pet-surface__interactive"
+      data-placement={placement.placement}
+      data-overlay-type={overlay.type}
+      style={petPanelStyle(placement)}
+      aria-label="Pet action prompt"
+    >
       {overlay.type === 'permission' && (
         <PermissionCard
           overlay={overlay}
@@ -809,16 +995,24 @@ function PetActionToast({
   actionCount,
   overlay,
   session,
+  placement,
   onOpen,
 }: {
   actionCount: number
   overlay: OverlayItem | null
   session: SessionState | null | undefined
+  placement: PetPanelPlacement
   onOpen: () => void
 }) {
   const kind = overlay && isBlockingOverlay(overlay) ? overlay.type : getSessionPendingKind(session)
   return (
-    <button type="button" className="pet-surface__toast pet-surface__toast--action pet-surface__interactive" onClick={onOpen}>
+    <button
+      type="button"
+      className="pet-surface__toast pet-surface__toast--action pet-surface__interactive"
+      data-placement={placement.placement}
+      style={petPanelStyle(placement)}
+      onClick={onOpen}
+    >
       <span className="pet-surface__toast-kicker">{formatActionKind(kind)}{actionCount > 1 ? ` · ${actionCount}` : ''}</span>
       <span className="pet-surface__toast-title">{session ? getSessionTitle(session) : 'Needs attention'}</span>
       <span className="pet-surface__toast-preview">{session ? getSessionPreview(session) : getOverlayPreview(overlay)}</span>
@@ -844,7 +1038,7 @@ function PetMessageToast({
   onPointerEnter: () => void
   onPointerLeave: () => void
   onShowSessions: () => void
-  placement: PetMessageToastPlacement
+  placement: PetPanelPlacement
   sessionCount: number
 }) {
   if (!session) return null
@@ -858,10 +1052,7 @@ function PetMessageToast({
     <section
       className="pet-surface__toast pet-surface__toast--message pet-surface__interactive"
       data-placement={placement.placement}
-      style={{
-        '--pet-toast-left': `${placement.left}px`,
-        '--pet-toast-top': `${placement.top}px`,
-      } as CSSProperties}
+      style={petPanelStyle(placement)}
       aria-label="Pet message notification"
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
@@ -902,46 +1093,95 @@ function PetMessageToast({
   )
 }
 
-type PetMessageToastPlacement = {
-  placement: 'top' | 'left' | 'right'
+type PetPanelPlacementName = 'top-left' | 'top-right' | 'left' | 'right' | 'bottom-left' | 'bottom-right'
+
+type PetPanelPlacement = {
+  placement: PetPanelPlacementName
   left: number
   top: number
 }
 
-function getPetMessageToastPlacement(scale: number): PetMessageToastPlacement {
+function petPanelStyle(placement: PetPanelPlacement): CSSProperties {
+  return {
+    '--pet-panel-left': `${placement.left}px`,
+    '--pet-panel-top': `${placement.top}px`,
+  } as CSSProperties
+}
+
+function getPetSidePanelWidth(scale: number, preferredWidth: number, anchor: PetStageAnchor): number {
   const petSize = PET_SLOT_SIZE * scale
-  const petLeft = PET_STAGE_WIDTH - PET_ANCHOR_RIGHT - petSize
-  const petRight = PET_STAGE_WIDTH - PET_ANCHOR_RIGHT
-  const petTop = PET_STAGE_HEIGHT - PET_ANCHOR_BOTTOM - petSize
-  const petCenterX = petLeft + petSize / 2
-  const petCenterY = petTop + petSize / 2
+  const petLeft = getPetLeft(scale, anchor)
+  const petRight = petLeft + petSize
+  const availableWidth = anchor.x === 'left'
+    ? PET_STAGE_WIDTH - petRight - PET_PANEL_GAP - PET_PANEL_MARGIN
+    : petLeft - PET_PANEL_GAP - PET_PANEL_MARGIN
+  return Math.max(240, Math.min(preferredWidth, availableWidth))
+}
 
-  const topLeft = clamp(
-    petCenterX - PET_MESSAGE_TOAST_WIDTH / 2,
-    PET_MESSAGE_TOAST_MARGIN,
-    PET_STAGE_WIDTH - PET_MESSAGE_TOAST_WIDTH - PET_MESSAGE_TOAST_MARGIN,
-  )
-  const topTop = petTop - PET_MESSAGE_TOAST_HEIGHT - PET_MESSAGE_TOAST_GAP
-  if (topTop >= PET_MESSAGE_TOAST_MARGIN) {
-    return { placement: 'top', left: topLeft, top: topTop }
-  }
-
+function getPetPanelPlacement(width: number, height: number, scale: number, anchor: PetStageAnchor): PetPanelPlacement {
+  const petSize = PET_SLOT_SIZE * scale
+  const petLeft = getPetLeft(scale, anchor)
+  const petRight = petLeft + petSize
+  const petTop = getPetTop(scale, anchor)
+  const petBottom = petTop + petSize
+  const headX = petLeft + petSize * 0.58
+  const top = petTop - height - PET_PANEL_GAP
+  const bottom = petBottom + PET_PANEL_GAP
+  const aboveLeft = headX - width + petSize * 0.24
+  const aboveRight = headX - petSize * 0.12
   const sideTop = clamp(
-    petCenterY - PET_MESSAGE_TOAST_HEIGHT / 2,
-    PET_MESSAGE_TOAST_MARGIN,
-    PET_STAGE_HEIGHT - PET_MESSAGE_TOAST_HEIGHT - PET_MESSAGE_TOAST_MARGIN,
+    petTop - PET_PANEL_GAP,
+    PET_PANEL_MARGIN,
+    PET_STAGE_HEIGHT - height - PET_PANEL_MARGIN,
   )
-  const leftLeft = petLeft - PET_MESSAGE_TOAST_WIDTH - PET_MESSAGE_TOAST_GAP
-  if (leftLeft >= PET_MESSAGE_TOAST_MARGIN) {
-    return { placement: 'left', left: leftLeft, top: sideTop }
-  }
+  const sideLeft = petLeft - width - PET_PANEL_GAP
+  const sideRight = petRight + PET_PANEL_GAP
+  const primaryCorner: PetPanelPlacementName = anchor.y === 'top'
+    ? anchor.x === 'left' ? 'bottom-right' : 'bottom-left'
+    : anchor.x === 'left' ? 'top-right' : 'top-left'
+  const secondaryCorner: PetPanelPlacementName = anchor.y === 'top'
+    ? anchor.x === 'left' ? 'top-right' : 'top-left'
+    : anchor.x === 'left' ? 'bottom-right' : 'bottom-left'
+  const primarySide: PetPanelPlacementName = anchor.x === 'left' ? 'right' : 'left'
+  const secondarySide: PetPanelPlacementName = anchor.x === 'left' ? 'left' : 'right'
 
-  const rightLeft = petRight + PET_MESSAGE_TOAST_GAP
-  if (rightLeft + PET_MESSAGE_TOAST_WIDTH <= PET_STAGE_WIDTH - PET_MESSAGE_TOAST_MARGIN) {
-    return { placement: 'right', left: rightLeft, top: sideTop }
-  }
+  const candidates: PetPanelPlacement[] = [
+    { placement: primaryCorner, left: anchor.x === 'left' ? aboveRight : aboveLeft, top: anchor.y === 'top' ? bottom : top },
+    { placement: primarySide, left: anchor.x === 'left' ? sideRight : sideLeft, top: sideTop },
+    { placement: secondaryCorner, left: anchor.x === 'left' ? aboveRight : aboveLeft, top: anchor.y === 'top' ? top : bottom },
+    { placement: secondarySide, left: anchor.x === 'left' ? sideLeft : sideRight, top: sideTop },
+  ]
 
-  return { placement: 'left', left: topLeft, top: sideTop }
+  const fitted = candidates.find((candidate) => placementFits(candidate, width, height))
+  if (fitted) return fitted
+
+  const nearest = candidates.find((candidate) => candidate.placement === (anchor.x === 'left' ? 'right' : 'left')) ?? candidates[0]
+  return {
+    placement: nearest.placement,
+    left: clamp(nearest.left, PET_PANEL_MARGIN, PET_STAGE_WIDTH - width - PET_PANEL_MARGIN),
+    top: clamp(nearest.top, PET_PANEL_MARGIN, PET_STAGE_HEIGHT - height - PET_PANEL_MARGIN),
+  }
+}
+
+function getPetLeft(scale: number, anchor: PetStageAnchor): number {
+  const petSize = PET_SLOT_SIZE * scale
+  return anchor.x === 'left'
+    ? PET_ANCHOR_RIGHT
+    : PET_STAGE_WIDTH - PET_ANCHOR_RIGHT - petSize
+}
+
+function getPetTop(scale: number, anchor: PetStageAnchor): number {
+  const petSize = PET_SLOT_SIZE * scale
+  return anchor.y === 'top'
+    ? PET_ANCHOR_BOTTOM
+    : PET_STAGE_HEIGHT - PET_ANCHOR_BOTTOM - petSize
+}
+
+function placementFits(placement: PetPanelPlacement, width: number, height: number): boolean {
+  return placement.left >= PET_PANEL_MARGIN
+    && placement.top >= PET_PANEL_MARGIN
+    && placement.left + width <= PET_STAGE_WIDTH - PET_PANEL_MARGIN
+    && placement.top + height <= PET_STAGE_HEIGHT - PET_PANEL_MARGIN
 }
 
 function getPetPriority({
@@ -1001,6 +1241,116 @@ function sessionNeedsPetPrompt(session: SessionState): boolean {
 function shouldShowPetMessageToast(overlay: OverlayItem | null, dwellSeconds: number): boolean {
   if (!overlay || !isNonBlockingOverlay(overlay) || overlay.suppressed) return false
   return Date.now() - overlay.createdAt <= Math.max(1, dwellSeconds) * 1000
+}
+
+function sessionIsQuiet(session: SessionState): boolean {
+  return session.phase === 'idle' || session.phase === 'done' || session.phase === 'ready'
+}
+
+function usePetStageAnchor(active: boolean, scale: number, frozen: boolean): [PetStageAnchor, (a: PetStageAnchor) => void] {
+  const [anchor, setAnchor] = useState<PetStageAnchor>(DEFAULT_PET_STAGE_ANCHOR)
+
+  useEffect(() => {
+    if (!active || !isTauri() || frozen) {
+      if (!active || !isTauri()) {
+        const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
+        return () => window.clearTimeout(timer)
+      }
+      return
+    }
+
+    let cancelled = false
+    let inFlight = false
+    const update = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      try {
+        const { getCurrentWindow, currentMonitor } = await import('@tauri-apps/api/window')
+        const [position, monitor] = await Promise.all([
+          getCurrentWindow().outerPosition(),
+          currentMonitor(),
+        ])
+        if (!monitor || cancelled) return
+        const next = petStageAnchorFromWindow(position.x, position.y, monitor, scale)
+        setAnchor((current) => (
+          current.x === next.x && current.y === next.y ? current : next
+        ))
+      } catch {
+        if (!cancelled) setAnchor(DEFAULT_PET_STAGE_ANCHOR)
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void update()
+    const timer = window.setInterval(update, 250)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [active, scale, frozen])
+
+  return [anchor, setAnchor]
+}
+
+
+function usePetIdleTip(active: boolean, tips: string[]): string | null {
+  const [tip, setTip] = useState<string | null>(null)
+  const shuffledRef = useRef<string[]>([])
+  const indexRef = useRef(0)
+
+  const nextTip = useCallback(() => {
+    if (tips.length === 0) return null
+    if (shuffledRef.current.length === 0 || indexRef.current >= shuffledRef.current.length) {
+      shuffledRef.current = shuffleTips(tips)
+      indexRef.current = 0
+    }
+    const next = shuffledRef.current[indexRef.current] ?? tips[0]
+    indexRef.current += 1
+    return next
+  }, [tips])
+
+  useEffect(() => {
+    shuffledRef.current = []
+    indexRef.current = 0
+    const timer = window.setTimeout(() => setTip(null), 0)
+    return () => window.clearTimeout(timer)
+  }, [tips])
+
+  useEffect(() => {
+    let cancelled = false
+    const timers: ReturnType<typeof window.setTimeout>[] = []
+    const schedule = (callback: () => void, delay: number) => {
+      const timer = window.setTimeout(callback, delay)
+      timers.push(timer)
+    }
+    const hide = () => {
+      if (cancelled) return
+      setTip(null)
+    }
+    const show = () => {
+      if (cancelled) return
+      setTip(nextTip())
+      schedule(hide, PET_IDLE_TIP_VISIBLE_MS)
+      schedule(show, PET_IDLE_TIP_INTERVAL_MS)
+    }
+
+    if (!active) {
+      schedule(hide, 0)
+      return () => {
+        cancelled = true
+        timers.forEach((timer) => window.clearTimeout(timer))
+      }
+    }
+
+    schedule(show, PET_IDLE_TIP_DELAY_MS)
+    return () => {
+      cancelled = true
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [active, nextTip])
+
+  return tip
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1085,7 +1435,6 @@ function formatPhase(phase: SessionState['phase']): string {
 
 function updateDragDirection(deltaX: number, setDirection: (direction: DragDirection) => void): void {
   if (Math.abs(deltaX) < 2) {
-    setDirection('running')
     return
   }
   setDirection(deltaX > 0 ? 'right' : 'left')

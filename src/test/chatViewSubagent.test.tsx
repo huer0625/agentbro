@@ -7,6 +7,7 @@ import type { SessionState } from '../types/agent'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
+  getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   getSubagentChatHistory: vi.fn(() => Promise.resolve([
     {
       id: 'u1',
@@ -35,6 +36,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     getSubagentChatHistory: tauriMocks.getSubagentChatHistory,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     respondAutoApprove: tauriMocks.respondAutoApprove,

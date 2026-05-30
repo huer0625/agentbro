@@ -28,7 +28,7 @@ export function CompletionCard({ session, onDismiss }: CompletionCardProps) {
     }, Math.max(1, taskCompleteDwellSeconds) * 1000)
 
     return () => clearTimeout(timer)
-  }, [])
+  }, [taskCompleteDwellSeconds])
 
   return (
     <AnimatePresence onExitComplete={() => onDismiss(session.id)}>

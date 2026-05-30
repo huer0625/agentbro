@@ -193,3 +193,35 @@ export function isSessionPastDisplayTimeout(session: SessionState, timeoutMinute
   if (timeoutMinutes <= 0 || !isPassiveSession(session)) return false
   return now - getSessionExpiryAnchor(session) > timeoutMinutes * 60 * 1000
 }
+
+const MODEL_DISPLAY_MAP: Record<string, string> = {
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-7': 'Opus 4.7',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-opus-4-5-20250514': 'Opus 4.5',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-sonnet-4-5-20241022': 'Sonnet 4.5',
+  'claude-haiku-4-5-20251001': 'Haiku 4.5',
+  'claude-3-5-sonnet-20241022': 'Sonnet 3.5',
+  'claude-3-5-haiku-20241022': 'Haiku 3.5',
+}
+
+export function formatModelName(model: string): string {
+  const lower = model.toLowerCase()
+  const exact = MODEL_DISPLAY_MAP[lower]
+  if (exact) return exact
+
+  if (lower.startsWith('claude-')) {
+    const rest = lower.slice(7)
+    const match = rest.match(/^(opus|sonnet|haiku)-(.+)/)
+    if (match) {
+      const family = match[1].charAt(0).toUpperCase() + match[1].slice(1)
+      const version = match[2].replace(/-/g, '.').replace(/\.\d{8}$/, '')
+      return `${family} ${version}`
+    }
+  }
+
+  if (lower.startsWith('gpt-')) return model.toUpperCase().replace('GPT', 'GPT')
+
+  return model
+}

@@ -90,7 +90,7 @@ export function SwitchProviderEditor({ provider, onClose }: Props) {
 
   useEffect(() => {
     if (isNew && presets.length === 0) loadPresets()
-  }, [])
+  }, [isNew, loadPresets, presets.length])
 
   const filteredPresets = presets.filter((p) => p.supported_apps.includes(activeAppType))
 

@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,20 +63,24 @@ pub fn get_theme_bundle(name: &str) -> Option<serde_json::Value> {
     if let Some(obj) = val.as_object_mut() {
         if let Some(character) = obj.get("character").cloned() {
             if let Some(sprite_path) = character.get("spriteSheet").and_then(|s| s.as_str()) {
+                // Spritesheet path is exposed verbatim; the frontend wraps it
+                // in convertFileSrc() to obtain an asset:// URL. Embedding the
+                // bytes as a data URL here ballooned the JS heap by 80+ MB
+                // across the registry — never again.
                 let full_path = dir.join(sprite_path);
                 if full_path.exists() {
-                    if let Ok(bytes) = fs::read(&full_path) {
-                        let b64 = STANDARD.encode(&bytes);
-                        let mime = image_mime_for_path(&full_path);
-                        let data_url = format!("data:{};base64,{}", mime, b64);
-                        if let Some(char_obj) =
-                            obj.get_mut("character").and_then(|c| c.as_object_mut())
-                        {
-                            char_obj.insert(
-                                "spriteSheetDataUrl".to_string(),
-                                serde_json::json!(data_url),
-                            );
-                        }
+                    if let Some(char_obj) =
+                        obj.get_mut("character").and_then(|c| c.as_object_mut())
+                    {
+                        let path_str = full_path.to_string_lossy().to_string();
+                        char_obj.insert(
+                            "spriteSheet".to_string(),
+                            serde_json::json!(path_str.clone()),
+                        );
+                        char_obj.insert(
+                            "spriteSheetUrl".to_string(),
+                            serde_json::json!(path_str),
+                        );
                     }
                 }
             }
@@ -137,6 +140,10 @@ fn codex_pet_theme_from_dir(dir: &Path) -> Option<serde_json::Value> {
     let bytes = fs::read(&sprite_path).ok()?;
     let (atlas_width, atlas_height) =
         image_dimensions(&bytes, &sprite_path).unwrap_or((1536, 1872));
+    // Bytes are only used for dimension probing — they MUST be dropped before
+    // we serialize, otherwise base64 of a 1.5 MB sheet × 17 pets clobbers the
+    // JS heap. We hand the WebView a plain filesystem path instead.
+    drop(bytes);
     let frame_width = if atlas_width >= 8 {
         atlas_width / 8
     } else {
@@ -147,11 +154,7 @@ fn codex_pet_theme_from_dir(dir: &Path) -> Option<serde_json::Value> {
     } else {
         208
     };
-    let data_url = format!(
-        "data:{};base64,{}",
-        image_mime_for_path(&sprite_path),
-        STANDARD.encode(&bytes)
-    );
+    let sprite_path_str = sprite_path.to_string_lossy().to_string();
 
     Some(serde_json::json!({
         "name": format!("codex-pet:{}", id),
@@ -167,8 +170,8 @@ fn codex_pet_theme_from_dir(dir: &Path) -> Option<serde_json::Value> {
         "prioritySpeeds": default_priority_speeds(),
         "priorityPatterns": default_priority_patterns(),
         "character": {
-            "spriteSheet": data_url,
-            "spriteSheetDataUrl": data_url,
+            "spriteSheet": sprite_path_str.clone(),
+            "spriteSheetUrl": sprite_path_str,
             "frameSize": { "width": frame_width, "height": frame_height },
             "scale": 1,
             "animations": {
@@ -214,19 +217,6 @@ fn safe_theme_id(input: &str) -> String {
         "pet".to_string()
     } else {
         trimmed
-    }
-}
-
-fn image_mime_for_path(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_ascii_lowercase())
-    {
-        Some(ext) if ext == "webp" => "image/webp",
-        Some(ext) if ext == "jpg" || ext == "jpeg" => "image/jpeg",
-        Some(ext) if ext == "gif" => "image/gif",
-        _ => "image/png",
     }
 }
 
@@ -479,10 +469,14 @@ mod tests {
         assert_eq!(theme["displayName"], "Nami");
         assert_eq!(theme["character"]["frameSize"]["width"], 192);
         assert_eq!(theme["character"]["frameSize"]["height"], 208);
-        assert!(theme["character"]["spriteSheet"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/webp;base64,"));
+        // spriteSheet now carries an absolute filesystem path; the frontend
+        // wraps it in convertFileSrc() to obtain an asset:// URL. We refuse
+        // to emit base64 data URLs here — see the file-level comment.
+        let sprite = theme["character"]["spriteSheet"].as_str().unwrap();
+        assert!(!sprite.starts_with("data:"), "spriteSheet must be a path, got {sprite}");
+        assert!(sprite.ends_with("spritesheet.webp"));
+        let sprite_url = theme["character"]["spriteSheetUrl"].as_str().unwrap();
+        assert_eq!(sprite, sprite_url);
 
         fs::remove_dir_all(&dir).ok();
     }

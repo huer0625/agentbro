@@ -66,6 +66,14 @@ pub struct IncrementalParseResult {
     pub byte_offset: u64,
     /// Number of raw JSONL lines read in this batch
     pub lines_read: usize,
+    /// Total messages parsed so far across the whole file (including any that
+    /// were evicted from `all_messages` by the retention cap).
+    #[serde(default)]
+    pub total_count: usize,
+    /// True when `all_messages` is a tail window because older messages were
+    /// evicted to keep memory bounded.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Cache TTL metadata inferred from the latest main-agent assistant JSONL entry.
@@ -121,6 +129,16 @@ pub struct TranscriptSubagentInfo {
 
 // ── Parser ──────────────────────────────────────────────────────
 
+/// Upper bound on messages retained per session in the streaming buffer.
+/// Long conversations would otherwise grow `messages` (and every
+/// `all_messages.clone()` shipped to the frontend) without limit. Older
+/// messages stay on disk and can be re-fetched via `parse_full`.
+const MAX_RETAINED_MESSAGES: usize = 500;
+
+/// Upper bound on `seen_tool_ids` so the dedup set can't grow forever in
+/// very long sessions. Old IDs almost never collide with new ones.
+const MAX_SEEN_TOOL_IDS: usize = 4_000;
+
 /// Incremental JSONL conversation parser.
 ///
 /// Tracks file offset so that repeated calls only parse newly-appended lines.
@@ -129,6 +147,8 @@ pub struct ConversationParser {
     file_path: PathBuf,
     last_offset: u64,
     messages: Vec<ParsedMessage>,
+    /// Count of messages ever parsed (including any evicted from `messages`).
+    total_parsed: usize,
     seen_tool_ids: HashSet<String>,
 }
 
@@ -139,6 +159,7 @@ impl ConversationParser {
             file_path,
             last_offset: 0,
             messages: Vec::new(),
+            total_parsed: 0,
             seen_tool_ids: HashSet::new(),
         }
     }
@@ -170,13 +191,7 @@ impl ConversationParser {
         let file = match File::open(&self.file_path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(IncrementalParseResult {
-                    new_messages: vec![],
-                    all_messages: self.messages.clone(),
-                    clear_detected: false,
-                    byte_offset: self.last_offset,
-                    lines_read: 0,
-                });
+                return Ok(self.build_result(vec![], false, self.last_offset, 0));
             }
             Err(e) => return Err(e),
         };
@@ -187,18 +202,13 @@ impl ConversationParser {
         if file_size < self.last_offset {
             self.last_offset = 0;
             self.messages.clear();
+            self.total_parsed = 0;
             self.seen_tool_ids.clear();
         }
 
         // Nothing new
         if file_size == self.last_offset {
-            return Ok(IncrementalParseResult {
-                new_messages: vec![],
-                all_messages: self.messages.clone(),
-                clear_detected: false,
-                byte_offset: self.last_offset,
-                lines_read: 0,
-            });
+            return Ok(self.build_result(vec![], false, self.last_offset, 0));
         }
 
         let mut reader = BufReader::new(file);
@@ -225,6 +235,7 @@ impl ConversationParser {
             // Detect /clear command
             if line.contains("<command-name>/clear</command-name>") {
                 self.messages.clear();
+                self.total_parsed = 0;
                 self.seen_tool_ids.clear();
                 clear_detected = true;
                 new_messages.clear();
@@ -246,37 +257,122 @@ impl ConversationParser {
 
             if let Some(msg) = self.parse_line(&json) {
                 new_messages.push(msg.clone());
-                self.messages.push(msg);
+                self.push_message(msg);
             }
         }
 
         self.last_offset = file_size;
+        self.compact_seen_tool_ids();
 
-        Ok(IncrementalParseResult {
+        Ok(self.build_result(new_messages, clear_detected, file_size, lines_read))
+    }
+
+    /// Push a freshly-parsed message into the retention buffer, dropping the
+    /// oldest entries if we are already at `MAX_RETAINED_MESSAGES`.
+    fn push_message(&mut self, msg: ParsedMessage) {
+        self.total_parsed = self.total_parsed.saturating_add(1);
+        if self.messages.len() >= MAX_RETAINED_MESSAGES {
+            let drop_count = self.messages.len() + 1 - MAX_RETAINED_MESSAGES;
+            self.messages.drain(0..drop_count);
+        }
+        self.messages.push(msg);
+    }
+
+    /// Keep `seen_tool_ids` bounded. We trade a vanishing chance of
+    /// re-emitting a very old duplicate tool_use for a guaranteed memory
+    /// ceiling. Tool IDs are random per invocation so collisions across
+    /// a reset are not a practical concern.
+    fn compact_seen_tool_ids(&mut self) {
+        if self.seen_tool_ids.len() > MAX_SEEN_TOOL_IDS {
+            self.seen_tool_ids.clear();
+        }
+    }
+
+    fn build_result(
+        &self,
+        new_messages: Vec<ParsedMessage>,
+        clear_detected: bool,
+        byte_offset: u64,
+        lines_read: usize,
+    ) -> IncrementalParseResult {
+        IncrementalParseResult {
             new_messages,
             all_messages: self.messages.clone(),
             clear_detected,
-            byte_offset: file_size,
+            byte_offset,
             lines_read,
-        })
+            total_count: self.total_parsed,
+            truncated: self.total_parsed > self.messages.len(),
+        }
     }
 
     /// Parse the entire file from scratch (ignores previous offset).
-    /// Useful for initial load of a conversation.
+    /// Useful for initial load of a conversation. Returns the full message
+    /// list — `parse_full` is intentionally not subject to the in-memory
+    /// retention cap, so user-initiated "open this session" still surfaces
+    /// complete history. Internal state is left primed with only the tail,
+    /// so subsequent `parse_incremental` calls stay bounded.
     pub fn parse_full(&mut self) -> Result<Vec<ParsedMessage>, std::io::Error> {
-        // Reset state
         self.last_offset = 0;
         self.messages.clear();
+        self.total_parsed = 0;
         self.seen_tool_ids.clear();
 
-        let result = self.parse_incremental()?;
-        Ok(result.all_messages)
+        let file = match File::open(&self.file_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let file_size = file.metadata()?.len();
+
+        let mut reader = BufReader::new(file);
+        let mut all = Vec::new();
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break;
+            }
+            let line = line_buf.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if line.contains("<command-name>/clear</command-name>") {
+                all.clear();
+                self.seen_tool_ids.clear();
+                continue;
+            }
+            let json: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "Skipping malformed JSONL line in {}: {}",
+                        self.file_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if let Some(msg) = self.parse_line(&json) {
+                all.push(msg);
+            }
+        }
+
+        self.last_offset = file_size;
+        self.total_parsed = all.len();
+        let tail_start = all.len().saturating_sub(MAX_RETAINED_MESSAGES);
+        self.messages = all[tail_start..].to_vec();
+        self.compact_seen_tool_ids();
+
+        Ok(all)
     }
 
     /// Reset parser state (useful when conversation is cleared or reloaded).
     pub fn reset(&mut self) {
         self.last_offset = 0;
         self.messages.clear();
+        self.total_parsed = 0;
         self.seen_tool_ids.clear();
     }
 
@@ -1015,6 +1111,8 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
     let main_transcript_path = path.to_string_lossy().to_string();
     let session_id = path.file_stem().and_then(|v| v.to_str()).unwrap_or("");
     let mut pending: HashMap<String, PendingSubagentTool> = HashMap::new();
+    let mut pending_codex_spawns: HashMap<String, PendingSubagentTool> = HashMap::new();
+    let mut codex_agents: HashMap<String, TranscriptSubagentInfo> = HashMap::new();
     let mut subagents: Vec<TranscriptSubagentInfo> = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
@@ -1029,6 +1127,49 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
 
         for tool in subagent_tool_uses_from_json(&json) {
             pending.insert(tool.tool_use_id.clone(), tool);
+        }
+        if let Some(tool) = codex_spawn_agent_call_from_json(&json) {
+            pending_codex_spawns.insert(tool.tool_use_id.clone(), tool);
+        }
+        if let Some(subagent) =
+            codex_spawn_agent_output_from_json(&json, &main_transcript_path, &pending_codex_spawns)
+        {
+            codex_agents.insert(subagent.agent_id.clone(), subagent.clone());
+            upsert_transcript_subagent(&mut subagents, subagent);
+        }
+        for completion in codex_subagent_completions_from_json(&json) {
+            let started = codex_agents.get(&completion.agent_id).cloned().or_else(|| {
+                pending_codex_spawns
+                    .values()
+                    .find(|tool| tool.tool_use_id == completion.agent_id)
+                    .map(|tool| {
+                        transcript_subagent_from_pending_codex_tool(
+                            tool,
+                            &main_transcript_path,
+                            None,
+                            None,
+                        )
+                    })
+            });
+            let mut subagent = started.unwrap_or_else(|| TranscriptSubagentInfo {
+                agent_id: completion.agent_id.clone(),
+                launch_tool_use_id: None,
+                name: None,
+                agent_type: None,
+                description: "Subagent".to_string(),
+                transcript_path: Some(main_transcript_path.clone()),
+                agent_transcript_path: None,
+                last_assistant_message: None,
+                started_at: timestamp_seconds(&json),
+                completed_at: None,
+                status: "running".to_string(),
+                tools: Vec::new(),
+            });
+            subagent.status = completion.status;
+            subagent.last_assistant_message = completion.last_assistant_message;
+            subagent.completed_at = Some(timestamp_seconds(&json));
+            codex_agents.insert(subagent.agent_id.clone(), subagent.clone());
+            upsert_transcript_subagent(&mut subagents, subagent);
         }
 
         if let Some(mut subagent) =
@@ -1062,6 +1203,17 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             },
         );
     }
+    for tool in pending_codex_spawns.into_values() {
+        if codex_agents.values().any(|subagent| {
+            subagent.launch_tool_use_id.as_deref() == Some(tool.tool_use_id.as_str())
+        }) {
+            continue;
+        }
+        upsert_transcript_subagent(
+            &mut subagents,
+            transcript_subagent_from_pending_codex_tool(&tool, &main_transcript_path, None, None),
+        );
+    }
 
     subagents.sort_by(|a, b| {
         a.started_at
@@ -1069,6 +1221,199 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             .then(a.agent_id.cmp(&b.agent_id))
     });
     subagents
+}
+
+#[derive(Debug, Clone)]
+struct CodexSubagentCompletion {
+    agent_id: String,
+    status: String,
+    last_assistant_message: Option<String>,
+}
+
+fn codex_spawn_agent_call_from_json(json: &serde_json::Value) -> Option<PendingSubagentTool> {
+    let payload = json.get("payload")?;
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item")
+        || payload.get("type").and_then(|v| v.as_str()) != Some("function_call")
+        || payload.get("name").and_then(|v| v.as_str()) != Some("spawn_agent")
+    {
+        return None;
+    }
+
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let input = codex_arguments_value(payload.get("arguments")).unwrap_or(serde_json::Value::Null);
+    let prompt = string_field(&input, &["message", "prompt", "task", "description"])
+        .unwrap_or_else(|| "Subagent".to_string());
+
+    Some(PendingSubagentTool {
+        tool_use_id: call_id,
+        name: string_field(&input, &["name", "agent_name", "agentName"]),
+        description: string_field(&input, &["description"]).unwrap_or_default(),
+        prompt,
+        agent_type: string_field(
+            &input,
+            &["agent_type", "agentType", "subagent_type", "subagentType"],
+        ),
+        started_at: timestamp_seconds(json),
+    })
+}
+
+fn codex_spawn_agent_output_from_json(
+    json: &serde_json::Value,
+    main_transcript_path: &str,
+    pending: &HashMap<String, PendingSubagentTool>,
+) -> Option<TranscriptSubagentInfo> {
+    let payload = json.get("payload")?;
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item")
+        || payload.get("type").and_then(|v| v.as_str()) != Some("function_call_output")
+    {
+        return None;
+    }
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())?;
+    let pending_tool = pending.get(call_id)?;
+    let output = codex_output_value(payload.get("output"))?;
+    let agent_id = string_field(&output, &["agent_id", "agentId", "agent_path", "agentPath"])?;
+    let name = string_field(&output, &["nickname", "name", "agent_name", "agentName"])
+        .or_else(|| pending_tool.name.clone());
+
+    Some(transcript_subagent_from_pending_codex_tool(
+        pending_tool,
+        main_transcript_path,
+        Some(agent_id),
+        name,
+    ))
+}
+
+fn codex_subagent_completions_from_json(json: &serde_json::Value) -> Vec<CodexSubagentCompletion> {
+    if let Some(payload) = json.get("payload") {
+        if json.get("type").and_then(|v| v.as_str()) == Some("response_item")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("function_call_output")
+        {
+            if let Some(output) = codex_output_value(payload.get("output")) {
+                if let Some(status) = output.get("status") {
+                    return codex_status_map_to_completions(status);
+                }
+            }
+        }
+    }
+
+    codex_raw_user_text_from_json(json)
+        .and_then(|text| {
+            let text = text.trim();
+            let inner = text
+                .strip_prefix("<subagent_notification>")?
+                .strip_suffix("</subagent_notification>")?
+                .trim();
+            serde_json::from_str::<serde_json::Value>(inner).ok()
+        })
+        .and_then(|notification| {
+            let agent_id = string_field(
+                &notification,
+                &["agent_path", "agentPath", "agent_id", "agentId"],
+            )?;
+            let status = notification.get("status")?;
+            codex_status_entry_to_completion(&agent_id, status)
+        })
+        .into_iter()
+        .collect()
+}
+
+fn codex_raw_user_text_from_json(json: &serde_json::Value) -> Option<String> {
+    if json.get("type").and_then(|v| v.as_str()) != Some("response_item") {
+        return None;
+    }
+    let payload = json.get("payload")?;
+    if payload.get("type").and_then(|v| v.as_str()) != Some("message")
+        || payload.get("role").and_then(|v| v.as_str()) != Some("user")
+    {
+        return None;
+    }
+    payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .find_map(|block| {
+            if block.get("type").and_then(|v| v.as_str()) == Some("input_text") {
+                block
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        })
+}
+
+fn codex_status_map_to_completions(status: &serde_json::Value) -> Vec<CodexSubagentCompletion> {
+    status
+        .as_object()
+        .into_iter()
+        .flat_map(|map| map.iter())
+        .filter_map(|(agent_id, value)| codex_status_entry_to_completion(agent_id, value))
+        .collect()
+}
+
+fn codex_status_entry_to_completion(
+    agent_id: &str,
+    value: &serde_json::Value,
+) -> Option<CodexSubagentCompletion> {
+    if let Some(text) = value.get("completed").and_then(|v| v.as_str()) {
+        return Some(CodexSubagentCompletion {
+            agent_id: agent_id.to_string(),
+            status: "completed".to_string(),
+            last_assistant_message: Some(text.to_string()),
+        });
+    }
+    if let Some(text) = value
+        .get("failed")
+        .or_else(|| value.get("error"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(CodexSubagentCompletion {
+            agent_id: agent_id.to_string(),
+            status: "error".to_string(),
+            last_assistant_message: Some(text.to_string()),
+        });
+    }
+    None
+}
+
+fn transcript_subagent_from_pending_codex_tool(
+    tool: &PendingSubagentTool,
+    main_transcript_path: &str,
+    agent_id: Option<String>,
+    name: Option<String>,
+) -> TranscriptSubagentInfo {
+    TranscriptSubagentInfo {
+        agent_id: agent_id.unwrap_or_else(|| tool.tool_use_id.clone()),
+        launch_tool_use_id: Some(tool.tool_use_id.clone()),
+        name,
+        agent_type: tool.agent_type.clone(),
+        description: choose_subagent_description(&tool.description, &tool.prompt),
+        transcript_path: Some(main_transcript_path.to_string()),
+        agent_transcript_path: None,
+        last_assistant_message: None,
+        started_at: tool.started_at,
+        completed_at: None,
+        status: "running".to_string(),
+        tools: Vec::new(),
+    }
+}
+
+fn codex_output_value(output: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    match output? {
+        serde_json::Value::String(raw) => serde_json::from_str(raw).ok(),
+        value @ serde_json::Value::Object(_) => Some(value.clone()),
+        _ => None,
+    }
 }
 
 fn subagent_tool_uses_from_json(json: &serde_json::Value) -> Vec<PendingSubagentTool> {
@@ -1528,6 +1873,7 @@ fn text_from_content(content: &serde_json::Value) -> Option<String> {
 fn useful_text_block(text: &str) -> Option<&str> {
     let trimmed = text.trim();
     if trimmed.is_empty()
+        || trimmed.starts_with("# AGENTS.md instructions")
         || trimmed.starts_with("<command-name>")
         || trimmed.starts_with("<local-command")
         || trimmed.starts_with("<command-message>")
@@ -1979,6 +2325,22 @@ mod tests {
     }
 
     #[test]
+    fn extract_session_title_skips_codex_agent_instructions_context() {
+        let path = write_temp_jsonl(
+            "codex-title-agents-context",
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\nProject rules\n</INSTRUCTIONS>\n<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"创建3个subagent 来计算 1+1  2+2  3+3"}]}}
+"##,
+        );
+
+        assert_eq!(
+            extract_session_title(&path).as_deref(),
+            Some("创建3个subagent 来计算 1+1  2+2  3+3")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_flatten_input_strings() {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), serde_json::json!("ls -la"));
@@ -2311,6 +2673,45 @@ mod tests {
     }
 
     #[test]
+    fn extracts_subagents_from_codex_multi_agent_transcript() {
+        let path = write_temp_jsonl(
+            "codex-subagents",
+            r#"{"timestamp":"2026-05-29T13:34:17.090Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"multi_agent_v1","arguments":"{\"message\":\"请只计算这个表达式并返回最终结果：1+1。\"}","call_id":"call-a"}}
+{"timestamp":"2026-05-29T13:34:17.093Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","namespace":"multi_agent_v1","arguments":"{\"message\":\"请只计算这个表达式并返回最终结果：2+2。\"}","call_id":"call-b"}}
+{"timestamp":"2026-05-29T13:34:17.359Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-a","output":"{\"agent_id\":\"019e73f1-5808-7a91-bfd4-2aadc13d2c77\",\"nickname\":\"Laplace\"}"}}
+{"timestamp":"2026-05-29T13:34:17.505Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-b","output":"{\"agent_id\":\"019e73f1-5899-7342-9013-b3ffa5404cac\",\"nickname\":\"Newton\"}"}}
+{"timestamp":"2026-05-29T13:34:24.662Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait-1","output":"{\"status\":{\"019e73f1-5808-7a91-bfd4-2aadc13d2c77\":{\"completed\":\"2\"}},\"timed_out\":false}"}}
+{"timestamp":"2026-05-29T13:34:28.636Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<subagent_notification>\n{\"agent_path\":\"019e73f1-5899-7342-9013-b3ffa5404cac\",\"status\":{\"completed\":\"4\"}}\n</subagent_notification>"}]}}
+"#,
+        );
+
+        let subagents = extract_subagents_from_transcript(&path);
+
+        assert_eq!(subagents.len(), 2);
+        assert_eq!(
+            subagents[0].agent_id,
+            "019e73f1-5808-7a91-bfd4-2aadc13d2c77"
+        );
+        assert_eq!(subagents[0].launch_tool_use_id.as_deref(), Some("call-a"));
+        assert_eq!(subagents[0].name.as_deref(), Some("Laplace"));
+        assert_eq!(
+            subagents[0].description,
+            "请只计算这个表达式并返回最终结果：1+1。"
+        );
+        assert_eq!(subagents[0].status, "completed");
+        assert_eq!(subagents[0].last_assistant_message.as_deref(), Some("2"));
+        assert_eq!(
+            subagents[1].agent_id,
+            "019e73f1-5899-7342-9013-b3ffa5404cac"
+        );
+        assert_eq!(subagents[1].name.as_deref(), Some("Newton"));
+        assert_eq!(subagents[1].status, "completed");
+        assert_eq!(subagents[1].last_assistant_message.as_deref(), Some("4"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_extract_cache_ttl_info_defaults_to_five_minutes() {
         let path = write_temp_jsonl(
             "cache-ttl-5m",
@@ -2418,5 +2819,92 @@ mod tests {
             }
             _ => panic!("Expected Image block"),
         }
+    }
+
+    fn write_assistant_text_lines(name: &str, count: usize) -> PathBuf {
+        let mut body = String::new();
+        for i in 0..count {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"u{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"m{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        write_temp_jsonl(name, &body)
+    }
+
+    #[test]
+    fn parse_incremental_retains_only_tail_under_cap() {
+        let total = MAX_RETAINED_MESSAGES + 50;
+        let path = write_assistant_text_lines("retain-tail", total);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let result = parser.parse_incremental().expect("parse incremental");
+
+        assert_eq!(result.total_count, total);
+        assert_eq!(result.all_messages.len(), MAX_RETAINED_MESSAGES);
+        assert!(result.truncated);
+
+        let last = result.all_messages.last().expect("tail present");
+        match &last.blocks[0] {
+            MessageBlock::Text { text } => assert_eq!(text, &format!("m{}", total - 1)),
+            other => panic!("unexpected block: {other:?}"),
+        }
+
+        let first = result.all_messages.first().expect("first present");
+        match &first.blocks[0] {
+            MessageBlock::Text { text } => assert_ne!(text, "m0"),
+            other => panic!("unexpected block: {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_full_returns_complete_history_then_primes_tail() {
+        let total = MAX_RETAINED_MESSAGES + 25;
+        let path = write_assistant_text_lines("parse-full", total);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let full = parser.parse_full().expect("parse full");
+        assert_eq!(full.len(), total, "parse_full must return everything");
+
+        let follow_up = parser.parse_incremental().expect("incremental follow-up");
+        assert_eq!(follow_up.total_count, total);
+        assert_eq!(follow_up.all_messages.len(), MAX_RETAINED_MESSAGES);
+        assert!(follow_up.truncated);
+        assert!(
+            follow_up.new_messages.is_empty(),
+            "no new bytes since parse_full"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn clear_command_resets_total_count_and_truncated_flag() {
+        let mut body = String::new();
+        for i in 0..3 {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"a{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"m{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        body.push_str("<command-name>/clear</command-name>\n");
+        for i in 0..2 {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","uuid":"b{i}","message":{{"role":"assistant","content":[{{"type":"text","text":"after{i}"}}]}}}}"#,
+            ));
+            body.push('\n');
+        }
+        let path = write_temp_jsonl("clear-reset", &body);
+
+        let mut parser = ConversationParser::new(path.clone());
+        let result = parser.parse_incremental().expect("parse incremental");
+        assert!(result.clear_detected);
+        assert_eq!(result.all_messages.len(), 2);
+        assert_eq!(result.total_count, 2, "/clear should reset total_parsed");
+        assert!(!result.truncated);
+
+        let _ = std::fs::remove_file(path);
     }
 }

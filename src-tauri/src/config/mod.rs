@@ -51,6 +51,18 @@ pub struct CustomHookInstall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionSilenceRuleConfig {
+    pub id: String,
+    pub kind: String,
+    pub pattern: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuddyDeviceConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -76,6 +88,10 @@ pub struct AppConfig {
     pub show_token_usage: bool,
     #[serde(default = "default_true")]
     pub usage_query_enabled: bool,
+    #[serde(default = "default_true")]
+    pub codex_app_server_sync_enabled: bool,
+    #[serde(default = "default_codex_app_server_sync_interval_seconds")]
+    pub codex_app_server_sync_interval_seconds: u32,
     pub theme: String,
     #[serde(default = "default_language")]
     pub language: String,
@@ -103,6 +119,12 @@ pub struct AppConfig {
     /// Filter out sounds for probe/health-check sessions
     #[serde(default)]
     pub probe_session_filter: bool,
+    /// Drop non-blocking hook events whose cwd contains one of these legacy patterns.
+    #[serde(default)]
+    pub excluded_hook_cwd_substrings: String,
+    /// Drop non-blocking hook events matching a directory or prompt silence rule.
+    #[serde(default)]
+    pub session_silence_rules: Vec<SessionSilenceRuleConfig>,
     /// Suppress sounds during a configured local time window
     #[serde(default)]
     pub quiet_hours_enabled: bool,
@@ -113,6 +135,12 @@ pub struct AppConfig {
     /// Minutes of inactivity before auto-hiding (0 = disabled)
     #[serde(default = "default_idle_timeout_minutes")]
     pub idle_timeout_minutes: u32,
+    /// Leave blocking prompts in the originating terminal when the user is away.
+    #[serde(default)]
+    pub idle_interaction_routing_enabled: bool,
+    /// Minutes of system idle time before idle interaction routing activates.
+    #[serde(default = "default_idle_interaction_routing_minutes")]
+    pub idle_interaction_routing_minutes: u32,
     /// Notification mode: "turnEnd" or "every"
     #[serde(default = "default_notification_mode")]
     pub notification_mode: String,
@@ -170,6 +198,10 @@ pub struct AppConfig {
     /// Active pet identifier (e.g. "codex:dewey", "user:my-cat"). `None` = auto-follow active session's agent.
     #[serde(default)]
     pub island_active_pet_id: Option<String>,
+    /// AUTO 模式下每个 agent 默认显示的宠物。Key 是 adapter.name()（"claude-code"、"codex" ...），
+    /// value 是 pet id（"codex:dewey"）。缺失的 agent 在 AUTO 模式下回退到 registry[0]。
+    #[serde(default)]
+    pub island_agent_pet_map: std::collections::HashMap<String, String>,
     /// Global keyboard shortcut to toggle island visibility
     #[serde(default = "default_global_shortcut")]
     pub global_shortcut: String,
@@ -220,6 +252,10 @@ fn default_idle_timeout_minutes() -> u32 {
     5
 }
 
+fn default_idle_interaction_routing_minutes() -> u32 {
+    5
+}
+
 fn default_quiet_hours_start() -> String {
     "22:00".to_string()
 }
@@ -252,6 +288,13 @@ fn default_island_pet_scale() -> u32 {
     72
 }
 
+const DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS: u32 = 30;
+const LEGACY_CHIME_SOUND_CHOICE: &str = concat!("builtin:", "p", "i", "n", "g");
+
+fn default_codex_app_server_sync_interval_seconds() -> u32 {
+    DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -263,6 +306,8 @@ impl Default for AppConfig {
             completion_timeout: 5,
             show_token_usage: true,
             usage_query_enabled: true,
+            codex_app_server_sync_enabled: true,
+            codex_app_server_sync_interval_seconds: DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS,
             theme: "midnight".to_string(),
             language: default_language(),
             display_id: "primary".to_string(),
@@ -273,10 +318,14 @@ impl Default for AppConfig {
             sound_pack: "synth".to_string(),
             boot_sound_default_migrated: true,
             probe_session_filter: false,
+            excluded_hook_cwd_substrings: String::new(),
+            session_silence_rules: Vec::new(),
             quiet_hours_enabled: false,
             quiet_hours_start: default_quiet_hours_start(),
             quiet_hours_end: default_quiet_hours_end(),
             idle_timeout_minutes: default_idle_timeout_minutes(),
+            idle_interaction_routing_enabled: false,
+            idle_interaction_routing_minutes: default_idle_interaction_routing_minutes(),
             notification_mode: "turnEnd".to_string(),
             engine_instances: Vec::new(),
             custom_hook_installs: Vec::new(),
@@ -288,14 +337,15 @@ impl Default for AppConfig {
             tips_enabled: true,
             pixel_cursor_enabled: true,
             confetti_enabled: true,
-            analytics_enabled: true,
-            analytics_consent_prompt_completed: true,
+            analytics_enabled: false,
+            analytics_consent_prompt_completed: false,
             follow_focus: false,
             island_surface_mode: default_island_surface_mode(),
             pet_vitals_debug_open: false,
             island_pet_scale: default_island_pet_scale(),
             island_pet_window_origin: None,
             island_active_pet_id: None,
+            island_agent_pet_map: std::collections::HashMap::new(),
             global_shortcut: "CommandOrControl+Shift+I".to_string(),
             shortcut_approve: default_shortcut_approve(),
             shortcut_approve_enabled: false,
@@ -347,6 +397,14 @@ impl AppConfig {
         }
 
         self.boot_sound_default_migrated = true;
+    }
+
+    fn migrate_legacy_sound_choices(&mut self) {
+        for rule in self.sound_rules.values_mut() {
+            if rule.sound == LEGACY_CHIME_SOUND_CHOICE {
+                rule.sound = "builtin:chime".to_string();
+            }
+        }
     }
 }
 
@@ -409,6 +467,7 @@ impl ConfigStore {
         let mut config: AppConfig = serde_json::from_str(&content).ok()?;
         config.migrate_permission_shortcut_defaults();
         config.migrate_boot_sound_default();
+        config.migrate_legacy_sound_choices();
         Some(config)
     }
 
@@ -480,8 +539,47 @@ mod tests {
         assert!(!config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
         assert!(config.boot_sound_default_migrated);
+        assert!(!config.analytics_enabled);
+        assert!(!config.analytics_consent_prompt_completed);
+    }
+
+    #[test]
+    fn keeps_legacy_analytics_defaults_when_fields_are_missing() {
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("analyticsEnabled");
+        object.remove("analyticsConsentPromptCompleted");
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize legacy config");
+
         assert!(config.analytics_enabled);
         assert!(config.analytics_consent_prompt_completed);
+    }
+
+    #[test]
+    fn codex_app_server_sync_defaults_true_when_field_is_missing() {
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("codexAppServerSyncEnabled");
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize fresh config");
+
+        assert!(config.codex_app_server_sync_enabled);
+    }
+
+    #[test]
+    fn codex_app_server_sync_preserves_existing_false() {
+        // Users who explicitly turned the feature off (back when default was
+        // false) must keep their choice after we flip the default to true.
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("codexAppServerSyncEnabled".into(), serde_json::Value::Bool(false));
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize stored config");
+
+        assert!(!config.codex_app_server_sync_enabled);
     }
 
     #[test]
@@ -569,5 +667,27 @@ mod tests {
             Some("custom:startup")
         );
         assert!(config.boot_sound_default_migrated);
+    }
+
+    #[test]
+    fn migrates_legacy_chime_sound_choice() {
+        let mut config = AppConfig::default();
+        config.sound_rules.insert(
+            "permission-request".to_string(),
+            super::SoundRuleConfig {
+                enabled: true,
+                sound: concat!("builtin:", "p", "i", "n", "g").to_string(),
+            },
+        );
+
+        config.migrate_legacy_sound_choices();
+
+        assert_eq!(
+            config
+                .sound_rules
+                .get("permission-request")
+                .map(|rule| rule.sound.as_str()),
+            Some("builtin:chime")
+        );
     }
 }

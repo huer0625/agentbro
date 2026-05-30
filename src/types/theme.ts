@@ -24,7 +24,15 @@ export interface ThemeConfig {
   prioritySpeeds: Record<string, number>
   priorityPatterns: Record<string, PixelPattern>
   character?: {
+    /**
+     * Absolute filesystem path to the sprite atlas (or, for legacy callers,
+     * a `data:` URL). The frontend wraps non-data values in `convertFileSrc`
+     * to get an `asset://` URL — see SpriteCanvas::themeToPet.
+     */
     spriteSheet: string
+    /** Synonym of `spriteSheet`; kept for forward compat with future callers. */
+    spriteSheetUrl?: string
+    /** @deprecated Backend no longer emits this; data-URL embedding caused 80+ MB JS heap regressions. */
     spriteSheetDataUrl?: string
     frameSize: { width: number; height: number }
     scale: number

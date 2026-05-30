@@ -10,6 +10,7 @@ import { usePetStore } from '../../../stores/petStore'
 import { SpriteCanvas } from '../../notch/SpriteCanvas'
 import { PRIORITY } from '../../../types/priority'
 import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
+import { MarketSection } from './MarketSection'
 import {
   formatShortcutKeyEvent,
   isRecordableShortcutEvent,
@@ -19,15 +20,17 @@ import {
   listDisplays, isTauri,
   setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
   previewIslandLayout, clearIslandLayoutPreview,
-  setSoundQuietHours, setSoundEventRule, previewSound, importCustomSound as importCustomSoundFile, setCustomSounds,
+  setSoundQuietHours, setSoundEventRule, previewSound, importCustomSound as importCustomSoundFile, importSoundPack, setCustomSounds,
   registerGlobalShortcut, setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
   setActiveBackendTheme, listRemoteHosts, addRemoteHost, removeRemoteHost, connectRemote,
   disconnectRemote, getRemoteStatus, listSshConfigHosts,
   installRemoteAgentHooks, uninstallRemoteAgentHooks, checkRemoteHooks, listRemoteInstallableAgents,
+  probeRemoteHost,
   runHookDoctor, uninstallAllHooks,
   getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
+  setAgentDefaultPet,
 } from '../../../services/tauriApi'
-import type { BackendDisplayInfo, ConnectionStatus, HookDoctorCheck, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, HookDoctorCheck, HookDoctorReport, HookEventStatus, RemoteHost, RemoteProbeReport, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -146,6 +149,17 @@ function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; s
       showTokenUsage: next.showUsageQuota ?? state.showUsageQuota,
     }))
     .catch((err) => console.error('Failed to persist usage query settings:', err))
+}
+
+function persistIdleInteractionRouting(next: Partial<{ enabled: boolean; minutes: number }>) {
+  const state = useConfigStore.getState()
+  getConfig()
+    .then((backendConfig) => updateBackendConfig({
+      ...backendConfig,
+      idleInteractionRoutingEnabled: next.enabled ?? state.idleInteractionRoutingEnabled,
+      idleInteractionRoutingMinutes: next.minutes ?? state.idleInteractionRoutingMinutes,
+    }))
+    .catch((err) => console.error('Failed to persist idle interaction routing:', err))
 }
 
 function SurfaceModeSegmentedControl({
@@ -510,6 +524,10 @@ interface IslandSectionProps {
 export function IslandSection({ activeView }: IslandSectionProps) {
   const { t } = useTranslation()
 
+  if (activeView === 'market') {
+    return <MarketSection />
+  }
+
   return (
     <SettingSection className="setting-section--compact island-settings-section" title={t('settings.island.title')} description={t('settings.island.desc')}>
       {activeView === 'overview' && <OverviewTab />}
@@ -669,6 +687,13 @@ function BehaviorTab() {
     { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
     { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
   ]
+  const idleInteractionRoutingOptions = [
+    { value: '1', label: t('settings.idleTimeoutMinutes', { minutes: 1 }) },
+    { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
+    { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
+    { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
+    { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
+  ]
 
   return (
     <>
@@ -731,6 +756,26 @@ function BehaviorTab() {
           <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
             onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
         </SettingRow>
+        <SettingRow label={t('settings.idleInteractionRouting')} description={t('settings.idleInteractionRoutingDesc')}>
+          <Toggle checked={config.idleInteractionRoutingEnabled} onChange={(v) => {
+            config.updateConfig('idleInteractionRoutingEnabled', v)
+            persistIdleInteractionRouting({ enabled: v })
+          }} />
+        </SettingRow>
+        {config.idleInteractionRoutingEnabled && (
+          <SettingRow label={t('settings.idleInteractionRoutingMinutes')} description={t('settings.idleInteractionRoutingMinutesDesc')}>
+            <Dropdown
+              value={String(config.idleInteractionRoutingMinutes)}
+              options={idleInteractionRoutingOptions}
+              onChange={(v) => {
+                const minutes = Number(v)
+                config.updateConfig('idleInteractionRoutingMinutes', minutes)
+                persistIdleInteractionRouting({ minutes })
+              }}
+              minWidth={130}
+            />
+          </SettingRow>
+        )}
         <SettingRow label={t('settings.sessionTimeout')} description={t('settings.sessionTimeoutDesc')}>
           <Slider value={config.sessionTimeoutMinutes} min={1} max={120} step={1}
             onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
@@ -1171,9 +1216,10 @@ interface PetPickerProps {
   onSelect: (id: string | null) => void
   autoLabel: string
   emptyHint: string
+  hideAutoCard?: boolean
 }
 
-function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint }: PetPickerProps) {
+function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint, hideAutoCard }: PetPickerProps) {
   const isAuto = activePetId === null
 
   const groups = registry.reduce<Map<string, typeof registry>>((acc, pet) => {
@@ -1183,24 +1229,30 @@ function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint }: Pe
     acc.set(key, bucket)
     return acc
   }, new Map())
-  const orderedProviders = ['codex', 'user', ...Array.from(groups.keys()).filter((k) => k !== 'codex' && k !== 'user')]
+  const preferredProviders = ['agentbro', 'codex', 'user']
+  const orderedProviders = [
+    ...preferredProviders,
+    ...Array.from(groups.keys()).filter((k) => !preferredProviders.includes(k)),
+  ]
 
   return (
     <div className="pet-picker">
-      <div className="pet-picker__group">
-        <div className="pet-picker__group-label">auto</div>
-        <div className="pet-picker__grid">
-          <button
-            type="button"
-            className={`pet-picker__card pet-picker__card--auto ${isAuto ? 'pet-picker__card--active' : ''}`}
-            aria-pressed={isAuto}
-            onClick={() => onSelect(null)}
-          >
-            <div className="pet-picker__thumb pet-picker__thumb--auto">A</div>
-            <div className="pet-picker__name">{autoLabel}</div>
-          </button>
+      {!hideAutoCard && (
+        <div className="pet-picker__group">
+          <div className="pet-picker__group-label">auto</div>
+          <div className="pet-picker__grid">
+            <button
+              type="button"
+              className={`pet-picker__card pet-picker__card--auto ${isAuto ? 'pet-picker__card--active' : ''}`}
+              aria-pressed={isAuto}
+              onClick={() => onSelect(null)}
+            >
+              <div className="pet-picker__thumb pet-picker__thumb--auto">A</div>
+              <div className="pet-picker__name">{autoLabel}</div>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {registry.length === 0 ? (
         <div className="pet-picker__empty">{emptyHint}</div>
@@ -1243,10 +1295,92 @@ function PetPicker({ registry, activePetId, onSelect, autoLabel, emptyHint }: Pe
   )
 }
 
+// ── Agent Default Pet Button ──
+
+interface AgentDefaultPetButtonProps {
+  agentName: string
+  registry: ReturnType<typeof usePetStore.getState>['registry']
+  map: Record<string, string>
+  onChange: (petId: string | null) => void
+}
+
+function AgentDefaultPetButton({ agentName, registry, map, onChange }: AgentDefaultPetButtonProps) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const currentPetId = map[agentName] ?? null
+  const currentPet = currentPetId ? registry.find((p) => p.id === currentPetId) : null
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const tooltip = currentPet
+    ? `${t('settings.defaultPetForAgent', { defaultValue: '默认宠物' })}: ${currentPet.displayName}`
+    : t('settings.defaultPetTooltip', { defaultValue: 'AUTO 模式下这个 Agent 显示的宠物' })
+
+  return (
+    <div className="agent-default-pet" ref={wrapRef}>
+      <button
+        type="button"
+        className={`agent-default-pet__btn ${open ? 'agent-default-pet__btn--open' : ''}`}
+        title={tooltip}
+        onClick={() => setOpen(!open)}
+      >
+        {currentPet ? (
+          <SpriteCanvas
+            pet={currentPet}
+            size={28}
+            priority={PRIORITY.idle}
+            enableIdleBehaviors={false}
+            animationOverride="idle"
+          />
+        ) : (
+          <span className="agent-default-pet__placeholder">A</span>
+        )}
+      </button>
+      {open && (
+        <div className="agent-default-pet__popover" role="dialog">
+          <div className="agent-default-pet__popover-header">
+            <div className="agent-default-pet__popover-title">
+              {t('settings.defaultPetForAgent', { defaultValue: '默认宠物' })}
+            </div>
+            <button
+              type="button"
+              className="agent-default-pet__clear"
+              onClick={() => { onChange(null); setOpen(false) }}
+              disabled={!currentPetId}
+            >
+              {t('settings.defaultPetClear', { defaultValue: '跟随注册表默认' })}
+            </button>
+          </div>
+          <PetPicker
+            registry={registry}
+            activePetId={currentPetId}
+            onSelect={(id) => { onChange(id); setOpen(false) }}
+            autoLabel=""
+            emptyHint={t('settings.petInstallHint', {
+              defaultValue: '未检测到 Codex.app 的内置宠物。安装 Codex 或在 ~/.codex/pets 添加自定义。',
+            })}
+            hideAutoCard
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Sound Tab ──
 function SoundTab() {
   const { t } = useTranslation()
   const config = useConfigStore()
+  const [soundImportNotice, setSoundImportNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
+  const [soundPackImporting, setSoundPackImporting] = useState(false)
   const sessionEvents = config.soundEvents.filter((e) => e.group === 'session')
   const interactionEvents = config.soundEvents.filter((e) => e.group === 'interaction')
   const systemEvents = config.soundEvents.filter((e) => e.group === 'system')
@@ -1267,7 +1401,7 @@ function SoundTab() {
     { value: 'builtin:hey-bro', label: 'Hey Bro' },
     { value: 'builtin:hero', label: 'Hero' },
     { value: 'builtin:glass', label: 'Glass' },
-    { value: 'builtin:ping', label: 'Ping' },
+    { value: 'builtin:chime', label: 'Chime' },
     { value: 'builtin:pop', label: 'Pop' },
     { value: 'builtin:submarine', label: 'Submarine' },
     { value: 'builtin:basso', label: 'Basso' },
@@ -1332,6 +1466,57 @@ function SoundTab() {
       setCustomSounds(next).catch((e) => console.error('Failed to set custom sounds:', e))
     } catch (e) {
       console.error('Failed to import custom sound:', e)
+      setSoundImportNotice({ tone: 'error', message: readableError(e) })
+    }
+  }
+  const importOpenPeonSoundPack = async () => {
+    let selected: string | null = null
+    if (isTauri()) {
+      const result = await openDialog({
+        directory: true,
+        multiple: false,
+      })
+      selected = Array.isArray(result) ? result[0] ?? null : result
+    } else {
+      selected = window.prompt('Sound pack directory')?.trim() || null
+    }
+    if (!selected) return
+    setSoundPackImporting(true)
+    setSoundImportNotice(null)
+    try {
+      const result = await importSoundPack(selected)
+      const importedSounds = result.importedSounds.map(({ id, name, path, dataUrl }) => ({ id, name, path, dataUrl }))
+      const nextRules = { ...config.soundRules }
+      const nextEvents = config.soundEvents.map((event) => {
+        const applied = result.appliedRules.find((rule) => rule.eventId === event.id)
+        if (!applied) return event
+        const current = resolveRule(event.id)
+        nextRules[event.id] = { ...current, sound: `custom:${applied.soundId}` as SoundChoice }
+        return { ...event, enabled: nextRules[event.id].enabled }
+      })
+      config.updateConfig('customSounds', [...config.customSounds, ...importedSounds])
+      config.updateConfig('soundRules', nextRules)
+      config.updateConfig('soundEvents', nextEvents)
+      config.updateConfig('soundPack', 'custom')
+      setSoundImportNotice({
+        tone: 'success',
+        message: t('settings.soundPackImported', {
+          defaultValue: 'Imported {{count}} sounds from {{name}}',
+          count: result.importedSounds.length,
+          name: result.displayName,
+        }),
+      })
+    } catch (e) {
+      console.error('Failed to import sound pack:', e)
+      setSoundImportNotice({
+        tone: 'error',
+        message: t('settings.soundPackImportFailed', {
+          defaultValue: 'Sound pack import failed: {{message}}',
+          message: readableError(e),
+        }),
+      })
+    } finally {
+      setSoundPackImporting(false)
     }
   }
   const deleteCustomSound = (soundId: string) => {
@@ -1412,7 +1597,17 @@ function SoundTab() {
             </button>
           </div>
         ))}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 8 }}>
+        {soundImportNotice && (
+          <div className={`sound-import-status sound-import-status--${soundImportNotice.tone}`} role={soundImportNotice.tone === 'error' ? 'alert' : 'status'}>
+            {soundImportNotice.message}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 8 }}>
+          <GlassButton variant="secondary" onClick={importOpenPeonSoundPack} disabled={soundPackImporting}>
+            {soundPackImporting
+              ? t('settings.importing', { defaultValue: 'Importing...' })
+              : t('settings.importSoundPack', { defaultValue: 'Import sound pack' })}
+          </GlassButton>
           <GlassButton variant="secondary" onClick={importCustomSound}>
             {t('settings.add', { defaultValue: 'Add' })}
           </GlassButton>
@@ -1677,6 +1872,8 @@ function ShortcutsTab() {
 function IntegrationTab() {
   const { t } = useTranslation()
   const config = useConfigStore()
+  const petRegistry = usePetStore((s) => s.registry)
+  const loadPetRegistry = usePetStore((s) => s.loadRegistry)
   const [tools, setTools] = useState<ToolHookStatus[]>([])
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({})
@@ -1750,6 +1947,10 @@ function IntegrationTab() {
     const timer = window.setTimeout(() => { fetchUsageProviders({ live: false, showLoading: false }) }, 0)
     return () => window.clearTimeout(timer)
   }, [fetchUsageProviders, config.islandExternalEnabled])
+
+  useEffect(() => {
+    if (petRegistry.length === 0) void loadPetRegistry()
+  }, [petRegistry.length, loadPetRegistry])
 
   const detectNow = async () => {
     if (!isTauri()) {
@@ -1971,7 +2172,9 @@ function IntegrationTab() {
     if (typeof result === 'string') setCustomInstallDir(result)
   }
 
-  const visibleTools = config.islandExternalEnabled ? tools : []
+  const visibleTools = config.islandExternalEnabled
+    ? [...tools].sort((a, b) => Number(Boolean(b.isCustom)) - Number(Boolean(a.isCustom)))
+    : []
   const accountUsageProviders = usageProviders
     .filter((provider) =>
       ACCOUNT_USAGE_PROVIDER_RANK.has(provider.provider)
@@ -2080,12 +2283,33 @@ function IntegrationTab() {
                 <PlatformIcon agentId={toolId} displayName={tool.displayName || tool.name} size={30} />
               </div>
               <div className="hook-tool-row__info">
-                <div className="hook-tool-row__name">{tool.displayName || tool.name}</div>
+                <div className="hook-tool-row__name">
+                  {tool.displayName || tool.name}
+                  {tool.isCustom && (
+                    <span className="hook-tool-row__custom-badge">
+                      {t('settings.customTag', { defaultValue: '自定义' })}
+                    </span>
+                  )}
+                </div>
                 <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>
               </div>
               <div className={`hook-status-badge hook-status-badge--${installStatus}`}>
                 {hookInstallStatusLabel(t, installStatus)}
               </div>
+              {!tool.isCustom && (
+                <AgentDefaultPetButton
+                  agentName={toolId}
+                  registry={petRegistry}
+                  map={config.islandAgentPetMap}
+                  onChange={(petId) => {
+                    const next = { ...config.islandAgentPetMap }
+                    if (petId) next[toolId] = petId
+                    else delete next[toolId]
+                    config.updateConfig('islandAgentPetMap', next)
+                    setAgentDefaultPet(toolId, petId).catch((err) => console.error('setAgentDefaultPet failed:', err))
+                  }}
+                />
+              )}
               <div className="hook-tool-row__actions">
                 {canConfigureHook && (
                   <GlassButton variant="ghost" onClick={() => setConfiguringTool(tool)} disabled={busy}>
@@ -2113,6 +2337,58 @@ function IntegrationTab() {
             </div>
           )
         })}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
+        {!addingCustom ? (
+          <button className="engine-add-btn" onClick={() => { setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName(''); setAddingCustom(true) }}>
+            + {t('settings.addCustomHookConfig', { defaultValue: '添加自定义配置' })}
+          </button>
+        ) : (
+          <div className="engine-add-form">
+            <div className="engine-add-form__row">
+              <label>{t('settings.customHookName', { defaultValue: '名称' })}</label>
+              <GlassInput
+                placeholder={t('settings.customHookNamePlaceholder', { defaultValue: '例如 My Custom Engine' })}
+                value={customName}
+                onChange={(e) => setCustomName((e.target as HTMLInputElement).value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            <div className="engine-add-form__row">
+              <label>{t('settings.selectApp', { defaultValue: '选择应用' })}</label>
+              <select
+                className="glass-input"
+                value={selectedCustomProfileId}
+                onChange={(e) => setSelectedCustomProfileId(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                <option value="">{t('settings.selectPlaceholder', { defaultValue: '请选择...' })}</option>
+                {customProfileOptions.map((profile) => (
+                  <option key={profile.id} value={profile.id}>{profile.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="engine-add-form__row">
+              <label>{t('settings.installDir', { defaultValue: '安装目录' })}</label>
+              <div className="engine-add-form__path-input">
+                <GlassInput
+                  placeholder={t('settings.installDirPlaceholder', { defaultValue: '例如 /path/to/.claude' })}
+                  value={customInstallDir}
+                  onChange={(e) => setCustomInstallDir((e.target as HTMLInputElement).value)}
+                  style={{ flex: 1 }}
+                />
+                <GlassButton variant="secondary" onClick={selectCustomInstallDir}>
+                  {t('settings.selectDir', { defaultValue: '选择目录' })}
+                </GlassButton>
+              </div>
+            </div>
+            <div className="engine-add-form__actions">
+              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName('') }}>{t('settings.cancel')}</button>
+              <button className="engine-add-form__submit" disabled={!selectedCustomProfileId || !customInstallDir.trim()} onClick={addCustomHook}>{t('settings.install')}</button>
+            </div>
+          </div>
+        )}
       </SettingGroup>
 
       <SettingGroup
@@ -2170,57 +2446,6 @@ function IntegrationTab() {
         ))}
       </SettingGroup>
 
-      <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
-        {!addingCustom ? (
-          <button className="engine-add-btn" onClick={() => { setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName(''); setAddingCustom(true) }}>
-            + {t('settings.addCustomHookConfig', { defaultValue: '添加自定义配置' })}
-          </button>
-        ) : (
-          <div className="engine-add-form">
-            <div className="engine-add-form__row">
-              <label>{t('settings.customHookName', { defaultValue: '名称' })}</label>
-              <GlassInput
-                placeholder={t('settings.customHookNamePlaceholder', { defaultValue: '例如 My Custom Engine' })}
-                value={customName}
-                onChange={(e) => setCustomName((e.target as HTMLInputElement).value)}
-                style={{ flex: 1 }}
-              />
-            </div>
-            <div className="engine-add-form__row">
-              <label>{t('settings.selectApp', { defaultValue: '选择应用' })}</label>
-              <select
-                className="glass-input"
-                value={selectedCustomProfileId}
-                onChange={(e) => setSelectedCustomProfileId(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="">{t('settings.selectPlaceholder', { defaultValue: '请选择...' })}</option>
-                {customProfileOptions.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="engine-add-form__row">
-              <label>{t('settings.installDir', { defaultValue: '安装目录' })}</label>
-              <div className="engine-add-form__path-input">
-                <GlassInput
-                  placeholder={t('settings.installDirPlaceholder', { defaultValue: '例如 /path/to/.claude' })}
-                  value={customInstallDir}
-                  onChange={(e) => setCustomInstallDir((e.target as HTMLInputElement).value)}
-                  style={{ flex: 1 }}
-                />
-                <GlassButton variant="secondary" onClick={selectCustomInstallDir}>
-                  {t('settings.selectDir', { defaultValue: '选择目录' })}
-                </GlassButton>
-              </div>
-            </div>
-            <div className="engine-add-form__actions">
-              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName('') }}>{t('settings.cancel')}</button>
-              <button className="engine-add-form__submit" disabled={!selectedCustomProfileId || !customInstallDir.trim()} onClick={addCustomHook}>{t('settings.install')}</button>
-            </div>
-          </div>
-        )}
-      </SettingGroup>
       {configuringTool && (
         <HookEventConfigDialog
           key={hookToolId(configuringTool)}
@@ -2234,7 +2459,7 @@ function IntegrationTab() {
   )
 }
 
-type RemoteActionKind = 'connect' | 'disconnect' | 'installHooks' | 'uninstallHooks' | 'remove' | 'import'
+type RemoteActionKind = 'connect' | 'disconnect' | 'installHooks' | 'uninstallHooks' | 'remove' | 'import' | 'probe'
 
 // ── Remote Tab ──
 function RemoteTab() {
@@ -2250,6 +2475,7 @@ function RemoteTab() {
   const [remoteNotices, setRemoteNotices] = useState<Record<string, { type: 'success' | 'error'; message: string }>>({})
   const [installableAgents, setInstallableAgents] = useState<string[]>([])
   const [remoteHookStatuses, setRemoteHookStatuses] = useState<Record<string, string[]>>({})
+  const [remoteProbeReports, setRemoteProbeReports] = useState<Record<string, RemoteProbeReport>>({})
   const [hooksPanelHost, setHooksPanelHost] = useState<string | null>(null)
   const [hookBusy, setHookBusy] = useState<{ hostId: string; agentId: string } | null>(null)
 
@@ -2413,6 +2639,33 @@ function RemoteTab() {
     }
   }
 
+  async function runRemoteProbe(hostId: string) {
+    setRemoteBusyAction({ id: hostId, action: 'probe' })
+    setRemoteNotices((prev) => { const next = { ...prev }; delete next[hostId]; return next })
+    try {
+      const report = await probeRemoteHost(hostId)
+      setRemoteProbeReports((prev) => ({ ...prev, [hostId]: report }))
+      setRemoteNotices((prev) => ({
+        ...prev,
+        [hostId]: {
+          type: report.ok ? 'success' : 'error',
+          message: report.summary,
+        },
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setRemoteNotices((prev) => ({
+        ...prev,
+        [hostId]: {
+          type: 'error',
+          message: message || t('settings.remoteProbeFailed', { defaultValue: '诊断失败' }),
+        },
+      }))
+    } finally {
+      setRemoteBusyAction(null)
+    }
+  }
+
   const displayedRemoteHosts = isTauri() ? remoteHosts : config.sshHosts.map((host) => ({
     id: host.id,
     name: host.name,
@@ -2520,6 +2773,16 @@ function RemoteTab() {
                         <span className="ssh-hook-badge">{remoteHookStatuses[host.id].length}</span>
                       )}
                     </button>
+                    <button
+                      type="button"
+                      className={`settings-mini-button${remoteProbeReports[host.id] ? ' settings-mini-button--active' : ''}`}
+                      disabled={busy}
+                      onClick={() => runRemoteProbe(host.id)}
+                    >
+                      {actionForHost === 'probe'
+                        ? t('settings.remoteProbeRunning', { defaultValue: '诊断中...' })
+                        : t('settings.remoteProbe', { defaultValue: '诊断' })}
+                    </button>
                   </>
                 )}
                 <button
@@ -2542,6 +2805,28 @@ function RemoteTab() {
               {remoteNotices[host.id] && (
                 <div className={`ssh-host-card__notice ssh-host-card__notice--${remoteNotices[host.id].type}`}>
                   {remoteNotices[host.id].message}
+                </div>
+              )}
+              {remoteProbeReports[host.id] && (
+                <div className="ssh-probe-panel">
+                  <div className="ssh-hooks-panel__header">
+                    {t('settings.remoteProbeSummary', { defaultValue: '远程诊断' })}: {remoteProbeReports[host.id].summary}
+                  </div>
+                  <div className="ssh-probe-panel__list">
+                    {remoteProbeReports[host.id].checks.length === 0 ? (
+                      <div className="ssh-empty-state__text">
+                        {t('settings.remoteProbeNoData', { defaultValue: '暂无诊断数据。' })}
+                      </div>
+                    ) : (
+                      remoteProbeReports[host.id].checks.map((check) => (
+                        <div className="ssh-probe-panel__row" key={check.id}>
+                          <span className={`ssh-probe-panel__status ssh-probe-panel__status--${check.status}`} />
+                          <span className="ssh-probe-panel__label">{check.label}</span>
+                          <span className="ssh-probe-panel__detail">{check.detail}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               )}
               {hooksPanelHost === host.id && isConnected && (
