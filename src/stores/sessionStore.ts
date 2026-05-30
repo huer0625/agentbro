@@ -39,6 +39,8 @@ interface SessionStore {
   // Session mute
   mutedSessions: Record<string, number>  // sessionId → mute expiry timestamp
   wakeSilencedUntil: number
+  // App-level capability flags pulled from the Rust backend.
+  codexAppServerLive: boolean
   // actions
   updateSession: (event: AgentEvent) => void
   setActiveSession: (id: string | null) => void
@@ -63,6 +65,7 @@ interface SessionStore {
   isSessionMuted: (id: string) => boolean
   setWakeSilencedUntil: (timestamp: number) => void
   isWakeSilenced: () => boolean
+  setCodexAppServerLive: (live: boolean) => void
   // Follow-focus
   focusedTerminal: string | null
   setFocusedTerminal: (name: string | null) => void
@@ -380,6 +383,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
   activeOverlay: null,
   mutedSessions: {},
   wakeSilencedUntil: 0,
+  codexAppServerLive: false,
   focusedTerminal: null,
 
   updateSession: (event: AgentEvent) => {
@@ -1221,6 +1225,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
   isWakeSilenced: (): boolean => {
     return Date.now() < useSessionStore.getState().wakeSilencedUntil
+  },
+
+  setCodexAppServerLive: (live) => {
+    set({ codexAppServerLive: live })
   },
 
   setFocusedTerminal: (name) => {

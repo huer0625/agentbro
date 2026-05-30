@@ -8,7 +8,6 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react'
-import type { Monitor } from '@tauri-apps/api/window'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { PRIORITY, computePriority, type Priority } from '../../types/priority'
 import { useSessionStore, selectActiveOverlay } from '../../stores/sessionStore'
@@ -45,10 +44,19 @@ import { OverlayCompletionCard } from '../overlay/OverlayCompletionCard'
 import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { usePetSummon } from './usePetSummon'
 import { buildTips, shuffleTips } from './tips'
+import {
+  petStageAnchorFromWindow,
+  DEFAULT_PET_STAGE_ANCHOR,
+  PET_STAGE_WIDTH,
+  PET_STAGE_HEIGHT,
+  PET_SLOT_SIZE,
+  PET_ANCHOR_RIGHT,
+  PET_ANCHOR_BOTTOM,
+  type PetStageAnchor,
+} from './petStageAnchor'
 import './PetSurface.css'
 
 type DragDirection = 'left' | 'right' | 'running' | null
-type PetStageAnchor = { x: 'left' | 'right'; y: 'top' | 'bottom' }
 type PetPanelHoverHandlers = {
   onPointerEnter: () => void
   onPointerLeave: () => void
@@ -67,11 +75,6 @@ interface PetSurfaceProps {
 const PET_DRAG_THRESHOLD = 4
 const CODEX_PET_DONE_ANIMATION_MS = 1800
 const PET_PANEL_AUTO_HIDE_DELAY_MS = 650
-const PET_STAGE_WIDTH = 820
-const PET_STAGE_HEIGHT = 360
-const PET_SLOT_SIZE = 160
-const PET_ANCHOR_RIGHT = 132
-const PET_ANCHOR_BOTTOM = 44
 const PET_PANEL_GAP = 14
 const PET_PANEL_MARGIN = 8
 const PET_TIP_WIDTH = 260
@@ -90,7 +93,6 @@ const PET_IDLE_TIP_DELAY_MS = 1200
 const PET_IDLE_TIP_VISIBLE_MS = 8000
 const PET_IDLE_TIP_INTERVAL_MS = 15000
 const PET_IDLE_TIPS_REQUIRE_QUIET = true
-const DEFAULT_PET_STAGE_ANCHOR: PetStageAnchor = { x: 'right', y: 'bottom' }
 
 function clearPermissionAfter(sessionId: string, work: Promise<void>) {
   work
@@ -161,7 +163,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   )
   const visibleActiveOverlay = activeOverlay && activeOverlay.id !== suppressedOverlayId ? activeOverlay : null
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
-  const stageAnchor = usePetStageAnchor(!hidden, displayScale)
+  const [stageAnchor, setStageAnchor] = usePetStageAnchor(!hidden, displayScale, dragging)
   const spriteSize = Math.round(PET_SLOT_SIZE * displayScale)
   const actionCount = useMemo(() => getPetActionCount(sessions, visibleActiveOverlay), [sessions, visibleActiveOverlay])
   const activeSessionCount = useMemo(
@@ -423,20 +425,26 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       dragPointerIdRef.current = null
       dragCandidateRef.current = null
       dragLastScreenXRef.current = null
-      setDragging(false)
       draggingRef.current = false
       setDragDirection(null)
       try {
-        const origin = await endPetDrag()
-        if (origin) updateConfig('islandPetWindowOrigin', origin)
+        const result = await endPetDrag()
+        if (result) {
+          setStageAnchor({
+            x: result.anchorLeft ? 'left' : 'right',
+            y: result.anchorTop ? 'top' : 'bottom',
+          })
+          updateConfig('islandPetWindowOrigin', result.origin)
+        }
       } catch (err) {
         console.warn('[PetSurface] endPetDrag:', err)
       }
+      setDragging(false)
       window.setTimeout(() => {
         suppressClickRef.current = false
       }, 0)
     },
-    [updateConfig],
+    [updateConfig, setStageAnchor],
   )
 
   useEffect(() => {
@@ -553,7 +561,8 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     } else {
       updateDragDirection(signedDx, setDragDirection)
     }
-    startPetDrag()
+    const dpr = window.devicePixelRatio || 1
+    startPetDrag(event.screenX * dpr, event.screenY * dpr)
       .then((started) => {
         if (!started) {
           console.warn('[PetSurface] startPetDrag returned false - Rust drag loop did not arm')
@@ -1238,13 +1247,16 @@ function sessionIsQuiet(session: SessionState): boolean {
   return session.phase === 'idle' || session.phase === 'done' || session.phase === 'ready'
 }
 
-function usePetStageAnchor(active: boolean, scale: number): PetStageAnchor {
+function usePetStageAnchor(active: boolean, scale: number, frozen: boolean): [PetStageAnchor, (a: PetStageAnchor) => void] {
   const [anchor, setAnchor] = useState<PetStageAnchor>(DEFAULT_PET_STAGE_ANCHOR)
 
   useEffect(() => {
-    if (!active || !isTauri()) {
-      const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
-      return () => window.clearTimeout(timer)
+    if (!active || !isTauri() || frozen) {
+      if (!active || !isTauri()) {
+        const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
+        return () => window.clearTimeout(timer)
+      }
+      return
     }
 
     let cancelled = false
@@ -1276,24 +1288,11 @@ function usePetStageAnchor(active: boolean, scale: number): PetStageAnchor {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [active, scale])
+  }, [active, scale, frozen])
 
-  return anchor
+  return [anchor, setAnchor]
 }
 
-function petStageAnchorFromWindow(windowX: number, windowY: number, monitor: Monitor, scale: number): PetStageAnchor {
-  const ratio = Math.max(1, monitor.scaleFactor || window.devicePixelRatio || 1)
-  const petSize = PET_SLOT_SIZE * scale
-  const defaultPetCenterX = windowX + (PET_STAGE_WIDTH - PET_ANCHOR_RIGHT - petSize / 2) * ratio
-  const defaultPetCenterY = windowY + (PET_STAGE_HEIGHT - PET_ANCHOR_BOTTOM - petSize / 2) * ratio
-  const workArea = monitor.workArea ?? { position: monitor.position, size: monitor.size }
-  const midpointX = workArea.position.x + workArea.size.width / 2
-  const midpointY = workArea.position.y + workArea.size.height / 2
-  return {
-    x: defaultPetCenterX < midpointX ? 'left' : 'right',
-    y: defaultPetCenterY < midpointY ? 'top' : 'bottom',
-  }
-}
 
 function usePetIdleTip(active: boolean, tips: string[]): string | null {
   const [tip, setTip] = useState<string | null>(null)

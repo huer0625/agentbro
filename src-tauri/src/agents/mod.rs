@@ -5,6 +5,7 @@ pub mod cline;
 pub mod codebuddy;
 pub mod codebuddycn;
 pub mod codex;
+pub mod codex_app_server;
 pub mod copilot;
 pub mod cursor;
 pub mod cursor_cli;

@@ -274,3 +274,38 @@
   background: rgba(123, 120, 255, 0.15);
   color: var(--island-accent, #7b78ff);
 }
+
+.approval-bar__hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--island-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--island-border);
+  color: var(--island-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.approval-bar__hint-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.approval-bar__hint-cta {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--island-border);
+  background: transparent;
+  color: var(--island-accent, #7b78ff);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease-out;
+}
+
+.approval-bar__hint-cta:hover {
+  background: rgba(123, 120, 255, 0.12);
+}

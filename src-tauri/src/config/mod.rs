@@ -88,7 +88,7 @@ pub struct AppConfig {
     pub show_token_usage: bool,
     #[serde(default = "default_true")]
     pub usage_query_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub codex_app_server_sync_enabled: bool,
     #[serde(default = "default_codex_app_server_sync_interval_seconds")]
     pub codex_app_server_sync_interval_seconds: u32,
@@ -306,7 +306,7 @@ impl Default for AppConfig {
             completion_timeout: 5,
             show_token_usage: true,
             usage_query_enabled: true,
-            codex_app_server_sync_enabled: false,
+            codex_app_server_sync_enabled: true,
             codex_app_server_sync_interval_seconds: DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS,
             theme: "midnight".to_string(),
             language: default_language(),
@@ -554,6 +554,32 @@ mod tests {
 
         assert!(config.analytics_enabled);
         assert!(config.analytics_consent_prompt_completed);
+    }
+
+    #[test]
+    fn codex_app_server_sync_defaults_true_when_field_is_missing() {
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("codexAppServerSyncEnabled");
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize fresh config");
+
+        assert!(config.codex_app_server_sync_enabled);
+    }
+
+    #[test]
+    fn codex_app_server_sync_preserves_existing_false() {
+        // Users who explicitly turned the feature off (back when default was
+        // false) must keep their choice after we flip the default to true.
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("codexAppServerSyncEnabled".into(), serde_json::Value::Bool(false));
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize stored config");
+
+        assert!(!config.codex_app_server_sync_enabled);
     }
 
     #[test]

@@ -38,6 +38,15 @@ use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command as TokioCommand};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
+use futures_util::{SinkExt, StreamExt};
+use futures_util::stream::{SplitSink, SplitStream};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+type CodexWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type CodexWsSink = SplitSink<CodexWsStream, Message>;
+type CodexWsSource = SplitStream<CodexWsStream>;
 
 /// Shared app state accessible from Tauri commands
 pub struct AppState {
@@ -63,6 +72,20 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct CodexAppServerBridge {
     tx: Arc<TokioMutex<Option<mpsc::UnboundedSender<CodexAppServerCommand>>>>,
+}
+
+/// Global handle to the live Codex app-server bridge. Set once during app
+/// setup so utility paths (rate-limit fetch, future ad-hoc RPC calls) can
+/// reuse the persistent WebSocket connection without threading the bridge
+/// through every caller.
+static CODEX_APP_SERVER_BRIDGE_HANDLE: OnceLock<Arc<CodexAppServerBridge>> = OnceLock::new();
+
+pub fn register_codex_app_server_bridge(bridge: Arc<CodexAppServerBridge>) {
+    let _ = CODEX_APP_SERVER_BRIDGE_HANDLE.set(bridge);
+}
+
+fn global_codex_app_server_bridge() -> Option<Arc<CodexAppServerBridge>> {
+    CODEX_APP_SERVER_BRIDGE_HANDLE.get().cloned()
 }
 
 impl CodexAppServerBridge {
@@ -127,6 +150,57 @@ impl CodexAppServerBridge {
             .await
             .map_err(|_| "Codex app-server monitor stopped before responding".to_string())?
     }
+
+    /// Ask the live app-server for the latest account rate limits. Returns
+    /// `Ok(None)` when the bridge isn't attached so the caller can fall back
+    /// to a one-off stdio spawn.
+    pub async fn fetch_rate_limits(&self) -> Result<Option<serde_json::Value>, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = CodexAppServerCommand::RateLimits { reply: reply_tx };
+        let Some(tx) = self.tx.lock().await.clone() else {
+            return Ok(None);
+        };
+        if tx.send(command).is_err() {
+            self.detach().await;
+            return Ok(None);
+        }
+        let value = reply_rx
+            .await
+            .map_err(|_| "Codex app-server monitor stopped before responding".to_string())??;
+        Ok(Some(value))
+    }
+
+    /// Send a free-form user turn into a known Codex thread via JSON-RPC
+    /// `turn/steer`. Returns `Ok(false)` when the bridge isn't attached so
+    /// the caller can fall back to AppleScript-based message delivery.
+    pub async fn send_user_turn(&self, thread_id: &str, text: &str) -> Result<bool, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = CodexAppServerCommand::SendUserTurn {
+            thread_id: thread_id.to_string(),
+            text: text.to_string(),
+            reply: reply_tx,
+        };
+        let Some(tx) = self.tx.lock().await.clone() else {
+            return Ok(false);
+        };
+        if tx.send(command).is_err() {
+            self.detach().await;
+            return Ok(false);
+        }
+        reply_rx
+            .await
+            .map_err(|_| "Codex app-server monitor stopped before responding".to_string())?
+    }
+
+    /// Returns true when an app-server monitor is currently connected.
+    /// Cheap read used by the frontend gate to decide whether Codex.app
+    /// sessions should expose a sendable composer.
+    pub fn is_attached(&self) -> bool {
+        self.tx
+            .try_lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
 }
 
 enum CodexAppServerCommand {
@@ -139,6 +213,14 @@ enum CodexAppServerCommand {
     Question {
         thread_id: String,
         answers: BTreeMap<String, Vec<String>>,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    RateLimits {
+        reply: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    SendUserTurn {
+        thread_id: String,
+        text: String,
         reply: oneshot::Sender<Result<bool, String>>,
     },
 }
@@ -158,9 +240,14 @@ struct CodexAppServerPendingRequest {
     requested_permissions: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexAppServerOutgoingRequest {
     ThreadList,
+    RateLimits {
+        reply: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    SendUserTurn {
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
 }
 
 // ── Session Commands ──────────────────────────────────────────────
@@ -192,15 +279,20 @@ pub async fn get_usage_snapshots(state: State<'_, AppState>) -> Result<Vec<RateL
     Ok(load_usage_snapshots().await)
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStateFlags {
+    /// True when an active Codex app-server WebSocket bridge is attached
+    /// (i.e. background sync is running and connected). Frontend uses this
+    /// to decide whether Codex.app sessions expose a sendable composer.
+    pub codex_app_server_live: bool,
+}
+
 #[tauri::command]
-pub async fn sync_codex_app_server_threads(
-    state: State<'_, AppState>,
-    limit: Option<u32>,
-    include_turns: Option<bool>,
-) -> Result<CodexAppServerSyncReport, String> {
-    let limit = limit.unwrap_or(30).clamp(1, 100);
-    let include_turns = include_turns.unwrap_or(true);
-    sync_codex_app_server_threads_inner(&state.session_store, limit, include_turns).await
+pub fn get_app_state_flags(state: State<'_, AppState>) -> AppStateFlags {
+    AppStateFlags {
+        codex_app_server_live: state.codex_app_server.is_attached(),
+    }
 }
 
 pub fn start_codex_app_server_background_sync(
@@ -209,6 +301,12 @@ pub fn start_codex_app_server_background_sync(
     bridge: Arc<CodexAppServerBridge>,
 ) {
     tauri::async_runtime::spawn(async move {
+        if resolve_codex_binary().is_none() {
+            log::info!("Codex CLI not found; app-server monitor disabled");
+            return;
+        }
+
+        let mut backoff = Duration::ZERO;
         let mut last_error: Option<String> = None;
         loop {
             let config = config_store.get();
@@ -230,6 +328,7 @@ pub fn start_codex_app_server_background_sync(
                         log::info!("Codex app-server background sync recovered");
                     }
                     last_error = None;
+                    backoff = Duration::ZERO;
                 }
                 Err(err) => {
                     if last_error.as_deref() != Some(err.as_str()) {
@@ -237,7 +336,8 @@ pub fn start_codex_app_server_background_sync(
                         last_error = Some(err.clone());
                     }
                     bridge.detach().await;
-                    tokio::time::sleep(Duration::from_secs(15)).await;
+                    backoff = crate::agents::codex_app_server::next_backoff(backoff);
+                    tokio::time::sleep(backoff).await;
                 }
             }
         }
@@ -682,6 +782,26 @@ async fn load_codex_usage_rate_limits_live_cached() -> Option<UsageRateLimitSnap
 }
 
 async fn load_codex_usage_rate_limits_live_uncached() -> Option<UsageRateLimitSnapshot> {
+    // Prefer the persistent app-server WebSocket bridge when it's attached —
+    // sidesteps a redundant stdio spawn on every rate-limit poll.
+    if let Some(bridge) = global_codex_app_server_bridge() {
+        match bridge.fetch_rate_limits().await {
+            Ok(Some(response)) => {
+                if let Some(snapshot) = codex_usage_snapshot_from_rpc_message(&response) {
+                    return Some(snapshot);
+                }
+                // bridge responded but payload wasn't parseable — fall through
+                // to stdio fallback rather than returning None silently.
+            }
+            Ok(None) => {
+                // bridge not attached; fall through
+            }
+            Err(err) => {
+                log::debug!("Codex app-server bridge rate-limit fetch failed: {err}");
+            }
+        }
+    }
+
     let binary = find_binary("codex")?;
     let mut child = TokioCommand::new(binary)
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])
@@ -770,17 +890,36 @@ async fn read_json_rpc_response(
     None
 }
 
-async fn read_json_rpc_response_result(
-    lines: &mut tokio::io::Lines<TokioBufReader<ChildStdout>>,
+async fn shutdown_codex_app_server_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+}
+
+async fn write_ws_json(sink: &mut CodexWsSink, payload: serde_json::Value) -> Result<(), String> {
+    let message = crate::agents::codex_app_server::json_message(&payload)?;
+    sink.send(message)
+        .await
+        .map_err(|err| format!("Failed to write to codex app-server WebSocket: {err}"))
+}
+
+async fn read_ws_until_id(
+    stream: &mut CodexWsSource,
     expected_id: i64,
 ) -> Result<serde_json::Value, String> {
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|err| format!("Failed to read codex app-server response: {err}"))?
-    {
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|err| format!("Invalid codex app-server JSON response: {err}"))?;
+    while let Some(message) = stream.next().await {
+        let message = message
+            .map_err(|err| format!("codex app-server WebSocket error: {err}"))?;
+        let text = match message {
+            Message::Text(text) => text,
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(_) => {
+                return Err("codex app-server closed the WebSocket".to_string());
+            }
+        };
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|err| format!("Invalid codex app-server JSON: {err}"))?;
         if value.get("id").and_then(|id| id.as_i64()) != Some(expected_id) {
             continue;
         }
@@ -793,44 +932,12 @@ async fn read_json_rpc_response_result(
         }
         return Ok(value);
     }
-    Err("Codex app-server closed before returning a response".to_string())
+    Err("codex app-server closed before responding".to_string())
 }
 
-async fn spawn_codex_app_server_stdio() -> Result<
-    (
-        Child,
-        ChildStdin,
-        tokio::io::Lines<TokioBufReader<ChildStdout>>,
-    ),
-    String,
-> {
-    let binary = resolve_codex_binary()
-        .ok_or_else(|| "Could not find codex CLI for app-server".to_string())?;
-    let mut child = TokioCommand::new(binary)
-        .arg("app-server")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| format!("Failed to start codex app-server: {}", err))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Failed to open codex app-server stdin".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to open codex app-server stdout".to_string())?;
-    let lines = TokioBufReader::new(stdout).lines();
-    Ok((child, stdin, lines))
-}
-
-async fn initialize_codex_app_server_stdio(
-    stdin: &mut ChildStdin,
-    lines: &mut tokio::io::Lines<TokioBufReader<ChildStdout>>,
-) -> Result<(), String> {
-    write_json_rpc(
-        stdin,
+async fn initialize_codex_app_server_ws(sink: &mut CodexWsSink, stream: &mut CodexWsSource) -> Result<(), String> {
+    write_ws_json(
+        sink,
         serde_json::json!({
             "id": 1,
             "method": "initialize",
@@ -842,26 +949,17 @@ async fn initialize_codex_app_server_stdio(
             }
         }),
     )
-    .await
-    .ok_or_else(|| "Failed to initialize codex app-server".to_string())?;
-    read_json_rpc_response_result(lines, 1).await?;
+    .await?;
+    read_ws_until_id(stream, 1).await?;
 
-    write_json_rpc(
-        stdin,
+    write_ws_json(
+        sink,
         serde_json::json!({
             "method": "initialized",
             "params": {}
         }),
     )
     .await
-    .ok_or_else(|| "Failed to send codex app-server initialized".to_string())
-}
-
-async fn shutdown_codex_app_server_child(child: &mut Child) {
-    if child.try_wait().ok().flatten().is_none() {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-    }
 }
 
 async fn run_codex_app_server_monitor_once(
@@ -869,9 +967,20 @@ async fn run_codex_app_server_monitor_once(
     store: Arc<SessionStore>,
     bridge: Arc<CodexAppServerBridge>,
 ) -> Result<(), String> {
-    let (mut child, mut stdin, mut lines) = spawn_codex_app_server_stdio().await?;
+    let binary = resolve_codex_binary()
+        .ok_or_else(|| "Could not find codex CLI for app-server".to_string())?;
+    let mut connection = crate::agents::codex_app_server::spawn_and_connect_app_server(
+        &binary,
+        Duration::from_secs(10),
+    )
+    .await?;
+    log::info!(
+        "Codex app-server listening on ws://127.0.0.1:{}",
+        connection.listen_port
+    );
+    let (mut sink, mut stream) = connection.socket.split();
     let result = async {
-        initialize_codex_app_server_stdio(&mut stdin, &mut lines).await?;
+        initialize_codex_app_server_ws(&mut sink, &mut stream).await?;
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         bridge.attach(tx).await;
@@ -881,7 +990,7 @@ async fn run_codex_app_server_monitor_once(
         let mut pending_requests: HashMap<String, CodexAppServerPendingRequest> = HashMap::new();
         let mut last_energy_mode: Option<EnergyMode> = None;
 
-        send_codex_app_server_thread_list_request(&mut stdin, &mut outgoing, &mut next_request_id)
+        send_codex_app_server_thread_list_request(&mut sink, &mut outgoing, &mut next_request_id)
             .await?;
 
         loop {
@@ -903,32 +1012,39 @@ async fn run_codex_app_server_monitor_once(
             }
 
             tokio::select! {
-                line = lines.next_line() => {
-                    let line = line
-                        .map_err(|err| format!("Failed to read codex app-server message: {err}"))?
-                        .ok_or_else(|| "Codex app-server closed stdout".to_string())?;
-                    let message: serde_json::Value = serde_json::from_str(&line)
+                incoming = stream.next() => {
+                    let message = incoming
+                        .ok_or_else(|| "Codex app-server WebSocket stream ended".to_string())?
+                        .map_err(|err| format!("codex app-server WebSocket error: {err}"))?;
+                    let text = match message {
+                        Message::Text(text) => text,
+                        Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                        Message::Close(_) => break Err("codex app-server closed the WebSocket".to_string()),
+                    };
+                    let value: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|err| format!("Invalid codex app-server JSON message: {err}"))?;
                     handle_codex_app_server_message(
                         &store,
                         &mut pending_requests,
                         &mut outgoing,
-                        &message,
+                        &value,
                     )
                     .await?;
                 }
                 Some(command) = rx.recv() => {
                     handle_codex_app_server_command(
                         &store,
-                        &mut stdin,
+                        &mut sink,
                         &mut pending_requests,
+                        &mut outgoing,
+                        &mut next_request_id,
                         command,
                     )
                     .await;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(interval)) => {
                     send_codex_app_server_thread_list_request(
-                        &mut stdin,
+                        &mut sink,
                         &mut outgoing,
                         &mut next_request_id,
                     )
@@ -940,19 +1056,20 @@ async fn run_codex_app_server_monitor_once(
     .await;
 
     bridge.detach().await;
-    shutdown_codex_app_server_child(&mut child).await;
+    let _ = sink.close().await;
+    shutdown_codex_app_server_child(&mut connection.child).await;
     result
 }
 
 async fn send_codex_app_server_thread_list_request(
-    stdin: &mut ChildStdin,
+    sink: &mut CodexWsSink,
     outgoing: &mut HashMap<i64, CodexAppServerOutgoingRequest>,
     next_request_id: &mut i64,
 ) -> Result<(), String> {
     let request_id = *next_request_id;
     *next_request_id += 1;
-    write_json_rpc(
-        stdin,
+    write_ws_json(
+        sink,
         serde_json::json!({
             "id": request_id,
             "method": "thread/list",
@@ -963,8 +1080,7 @@ async fn send_codex_app_server_thread_list_request(
             }
         }),
     )
-    .await
-    .ok_or_else(|| "Failed to request Codex thread list".to_string())?;
+    .await?;
     outgoing.insert(request_id, CodexAppServerOutgoingRequest::ThreadList);
     Ok(())
 }
@@ -996,7 +1112,21 @@ async fn handle_codex_app_server_message(
         return Ok(());
     };
     if let Some(error) = message.get("error") {
-        log::warn!("Codex app-server request {} failed: {}", id, error);
+        let err_message = error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Codex app-server request failed")
+            .to_string();
+        log::warn!("Codex app-server request {} failed: {}", id, err_message);
+        match kind {
+            CodexAppServerOutgoingRequest::RateLimits { reply } => {
+                let _ = reply.send(Err(err_message));
+            }
+            CodexAppServerOutgoingRequest::SendUserTurn { reply } => {
+                let _ = reply.send(Err(err_message));
+            }
+            CodexAppServerOutgoingRequest::ThreadList => {}
+        }
         return Ok(());
     }
     match kind {
@@ -1006,6 +1136,12 @@ async fn handle_codex_app_server_message(
                     sync_codex_app_server_thread_to_store(store, &thread);
                 }
             }
+        }
+        CodexAppServerOutgoingRequest::RateLimits { reply } => {
+            let _ = reply.send(Ok(message.clone()));
+        }
+        CodexAppServerOutgoingRequest::SendUserTurn { reply } => {
+            let _ = reply.send(Ok(true));
         }
     }
     Ok(())
@@ -1202,8 +1338,10 @@ async fn handle_codex_app_server_request(
 
 async fn handle_codex_app_server_command(
     store: &SessionStore,
-    stdin: &mut ChildStdin,
+    sink: &mut CodexWsSink,
     pending_requests: &mut HashMap<String, CodexAppServerPendingRequest>,
+    outgoing: &mut HashMap<i64, CodexAppServerOutgoingRequest>,
+    next_request_id: &mut i64,
     command: CodexAppServerCommand,
 ) {
     match command {
@@ -1223,8 +1361,8 @@ async fn handle_codex_app_server_command(
                     ) =>
                 {
                     let response = codex_app_server_permission_response(&pending, allowed, always);
-                    match write_json_rpc(
-                        stdin,
+                    match write_ws_json(
+                        sink,
                         serde_json::json!({
                             "id": pending.request_id,
                             "result": response
@@ -1232,13 +1370,11 @@ async fn handle_codex_app_server_command(
                     )
                     .await
                     {
-                        Some(()) => {
+                        Ok(()) => {
                             clear_codex_app_server_interaction(store, &thread_id);
                             Ok(true)
                         }
-                        None => {
-                            Err("Failed to send Codex app-server permission response".to_string())
-                        }
+                        Err(err) => Err(err),
                     }
                 }
                 Some(pending) => {
@@ -1256,8 +1392,8 @@ async fn handle_codex_app_server_command(
         } => {
             let result = match pending_requests.remove(&thread_id) {
                 Some(pending) if pending.kind == CodexAppServerPendingKind::UserInput => {
-                    match write_json_rpc(
-                        stdin,
+                    match write_ws_json(
+                        sink,
                         serde_json::json!({
                             "id": pending.request_id,
                             "result": codex_request_user_input_payload(answers)
@@ -1265,13 +1401,11 @@ async fn handle_codex_app_server_command(
                     )
                     .await
                     {
-                        Some(()) => {
+                        Ok(()) => {
                             clear_codex_app_server_interaction(store, &thread_id);
                             Ok(true)
                         }
-                        None => {
-                            Err("Failed to send Codex app-server question response".to_string())
-                        }
+                        Err(err) => Err(err),
                     }
                 }
                 Some(pending) => {
@@ -1282,7 +1416,63 @@ async fn handle_codex_app_server_command(
             };
             let _ = reply.send(result);
         }
+        CodexAppServerCommand::RateLimits { reply } => {
+            let request_id = *next_request_id;
+            *next_request_id += 1;
+            let write_result = write_ws_json(
+                sink,
+                serde_json::json!({
+                    "id": request_id,
+                    "method": "account/rateLimits/read",
+                    "params": {}
+                }),
+            )
+            .await;
+            match write_result {
+                Ok(()) => {
+                    outgoing.insert(request_id, CodexAppServerOutgoingRequest::RateLimits { reply });
+                }
+                Err(err) => {
+                    let _ = reply.send(Err(err));
+                }
+            }
+        }
+        CodexAppServerCommand::SendUserTurn {
+            thread_id,
+            text,
+            reply,
+        } => {
+            let request_id = *next_request_id;
+            *next_request_id += 1;
+            let payload = codex_turn_steer_payload(request_id, &thread_id, &text);
+            match write_ws_json(sink, payload).await {
+                Ok(()) => {
+                    outgoing
+                        .insert(request_id, CodexAppServerOutgoingRequest::SendUserTurn { reply });
+                }
+                Err(err) => {
+                    let _ = reply.send(Err(err));
+                }
+            }
+        }
     }
+}
+
+/// Build the `turn/steer` JSON-RPC payload that injects a fresh user turn
+/// into an existing Codex thread. Extracted so unit tests can pin the wire
+/// format independent of the WebSocket I/O.
+fn codex_turn_steer_payload(request_id: i64, thread_id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": request_id,
+        "method": "turn/steer",
+        "params": {
+            "threadId": thread_id,
+            "expectedTurnId": "",
+            "input": [
+                { "type": "text", "text": text }
+            ]
+        }
+    })
 }
 
 fn upsert_codex_app_server_pending_permission(
@@ -1482,100 +1672,6 @@ fn request_id_to_string(value: &serde_json::Value) -> String {
         .map(str::to_string)
         .or_else(|| value.as_i64().map(|value| value.to_string()))
         .unwrap_or_else(|| value.to_string())
-}
-
-async fn sync_codex_app_server_threads_inner(
-    store: &SessionStore,
-    limit: u32,
-    include_turns: bool,
-) -> Result<CodexAppServerSyncReport, String> {
-    let (mut child, mut stdin, mut lines) = spawn_codex_app_server_stdio().await?;
-    let result = tokio::time::timeout(Duration::from_secs(20), async {
-        initialize_codex_app_server_stdio(&mut stdin, &mut lines).await?;
-        write_json_rpc(
-            &mut stdin,
-            serde_json::json!({
-                "id": 2,
-                "method": "thread/list",
-                "params": {
-                    "archived": false,
-                    "limit": limit,
-                    "sortKey": "updated_at"
-                }
-            }),
-        )
-        .await
-        .ok_or_else(|| "Failed to request Codex thread list".to_string())?;
-        let list_response = read_json_rpc_response_result(&mut lines, 2).await?;
-        let threads = codex_thread_list_from_response(&list_response)
-            .ok_or_else(|| "Invalid Codex thread/list response".to_string())?;
-
-        let mut report = CodexAppServerSyncReport {
-            total: threads.len(),
-            synced: 0,
-            read: 0,
-            errors: Vec::new(),
-            threads: Vec::new(),
-        };
-
-        let mut request_id = 3_i64;
-        for thread in threads {
-            let thread_id = thread
-                .get("id")
-                .and_then(|value| value.as_str())
-                .map(str::to_string);
-            let mut effective_thread = thread.clone();
-
-            if include_turns {
-                if let Some(thread_id) = thread_id.as_deref() {
-                    write_json_rpc(
-                        &mut stdin,
-                        serde_json::json!({
-                            "id": request_id,
-                            "method": "thread/read",
-                            "params": {
-                                "threadId": thread_id,
-                                "includeTurns": true
-                            }
-                        }),
-                    )
-                    .await
-                    .ok_or_else(|| "Failed to request Codex thread detail".to_string())?;
-                    match read_json_rpc_response_result(&mut lines, request_id).await {
-                        Ok(response) => {
-                            if let Some(read_thread) = response
-                                .get("result")
-                                .and_then(|result| result.get("thread"))
-                                .cloned()
-                            {
-                                effective_thread = read_thread;
-                                report.read += 1;
-                            } else {
-                                report
-                                    .errors
-                                    .push(format!("{thread_id}: invalid thread/read response"));
-                            }
-                        }
-                        Err(err) => report.errors.push(format!("{thread_id}: {err}")),
-                    }
-                    request_id += 1;
-                }
-            }
-
-            if let Some(summary) = sync_codex_app_server_thread_to_store(store, &effective_thread) {
-                report.synced += 1;
-                report.threads.push(summary);
-            }
-        }
-
-        Ok::<CodexAppServerSyncReport, String>(report)
-    })
-    .await
-    .map_err(|_| "Timed out syncing Codex app-server threads".to_string())
-    .and_then(|inner| inner);
-
-    shutdown_codex_app_server_child(&mut child).await;
-    result
 }
 
 fn codex_thread_list_from_response(response: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
@@ -2295,6 +2391,26 @@ pub async fn send_message(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     if is_codex_desktop_session(&session) {
+        // When the persistent app-server bridge is live we can route the
+        // user turn straight through JSON-RPC, no clipboard/AppleScript
+        // round-trip, no app activation. Falls back to AppleScript when
+        // the bridge isn't attached or rejects the turn.
+        match state.codex_app_server.send_user_turn(&session_id, &message).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                log::debug!(
+                    "Codex app-server bridge not attached for {}; falling back to AppleScript",
+                    session_id
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "Codex app-server turn/steer failed for {}: {}; falling back to AppleScript",
+                    session_id,
+                    err
+                );
+            }
+        }
         if activate_before_send.unwrap_or(true) {
             return send_message_to_codex_desktop(&session, &message);
         }
@@ -5717,13 +5833,13 @@ mod tests {
         codex_answers_for_pending_question, codex_app_server_pending_question,
         codex_app_server_permission_response, codex_app_server_refresh_interval_seconds,
         codex_desktop_send_message_script, codex_desktop_send_message_without_activation_script,
-        codex_phase_from_thread, codex_request_user_input_output, fallback_terminal_app_name,
-        handle_codex_app_server_request, is_codex_desktop_session, is_ide_terminal_session,
-        is_uuid_like, parse_subagent_chat_history_for_session, qoder_app_send_message_script,
-        read_codex_session_meta_from_path, redact_sensitive_hook_config,
-        remote_session_chat_history, resolve_session_tty, sync_codex_app_server_thread_to_store,
-        sync_remote_codex_thread_to_store, terminal_hint_for_fallback, CodexAppServerPendingKind,
-        CodexAppServerPendingRequest,
+        codex_phase_from_thread, codex_request_user_input_output, codex_turn_steer_payload,
+        fallback_terminal_app_name, handle_codex_app_server_request, is_codex_desktop_session,
+        is_ide_terminal_session, is_uuid_like, parse_subagent_chat_history_for_session,
+        qoder_app_send_message_script, read_codex_session_meta_from_path,
+        redact_sensitive_hook_config, remote_session_chat_history, resolve_session_tty,
+        sync_codex_app_server_thread_to_store, sync_remote_codex_thread_to_store,
+        terminal_hint_for_fallback, CodexAppServerPendingKind, CodexAppServerPendingRequest,
     };
     use crate::energy::EnergyMode;
     use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
@@ -6471,5 +6587,23 @@ mod tests {
         }
 
         let _ = fs::remove_file(transcript_path);
+    }
+
+    #[test]
+    fn turn_steer_payload_ascii() {
+        let payload = codex_turn_steer_payload(42, "thread-abc", "hello world");
+        assert_eq!(payload["id"], 42);
+        assert_eq!(payload["method"], "turn/steer");
+        assert_eq!(payload["params"]["threadId"], "thread-abc");
+        assert_eq!(payload["params"]["expectedTurnId"], "");
+        assert_eq!(payload["params"]["input"][0]["type"], "text");
+        assert_eq!(payload["params"]["input"][0]["text"], "hello world");
+    }
+
+    #[test]
+    fn turn_steer_payload_unicode_and_multiline() {
+        let text = "第一行\n第二行\n🚀 emoji";
+        let payload = codex_turn_steer_payload(1, "t-1", text);
+        assert_eq!(payload["params"]["input"][0]["text"], text);
     }
 }

@@ -3,7 +3,7 @@
  */
 import { useEffect } from 'react'
 import i18n from 'i18next'
-import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage } from '../services/tauriApi'
+import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
 import { useMarketStore } from '../stores/marketStore'
 import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
@@ -475,6 +475,14 @@ function refreshUsageRateLimits(force = false) {
     })
 }
 
+const APP_SERVER_LIVE_POLL_MS = 10_000
+
+function refreshAppServerLiveFlag() {
+  getAppStateFlags()
+    .then(flags => useSessionStore.getState().setCodexAppServerLive(flags.codexAppServerLive))
+    .catch(e => console.error('[tauri] getAppStateFlags:', e))
+}
+
 // ── Hooks ────────────────────────────────────────────────────────
 
 /** Listen for session-update events from the backend and sync sessionStore. */
@@ -484,6 +492,7 @@ export function useSessionEvents() {
 
     let unlisten: (() => void) | undefined
     const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
+    const appServerLiveTimer = window.setInterval(refreshAppServerLiveFlag, APP_SERVER_LIVE_POLL_MS)
 
     // Load initial sessions
     getSessions().then(sessions => {
@@ -494,6 +503,8 @@ export function useSessionEvents() {
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
       refreshUsageRateLimits(true)
     }).catch(e => console.error('[tauri] getSessions:', e))
+
+    refreshAppServerLiveFlag()
 
     // Listen for live updates (dynamic import to avoid crash in browser dev mode)
     import('@tauri-apps/api/event').then(({ listen }) => {
@@ -520,6 +531,7 @@ export function useSessionEvents() {
 
     return () => {
       window.clearInterval(usageRateLimitTimer)
+      window.clearInterval(appServerLiveTimer)
       unlisten?.()
     }
   }, [])

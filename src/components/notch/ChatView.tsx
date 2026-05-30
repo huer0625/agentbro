@@ -97,6 +97,7 @@ interface ChatViewProps {
 
 export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, onInputDraftStateChange }: ChatViewProps) {
   const activeSession = useSessionStore(selectActiveSession)
+  const codexAppServerLive = useSessionStore((s) => s.codexAppServerLive)
   const contentFontSize = useConfigStore((s) => s.contentFontSize)
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
@@ -465,6 +466,8 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
           onDraftStateChange={onInputDraftStateChange}
+          onJumpToHostApp={() => jumpToTerminal(activeSession.id).catch((error) => console.warn('[ChatView] jumpToTerminal:', error))}
+          codexAppServerLive={codexAppServerLive}
         />
       )}
 

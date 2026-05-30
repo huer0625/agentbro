@@ -390,9 +390,13 @@ export async function getUsageSnapshots(): Promise<RateLimitInfo[]> {
   return invoke<RateLimitInfo[]>('get_usage_snapshots')
 }
 
-export async function syncCodexAppServerThreads(limit = 30, includeTurns = true): Promise<CodexAppServerSyncReport> {
-  if (!isTauri()) return { total: 0, synced: 0, read: 0, errors: [], threads: [] }
-  return invoke<CodexAppServerSyncReport>('sync_codex_app_server_threads', { limit, includeTurns })
+export interface AppStateFlags {
+  codexAppServerLive: boolean
+}
+
+export async function getAppStateFlags(): Promise<AppStateFlags> {
+  if (!isTauri()) return { codexAppServerLive: false }
+  return invoke<AppStateFlags>('get_app_state_flags')
 }
 
 export async function listUsageProviders(live = true): Promise<UsageProviderStatus[]> {
@@ -1205,14 +1209,20 @@ export async function endNotchDrag(): Promise<number | null> {
   return invoke<number | null>('end_notch_drag')
 }
 
-export async function startPetDrag(): Promise<boolean> {
+export async function startPetDrag(cursorX?: number, cursorY?: number): Promise<boolean> {
   if (!isTauri()) return false
-  return invoke<boolean>('start_pet_drag')
+  return invoke<boolean>('start_pet_drag', { cursorX, cursorY })
 }
 
-export async function endPetDrag(): Promise<{ x: number; y: number } | null> {
+export interface PetDragResult {
+  origin: { x: number; y: number }
+  anchorLeft: boolean
+  anchorTop: boolean
+}
+
+export async function endPetDrag(): Promise<PetDragResult | null> {
   if (!isTauri()) return null
-  return invoke<{ x: number; y: number } | null>('end_pet_drag')
+  return invoke<PetDragResult | null>('end_pet_drag')
 }
 
 // ── Pet Discovery & Selection ────────────────────────────────────

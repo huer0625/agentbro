@@ -61,6 +61,8 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
     activeTools: [],
     sessionTitle: 'Build pet surface',
     description: 'Running implementation',
+    pid: 1234,
+    tty: '/dev/ttys001',
     ...overrides,
   }
 }
