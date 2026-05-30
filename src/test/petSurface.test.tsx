@@ -71,7 +71,8 @@ function makePet(): PetOption {
     displayName: 'Test Pet',
     provider: 'codex',
     builtin: true,
-    spritesheetDataUrl: 'data:image/webp;base64,AAAA',
+    spritesheetPath: '/tmp/test-pets/codex-test/spritesheet.webp',
+    spritesheetUrl: 'asset://localhost/tmp/test-pets/codex-test/spritesheet.webp',
     frameSize: { width: 192, height: 208 },
     animations: {
       idle: { row: 0, frames: 1, fps: 1 },

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { PetOption } from '../../types/pet'
 import type { ThemeConfig } from '../../types/theme'
 import type { Priority } from '../../types/priority'
@@ -66,7 +67,7 @@ export function SpriteCanvas({
   const anim = activePet?.animations[activeAnimName] ?? activePet?.animations['idle']
   const idleAnim = activePet?.animations['idle']
   const atlasKey = activePet
-    ? makeAtlasKey(activePet.spritesheetDataUrl, activePet.frameSize.width, activePet.frameSize.height)
+    ? makeAtlasKey(activePet.id, activePet.frameSize.width, activePet.frameSize.height)
     : null
   const effectiveAtlasGrid = atlasGrid?.key === atlasKey ? atlasGrid : inferAtlasGrid(activePet)
   const shouldSettleToIdle = Boolean(
@@ -78,10 +79,10 @@ export function SpriteCanvas({
   )
 
   useEffect(() => {
-    if (!activePet?.spritesheetDataUrl || !activePet.frameSize.width || !activePet.frameSize.height) {
+    if (!activePet?.spritesheetUrl || !activePet.frameSize.width || !activePet.frameSize.height) {
       return
     }
-    const key = makeAtlasKey(activePet.spritesheetDataUrl, activePet.frameSize.width, activePet.frameSize.height)
+    const key = makeAtlasKey(activePet.id, activePet.frameSize.width, activePet.frameSize.height)
     let cancelled = false
     const img = new Image()
     img.onload = () => {
@@ -95,11 +96,13 @@ export function SpriteCanvas({
         rows: Math.max(1, Math.round(height / activePet.frameSize.height)),
       })
     }
-    img.src = activePet.spritesheetDataUrl
+    img.src = activePet.spritesheetUrl
     return () => {
       cancelled = true
     }
-  }, [activePet?.frameSize.height, activePet?.frameSize.width, activePet?.spritesheetDataUrl])
+    // Deps key off pet.id rather than the (potentially MB-long) URL so React's
+    // dep comparison stays cheap and doesn't pin the string in memory.
+  }, [activePet?.id, activePet?.frameSize.height, activePet?.frameSize.width, activePet?.spritesheetUrl])
 
   useEffect(() => {
     if (!anim || !activePet) return
@@ -222,7 +225,7 @@ export function SpriteCanvas({
       style={{
         width: size,
         aspectRatio,
-        backgroundImage: `url(${activePet.spritesheetDataUrl})`,
+        backgroundImage: `url(${activePet.spritesheetUrl})`,
         backgroundPosition,
         backgroundRepeat: 'no-repeat',
         backgroundSize: `${columns * 100}% ${rows * 100}%`,
@@ -234,15 +237,22 @@ export function SpriteCanvas({
 
 function themeToPet(theme: ThemeConfig | undefined): PetOption | null {
   if (!theme?.character) return null
-  const spriteSheet = theme.character.spriteSheetDataUrl ?? theme.character.spriteSheet
+  // Theme character.spriteSheet now carries an absolute filesystem path; the
+  // legacy `spriteSheetDataUrl` field is no longer populated. Convert to an
+  // asset URL so the WebView can stream it instead of holding base64 bytes.
+  const spriteSheet = theme.character.spriteSheetUrl ?? theme.character.spriteSheet
   if (!spriteSheet) return null
+  const spritesheetUrl = spriteSheet.startsWith('data:') || spriteSheet.startsWith('asset:') || spriteSheet.startsWith('http')
+    ? spriteSheet
+    : convertFileSrc(spriteSheet)
   return {
     id: theme.name,
     displayName: theme.displayName ?? theme.name,
     description: theme.description,
     provider: theme.provider ?? 'agentbro',
     builtin: theme.author === 'builtin',
-    spritesheetDataUrl: spriteSheet,
+    spritesheetPath: spriteSheet,
+    spritesheetUrl,
     frameSize: theme.character.frameSize,
     animations: theme.character.animations,
     stateMapping: theme.stateMapping ?? {},
@@ -352,14 +362,16 @@ function inferAtlasGrid(pet: PetOption | null): AtlasGrid | null {
   const animations = Object.values(pet.animations)
   if (animations.length === 0) return null
   return {
-    key: makeAtlasKey(pet.spritesheetDataUrl, pet.frameSize.width, pet.frameSize.height),
+    key: makeAtlasKey(pet.id, pet.frameSize.width, pet.frameSize.height),
     columns: Math.max(1, ...animations.map((anim) => anim.frames)),
     rows: Math.max(1, ...animations.map((anim) => anim.row + 1)),
   }
 }
 
-function makeAtlasKey(src: string, frameWidth: number, frameHeight: number): string {
-  return `${src}:${frameWidth}x${frameHeight}`
+// Atlas cache key — short and stable so it can sit in React deps without
+// pinning large strings. Pet id + frame size uniquely identifies the layout.
+function makeAtlasKey(petId: string, frameWidth: number, frameHeight: number): string {
+  return `${petId}:${frameWidth}x${frameHeight}`
 }
 
 function toBackgroundPercent(index: number, count: number): number {

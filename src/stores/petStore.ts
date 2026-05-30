@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { PetOption, PetMetadata } from '../types/pet'
 import type { AgentType, SessionState } from '../types/agent'
 import { discoverPets, setActivePetId as setActivePetIdRemote } from '../services/tauriApi'
@@ -17,7 +18,10 @@ interface PetStore {
 }
 
 function decoratePet(meta: PetMetadata): PetOption {
-  return { ...meta }
+  // Convert the backend filesystem path into an `asset://` URL the WebView
+  // can stream. We compute this once on load instead of in every render so
+  // the resulting string is reference-stable for React deps.
+  return { ...meta, spritesheetUrl: convertFileSrc(meta.spritesheetPath) }
 }
 
 export const usePetStore = create<PetStore>()(
