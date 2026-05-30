@@ -37,6 +37,16 @@ export async function restartApp(): Promise<void> {
   return invoke('restart_app')
 }
 
+export async function isHomebrewInstall(): Promise<boolean> {
+  if (!isTauri()) return false
+  try {
+    return await invoke<boolean>('is_homebrew_install')
+  } catch (error) {
+    console.warn('[tauriApi] failed to detect install channel:', error)
+    return false
+  }
+}
+
 // ── Backend Types (match Rust serde camelCase output) ────────────
 
 export interface BackendSession {
@@ -144,6 +154,7 @@ export interface BackendSession {
     status: string
   }>
   isYoloMode: boolean
+  model: string | null
   notice?: SessionNotice | null
   lastUserMessage: string | null
   lastResponse: string | null
@@ -210,6 +221,24 @@ export interface UsageProviderStatus {
   authStatus: 'authorized' | 'missing' | 'unknown'
   authPath: string | null
   canAuthorize: boolean
+}
+
+export interface CodexAppServerThreadSummary {
+  id: string
+  name?: string | null
+  preview?: string | null
+  cwd?: string | null
+  status?: string | null
+  phase: string
+  updatedAt?: number | null
+}
+
+export interface CodexAppServerSyncReport {
+  total: number
+  synced: number
+  read: number
+  errors: string[]
+  threads: CodexAppServerThreadSummary[]
 }
 
 export interface NetworkMonitorStatus {
@@ -280,6 +309,8 @@ export interface BackendConfig {
   completionTimeout: number
   showTokenUsage: boolean
   usageQueryEnabled: boolean
+  codexAppServerSyncEnabled: boolean
+  codexAppServerSyncIntervalSeconds: number
   theme: string
   language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'
   displayId: string
@@ -290,6 +321,14 @@ export interface BackendConfig {
   soundPack: string
   bootSoundDefaultMigrated?: boolean
   probeSessionFilter: boolean
+  excludedHookCwdSubstrings: string
+  sessionSilenceRules: Array<{
+    id: string
+    kind: 'cwd' | 'prompt'
+    pattern: string
+    enabled: boolean
+    createdAt: number
+  }>
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
@@ -300,11 +339,14 @@ export interface BackendConfig {
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
   islandActivePetId: string | null
+  islandAgentPetMap: Record<string, string>
   followFocus: boolean
   quietHoursEnabled: boolean
   quietHoursStart: string
   quietHoursEnd: string
   idleTimeoutMinutes: number
+  idleInteractionRoutingEnabled: boolean
+  idleInteractionRoutingMinutes: number
   globalShortcut: string
   shortcutApprove: string
   shortcutApproveEnabled: boolean
@@ -346,6 +388,11 @@ export async function getUsageRateLimits(): Promise<RateLimitInfo | null> {
 export async function getUsageSnapshots(): Promise<RateLimitInfo[]> {
   if (!isTauri()) return []
   return invoke<RateLimitInfo[]>('get_usage_snapshots')
+}
+
+export async function syncCodexAppServerThreads(limit = 30, includeTurns = true): Promise<CodexAppServerSyncReport> {
+  if (!isTauri()) return { total: 0, synced: 0, read: 0, errors: [], threads: [] }
+  return invoke<CodexAppServerSyncReport>('sync_codex_app_server_threads', { limit, includeTurns })
 }
 
 export async function listUsageProviders(live = true): Promise<UsageProviderStatus[]> {
@@ -503,6 +550,8 @@ export async function getConfig(): Promise<BackendConfig> {
       completionTimeout: 5,
       showTokenUsage: true,
       usageQueryEnabled: true,
+      codexAppServerSyncEnabled: false,
+      codexAppServerSyncIntervalSeconds: 30,
       theme: 'midnight',
       language: 'en',
       displayId: 'primary',
@@ -512,21 +561,26 @@ export async function getConfig(): Promise<BackendConfig> {
       customSounds: [],
       soundPack: 'synth',
       probeSessionFilter: false,
+      excludedHookCwdSubstrings: '',
+      sessionSilenceRules: [],
       tipsEnabled: true,
       pixelCursorEnabled: true,
       confettiEnabled: true,
-      analyticsEnabled: true,
-      analyticsConsentPromptCompleted: true,
+      analyticsEnabled: false,
+      analyticsConsentPromptCompleted: false,
       islandSurfaceMode: 'island',
       petVitalsDebugOpen: false,
       islandPetScale: 72,
       islandPetWindowOrigin: null,
       islandActivePetId: null,
+      islandAgentPetMap: {},
       followFocus: false,
       quietHoursEnabled: false,
       quietHoursStart: '22:00',
       quietHoursEnd: '08:00',
       idleTimeoutMinutes: 5,
+      idleInteractionRoutingEnabled: false,
+      idleInteractionRoutingMinutes: 5,
       globalShortcut: 'CommandOrControl+Shift+I',
       shortcutApprove: 'CommandOrControl+Shift+A',
       shortcutApproveEnabled: false,
@@ -590,6 +644,47 @@ export async function runHookDoctor(): Promise<HookDoctorReport> {
     }
   }
   return invoke<HookDoctorReport>('run_hook_doctor')
+}
+
+export interface CodexAppServerProbeCheck {
+  id: string
+  label: string
+  status: 'ok' | 'warn' | 'error'
+  detail: string
+  suggestion?: string
+}
+
+export interface CodexAppServerProbe {
+  port: number
+  cliPath?: string | null
+  cliVersion?: string | null
+  cliAvailable: boolean
+  appServerCommandAvailable: boolean
+  serverListening: boolean
+  codexAppInstalled: boolean
+  authConfigured: boolean
+  sessionsDirExists: boolean
+  checks: CodexAppServerProbeCheck[]
+}
+
+export async function probeCodexAppServer(): Promise<CodexAppServerProbe> {
+  if (!isTauri()) {
+    return {
+      port: 41241,
+      cliPath: null,
+      cliVersion: null,
+      cliAvailable: false,
+      appServerCommandAvailable: false,
+      serverListening: false,
+      codexAppInstalled: false,
+      authConfigured: false,
+      sessionsDirExists: false,
+      checks: [
+        { id: 'browser', label: 'Browser mode', status: 'warn', detail: 'Codex app-server diagnostics run inside the Tauri app.' },
+      ],
+    }
+  }
+  return invoke<CodexAppServerProbe>('probe_codex_app_server')
 }
 
 export interface BuddyDeviceConfig {
@@ -768,6 +863,29 @@ export async function importCustomSound(filePath: string): Promise<{ id: string;
     }
   }
   return invoke('import_custom_sound', { filePath })
+}
+
+export interface SoundPackImportResult {
+  name: string
+  displayName: string
+  version?: string | null
+  rootPath: string
+  importedSounds: Array<{ id: string; name: string; path: string; dataUrl?: string; eventId: string; category: string }>
+  appliedRules: Array<{ eventId: string; soundId: string }>
+}
+
+export async function importSoundPack(packPath: string): Promise<SoundPackImportResult> {
+  if (!isTauri()) {
+    return {
+      name: 'preview-pack',
+      displayName: 'Preview Pack',
+      version: null,
+      rootPath: packPath,
+      importedSounds: [],
+      appliedRules: [],
+    }
+  }
+  return invoke('import_sound_pack', { packPath })
 }
 
 export async function setCustomSounds(sounds: Array<{ id: string; name: string; path: string; dataUrl?: string }>): Promise<void> {
@@ -1086,6 +1204,55 @@ export async function setActivePetId(petId: string | null): Promise<void> {
   return invoke<void>('set_active_pet_id', { petId })
 }
 
+export async function setAgentDefaultPet(agent: string, petId: string | null): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('set_agent_default_pet', { agent, petId })
+}
+
+// ── Pet Market (abpets CLI) ─────────────────────────────────────
+
+export interface AbpetsStatus {
+  nodeAvailable: boolean
+  abpetsCallable: boolean
+  nodeVersion: string | null
+}
+
+export async function checkAbpetsAvailable(force = false): Promise<AbpetsStatus> {
+  if (!isTauri()) {
+    return { nodeAvailable: false, abpetsCallable: false, nodeVersion: null }
+  }
+  return invoke<AbpetsStatus>('check_abpets_available', { force })
+}
+
+export async function installAbpetsGlobally(jobId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('install_abpets_globally', { jobId })
+}
+
+export async function installPetFromMarket(
+  jobId: string,
+  handle: string,
+  slug: string,
+): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('install_pet_from_market', { jobId, handle, slug })
+}
+
+export async function uninstallPetFromMarket(jobId: string, slug: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('uninstall_pet_from_market', { jobId, slug })
+}
+
+export async function fetchMarketManifest(baseUrl?: string): Promise<string | null> {
+  if (!isTauri()) return null
+  return invoke<string>('fetch_market_manifest', { baseUrl })
+}
+
+export async function pingMarketDownload(handle: string, slug: string, baseUrl?: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('ping_market_download', { baseUrl, handle, slug })
+}
+
 export interface LogicalRect {
   left: number
   top: number
@@ -1339,6 +1506,30 @@ export async function uninstallRemoteAgentHooks(id: string, agentId: string): Pr
 export async function checkRemoteHooks(id: string): Promise<string[]> {
   if (!isTauri()) return []
   return invoke<string[]>('check_remote_hooks', { id })
+}
+
+export interface RemoteProbeCheck {
+  id: string
+  label: string
+  status: 'ok' | 'warn' | 'error'
+  detail: string
+}
+
+export interface RemoteProbeReport {
+  ok: boolean
+  summary: string
+  checks: RemoteProbeCheck[]
+}
+
+export async function probeRemoteHost(id: string): Promise<RemoteProbeReport> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      summary: 'Remote host is ready',
+      checks: [],
+    }
+  }
+  return invoke<RemoteProbeReport>('probe_remote_host', { id })
 }
 
 export async function listRemoteInstallableAgents(): Promise<string[]> {

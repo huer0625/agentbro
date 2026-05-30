@@ -2,8 +2,10 @@
 pub mod agents;
 pub mod commands;
 pub mod config;
+pub mod energy;
 pub mod hook_endpoint;
 pub mod hooks;
+pub mod market;
 pub mod network_monitor;
 pub mod pets;
 pub mod platform;
@@ -36,7 +38,7 @@ use hooks::server::HookServer;
 use hooks::session_store::{SessionPhase, SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
-use sound::{SoundEngine, SoundEvent, SoundPack};
+use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
 use telemetry::TelemetryService;
 
 #[derive(Debug, Clone, Copy)]
@@ -687,9 +689,11 @@ async fn uninstall_all_hooks(
                 .await;
         }
     }
-    let mut cfg = state.config_store.get();
-    let custom_entries = std::mem::take(&mut cfg.custom_hook_installs);
-    for entry in custom_entries {
+    // Keep user-defined custom hook registrations (display name + install directory)
+    // so the user doesn't have to re-enter them after a bulk uninstall.
+    // We only remove the injected hook files on disk.
+    let cfg = state.config_store.get();
+    for entry in &cfg.custom_hook_installs {
         let Some(profile) = agents::profiles::profile_for_agent(&entry.profile_id) else {
             continue;
         };
@@ -701,15 +705,13 @@ async fn uninstall_all_hooks(
             if let Err(e) = result {
                 errors.push(format!("{}: {}", entry.display_name, e));
             } else {
-                let config = state.config_store.get();
                 state
                     .telemetry
-                    .record_hook_uninstall(&config, &entry.profile_id)
+                    .record_hook_uninstall(&cfg, &entry.profile_id)
                     .await;
             }
         }
     }
-    state.config_store.update(cfg).map_err(|e| e.to_string())?;
     Ok(errors)
 }
 
@@ -874,6 +876,25 @@ async fn check_remote_hooks(
         .ok_or_else(|| format!("Host {} not found", id))?
         .clone();
     Ok(remote::installer::RemoteInstaller::check_installed_agents(&host).await)
+}
+
+#[tauri::command]
+async fn probe_remote_host(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<remote::installer::RemoteProbeReport, String> {
+    let hosts = state.remote_manager.hosts();
+    let host = hosts
+        .iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| format!("Host {} not found", id))?
+        .clone();
+    Ok(remote::installer::RemoteInstaller::probe_host(&host).await)
+}
+
+#[tauri::command]
+fn probe_codex_app_server() -> agents::codex::CodexAppServerProbe {
+    agents::codex::probe_app_server_readiness()
 }
 
 #[tauri::command]
@@ -1407,10 +1428,23 @@ fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
         return;
     };
     let session_id = session.id.clone();
+    let codex_app_server = state.codex_app_server.clone();
     let hook_server = state.hook_server.clone();
     let session_store = state.session_store.clone();
 
     tauri::async_runtime::spawn(async move {
+        match codex_app_server
+            .respond_permission(&session_id, allowed, false)
+            .await
+        {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(err) => log::warn!(
+                "Global permission shortcut Codex app-server response failed for {}: {}",
+                session_id,
+                err
+            ),
+        }
         let hook_result = hook_server
             .respond_permission(&session_id, allowed, false)
             .await;
@@ -1464,9 +1498,35 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
         .and_then(|question| question.options.first().cloned())
         .unwrap_or_default();
     let hook_server = state.hook_server.clone();
+    let codex_app_server = state.codex_app_server.clone();
     let session_store = state.session_store.clone();
 
     tauri::async_runtime::spawn(async move {
+        if let Some(question) = session.pending_question.as_ref() {
+            if question.source.as_deref() == Some("codex_app_server_request_user_input")
+                && question.response_mode.as_deref() == Some("app_server")
+            {
+                let mut answers = std::collections::BTreeMap::new();
+                let answer_id = question
+                    .questions
+                    .first()
+                    .and_then(|item| item.id.clone())
+                    .unwrap_or_else(|| question.question.clone());
+                answers.insert(answer_id, vec![answer.clone()]);
+                match codex_app_server
+                    .respond_question(&session_id, answers)
+                    .await
+                {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(err) => log::warn!(
+                        "Global question shortcut Codex app-server response failed for {}: {}",
+                        session_id,
+                        err
+                    ),
+                }
+            }
+        }
         if let Err(err) = hook_server.respond_question(&session_id, answer).await {
             log::warn!(
                 "Global question skip shortcut failed for {}: {}",
@@ -1759,6 +1819,29 @@ async fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn is_homebrew_install() -> Result<bool, String> {
+    Ok(is_homebrew_install_path())
+}
+
+fn is_homebrew_install_path() -> bool {
+    if PathBuf::from("/opt/homebrew/Caskroom/agentbro").exists()
+        || PathBuf::from("/usr/local/Caskroom/agentbro").exists()
+    {
+        return true;
+    }
+
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| {
+            let path = path.to_string_lossy();
+            path.contains("/opt/homebrew/Caskroom/agentbro/")
+                || path.contains("/usr/local/Caskroom/agentbro/")
+        })
+        .unwrap_or(false)
+}
+
 // ── Sound Commands ───────────────────────────────────────────────
 
 fn custom_sounds_dir() -> PathBuf {
@@ -1839,7 +1922,11 @@ async fn set_sound_pack(state: tauri::State<'_, AppState>, pack: String) -> Resu
         engine.set_sound_pack(sound_pack);
     }
     let mut config = state.config_store.get();
-    config.sound_pack = sound_pack.to_string();
+    config.sound_pack = if pack == "custom" {
+        "custom".to_string()
+    } else {
+        sound_pack.to_string()
+    };
     state.config_store.update(config)?;
     Ok(())
 }
@@ -1960,6 +2047,63 @@ async fn import_custom_sound(
     }
 
     Ok(sound)
+}
+
+#[tauri::command]
+async fn import_sound_pack(
+    state: tauri::State<'_, AppState>,
+    pack_path: String,
+) -> Result<SoundPackImportResult, String> {
+    let result =
+        sound::import_openpeon_sound_pack(&PathBuf::from(&pack_path), &custom_sounds_dir())?;
+    let imported_configs = result
+        .imported_sounds
+        .iter()
+        .map(|sound| CustomSoundConfig {
+            id: sound.id.clone(),
+            name: sound.name.clone(),
+            path: sound.path.clone(),
+            data_url: None,
+        });
+
+    let mut config = state.config_store.get();
+    config.custom_sounds.extend(imported_configs);
+    config.sound_pack = "custom".to_string();
+
+    for rule in &result.applied_rules {
+        let enabled = config
+            .sound_rules
+            .get(&rule.event_id)
+            .map(|rule| rule.enabled)
+            .or_else(|| config.sound_events.get(&rule.event_id).copied())
+            .unwrap_or(true);
+        let sound = format!("custom:{}", rule.sound_id);
+        config.sound_events.insert(rule.event_id.clone(), enabled);
+        config
+            .sound_rules
+            .insert(rule.event_id.clone(), SoundRuleConfig { enabled, sound });
+    }
+
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_sound_pack(SoundPack::Synth);
+        engine.set_custom_sounds(
+            config
+                .custom_sounds
+                .iter()
+                .map(|sound| (sound.id.clone(), sound.path.clone()))
+                .collect(),
+        );
+        for rule in &result.applied_rules {
+            if let Some(event) = SoundEvent::from_id(&rule.event_id) {
+                if let Some(rule_config) = config.sound_rules.get(&rule.event_id) {
+                    engine.set_event_rule(event, rule_config.enabled, rule_config.sound.clone());
+                }
+            }
+        }
+    }
+
+    state.config_store.update(config)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2968,7 +3112,15 @@ async fn set_display_id(
     }
     config.display_id = display_id.clone();
     state.config_store.update(config)?;
-    reposition_notch_to_display(&app, Some(display_id), None)
+    reposition_notch_to_display(&app, Some(display_id.clone()), None)?;
+    // Pet window doesn't get auto-repositioned by reposition_notch_to_display;
+    // when the user picks "auto" we want the pet to jump to the cursor's
+    // monitor right away rather than wait for the next monitor transition.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        follow_pet_window_to_cursor_monitor(&handle);
+    });
+    Ok(())
 }
 
 fn reposition_notch_to_display(
@@ -3129,6 +3281,16 @@ fn set_notch_window_frame(
 
 const PET_DEFAULT_TRAILING_INSET: f64 = 24.0;
 const PET_DEFAULT_BOTTOM_INSET: f64 = 36.0;
+const PET_SLOT_SIZE_LOGICAL: f64 = 160.0;
+const PET_ANCHOR_RIGHT_LOGICAL: f64 = 132.0;
+const PET_ANCHOR_BOTTOM_LOGICAL: f64 = 44.0;
+const PET_WINDOW_VISIBLE_MARGIN_LOGICAL: f64 = 8.0;
+
+#[derive(Debug, Clone, Copy)]
+struct PetStageAnchor {
+    left: bool,
+    top: bool,
+}
 
 /// Show / position / hide the pet companion window based on the active
 /// island surface mode. The pet is its own Tauri window so dragging it
@@ -3137,9 +3299,10 @@ pub fn sync_pet_window_visibility(app: &tauri::AppHandle, config: &config::AppCo
     let handle = app.clone();
     let is_pet_mode = config.island_surface_mode == "pet";
     let saved_origin = config.island_pet_window_origin.clone();
+    let pet_scale = config.island_pet_scale.clamp(50, 120) as f64;
 
     let _ = app.run_on_main_thread(move || {
-        sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
+        sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref(), pet_scale);
     });
 }
 
@@ -3148,6 +3311,7 @@ pub fn sync_pet_window_visibility_inner(
     handle: &tauri::AppHandle,
     is_pet_mode: bool,
     saved_origin: Option<&config::WindowOrigin>,
+    pet_scale: f64,
 ) {
     let Some(pet_window) = handle.get_webview_window("pet") else {
         return;
@@ -3173,27 +3337,44 @@ pub fn sync_pet_window_visibility_inner(
     if let Some(monitor) = monitor {
         if let Ok(size) = pet_window.outer_size() {
             position_pet_window(
+                &handle,
                 &pet_window,
                 &monitor,
                 size.width as f64,
                 size.height as f64,
                 saved_origin,
+                pet_scale,
             );
         }
     }
     apply_pet_window_for_spaces(&pet_window);
     let _ = pet_window.show();
     apply_pet_window_for_spaces(&pet_window);
+    // If the user has the "follow cursor" preference, hop to whichever
+    // monitor the cursor is on right now rather than waiting for the next
+    // monitor transition.
+    follow_pet_window_to_cursor_monitor(handle);
 }
 
 fn position_pet_window(
+    app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     monitor: &tauri::Monitor,
     width: f64,
     height: f64,
     saved_origin: Option<&config::WindowOrigin>,
+    pet_scale: f64,
 ) {
     if let Some(origin) = saved_origin {
+        let scale = window
+            .scale_factor()
+            .unwrap_or_else(|_| monitor.scale_factor());
+        let monitor =
+            monitor_for_pet_origin(app, width, height, scale, pet_scale, origin.x, origin.y)
+                .unwrap_or_else(|| monitor.clone());
+        let origin = clamp_pet_window_origin(
+            &monitor, width, height, scale, pet_scale, origin.x, origin.y,
+        );
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
             origin.x.round() as i32,
             origin.y.round() as i32,
@@ -3224,6 +3405,305 @@ fn position_pet_window(
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
         x as i32, y as i32,
     )));
+}
+
+fn current_pet_scale_percent(app: &tauri::AppHandle) -> f64 {
+    app.state::<AppState>()
+        .config_store
+        .get()
+        .island_pet_scale
+        .clamp(50, 120) as f64
+}
+
+/// Move the pet window onto the monitor the cursor is currently on, keeping
+/// its relative position within the screen (e.g. bottom-right corner stays
+/// bottom-right). Called from the monitor-tracker subscription when
+/// `display_id == "auto"`. No-op when the pet is hidden, being dragged, or
+/// already on the right monitor.
+fn follow_pet_window_to_cursor_monitor(app: &tauri::AppHandle) {
+    // May be invoked before `app.manage(AppState)` completes (e.g. from
+    // `sync_pet_window_visibility_inner` scheduled on the main thread during
+    // setup). Bail out gracefully instead of panicking; the tracker will fire
+    // again as soon as the cursor moves and state is then guaranteed managed.
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let config = state.config_store.get();
+    if config.island_surface_mode != "pet" {
+        return;
+    }
+    if config.display_id != "auto" {
+        return;
+    }
+    if pet_drag_state()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let Some(window) = app.get_webview_window("pet") else {
+        return;
+    };
+    let Some(target_monitor) = platform::display::find_cursor_monitor(app) else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let window_scale = window
+        .scale_factor()
+        .unwrap_or_else(|_| target_monitor.scale_factor());
+    let pet_scale = current_pet_scale_percent(app);
+    let width = size.width as f64;
+    let height = size.height as f64;
+
+    let Ok(current_pos) = window.outer_position() else {
+        return;
+    };
+    let current_x = current_pos.x as f64;
+    let current_y = current_pos.y as f64;
+
+    let current_monitor =
+        monitor_for_pet_origin(app, width, height, window_scale, pet_scale, current_x, current_y)
+            .or_else(|| window.current_monitor().ok().flatten());
+
+    let target_id = target_monitor
+        .name()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let current_id = current_monitor
+        .as_ref()
+        .and_then(|m| m.name().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if !target_id.is_empty() && target_id == current_id {
+        return;
+    }
+
+    let next_origin = if let Some(current) = current_monitor.as_ref() {
+        translate_origin_relative(
+            (current, &target_monitor),
+            width,
+            height,
+            window_scale,
+            pet_scale,
+            current_x,
+            current_y,
+        )
+    } else {
+        clamp_pet_window_origin(
+            &target_monitor,
+            width,
+            height,
+            window_scale,
+            pet_scale,
+            current_x,
+            current_y,
+        )
+    };
+
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        next_origin.x as i32,
+        next_origin.y as i32,
+    )));
+
+    let mut updated = config;
+    updated.island_pet_window_origin = Some(next_origin);
+    let _ = state.config_store.update(updated);
+}
+
+/// Map a window origin from `source` monitor's coordinate space into
+/// `target` monitor's space, preserving the pet's relative position
+/// (rx, ry) within the screen. Result is clamped so the pet stays on
+/// the target monitor.
+fn translate_origin_relative(
+    monitors: (&tauri::Monitor, &tauri::Monitor),
+    width: f64,
+    height: f64,
+    window_scale: f64,
+    pet_scale: f64,
+    x: f64,
+    y: f64,
+) -> config::WindowOrigin {
+    let (source, target) = monitors;
+    let (center_x, center_y) =
+        pet_center_for_origin(width, height, window_scale, pet_scale, x, y);
+    let source_pos = source.position();
+    let source_size = source.size();
+    let source_w = (source_size.width as f64).max(1.0);
+    let source_h = (source_size.height as f64).max(1.0);
+    let rx = ((center_x - source_pos.x as f64) / source_w).clamp(0.0, 1.0);
+    let ry = ((center_y - source_pos.y as f64) / source_h).clamp(0.0, 1.0);
+
+    let target_pos = target.position();
+    let target_size = target.size();
+    let new_center_x = target_pos.x as f64 + rx * target_size.width as f64;
+    let new_center_y = target_pos.y as f64 + ry * target_size.height as f64;
+    let center_offset_x = center_x - x;
+    let center_offset_y = center_y - y;
+    let candidate_x = new_center_x - center_offset_x;
+    let candidate_y = new_center_y - center_offset_y;
+    clamp_pet_window_origin(
+        target,
+        width,
+        height,
+        window_scale,
+        pet_scale,
+        candidate_x,
+        candidate_y,
+    )
+}
+
+fn monitor_containing_point(app: &tauri::AppHandle, x: f64, y: f64) -> Option<tauri::Monitor> {
+    app.available_monitors().ok()?.into_iter().find(|monitor| {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let left = pos.x as f64;
+        let top = pos.y as f64;
+        let right = left + size.width as f64;
+        let bottom = top + size.height as f64;
+        x >= left && x < right && y >= top && y < bottom
+    })
+}
+
+fn pet_rect_in_window(
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    anchor: PetStageAnchor,
+) -> (f64, f64, f64) {
+    let scale = window_scale.max(1.0);
+    let display_scale = (pet_scale_percent / 100.0).clamp(0.5, 1.2);
+    let pet_size = PET_SLOT_SIZE_LOGICAL * display_scale * scale;
+    let pet_left = if anchor.left {
+        PET_ANCHOR_RIGHT_LOGICAL * scale
+    } else {
+        window_width - PET_ANCHOR_RIGHT_LOGICAL * scale - pet_size
+    };
+    let pet_top = if anchor.top {
+        PET_ANCHOR_BOTTOM_LOGICAL * scale
+    } else {
+        window_height - PET_ANCHOR_BOTTOM_LOGICAL * scale - pet_size
+    };
+    (pet_left, pet_top, pet_size)
+}
+
+fn pet_stage_anchor_for_origin(
+    monitor: &tauri::Monitor,
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    x: f64,
+    y: f64,
+) -> PetStageAnchor {
+    let default_anchor = PetStageAnchor {
+        left: false,
+        top: false,
+    };
+    let (pet_left, pet_top, pet_size) = pet_rect_in_window(
+        window_width,
+        window_height,
+        window_scale,
+        pet_scale_percent,
+        default_anchor,
+    );
+    let pet_center_x = x + pet_left + pet_size / 2.0;
+    let pet_center_y = y + pet_top + pet_size / 2.0;
+    let pos = monitor.position();
+    let size = monitor.size();
+    PetStageAnchor {
+        left: pet_center_x < pos.x as f64 + size.width as f64 / 2.0,
+        top: pet_center_y < pos.y as f64 + size.height as f64 / 2.0,
+    }
+}
+
+fn pet_center_for_origin(
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    let (pet_left, pet_top, pet_size) = pet_rect_in_window(
+        window_width,
+        window_height,
+        window_scale,
+        pet_scale_percent,
+        PetStageAnchor {
+            left: false,
+            top: false,
+        },
+    );
+    (x + pet_left + pet_size / 2.0, y + pet_top + pet_size / 2.0)
+}
+
+fn monitor_for_pet_origin(
+    app: &tauri::AppHandle,
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    x: f64,
+    y: f64,
+) -> Option<tauri::Monitor> {
+    let (center_x, center_y) = pet_center_for_origin(
+        window_width,
+        window_height,
+        window_scale,
+        pet_scale_percent,
+        x,
+        y,
+    );
+    monitor_containing_point(app, center_x, center_y)
+}
+
+fn clamp_pet_window_origin(
+    monitor: &tauri::Monitor,
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    x: f64,
+    y: f64,
+) -> config::WindowOrigin {
+    let scale = window_scale.max(1.0);
+    let margin = PET_WINDOW_VISIBLE_MARGIN_LOGICAL * scale;
+    let pos = monitor.position();
+    let size = monitor.size();
+    let monitor_left = pos.x as f64;
+    let monitor_top = pos.y as f64;
+    let monitor_right = monitor_left + size.width as f64;
+    let monitor_bottom = monitor_top + size.height as f64;
+    let anchor = pet_stage_anchor_for_origin(
+        monitor,
+        window_width,
+        window_height,
+        scale,
+        pet_scale_percent,
+        x,
+        y,
+    );
+    let (pet_left, pet_top, pet_size) = pet_rect_in_window(
+        window_width,
+        window_height,
+        scale,
+        pet_scale_percent,
+        anchor,
+    );
+
+    let min_x = monitor_left + margin - pet_left;
+    let max_x = monitor_right - margin - pet_left - pet_size;
+    let min_y = monitor_top + margin - pet_top;
+    let max_y = monitor_bottom - margin - pet_top - pet_size;
+
+    config::WindowOrigin {
+        x: x.clamp(min_x, max_x.max(min_x)).round(),
+        y: y.clamp(min_y, max_y.max(min_y)).round(),
+    }
 }
 
 fn notch_drag_geometry(
@@ -3468,26 +3948,71 @@ fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
     let cursor = app.cursor_position().map_err(|e| e.to_string())?;
-    let next_position = {
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let window_scale = window.scale_factor().unwrap_or(1.0);
+    let pet_scale = current_pet_scale_percent(app);
+    let raw_position = {
+        let drag = pet_drag_state()
+            .lock()
+            .map_err(|e| format!("Pet drag lock error: {}", e))?;
+        let Some(state) = drag.as_ref() else {
+            return Ok(false);
+        };
+        (
+            (state.start_window_x + cursor.x - state.start_cursor_x).round(),
+            (state.start_window_y + cursor.y - state.start_cursor_y).round(),
+        )
+    };
+    let target_monitor = monitor_containing_point(app, cursor.x, cursor.y)
+        .or_else(|| {
+            monitor_for_pet_origin(
+                app,
+                size.width as f64,
+                size.height as f64,
+                window_scale,
+                pet_scale,
+                raw_position.0,
+                raw_position.1,
+            )
+        })
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let next_origin = if let Some(monitor) = target_monitor {
+        clamp_pet_window_origin(
+            &monitor,
+            size.width as f64,
+            size.height as f64,
+            window_scale,
+            pet_scale,
+            raw_position.0,
+            raw_position.1,
+        )
+    } else {
+        config::WindowOrigin {
+            x: raw_position.0,
+            y: raw_position.1,
+        }
+    };
+
+    {
         let mut drag = pet_drag_state()
             .lock()
             .map_err(|e| format!("Pet drag lock error: {}", e))?;
         let Some(state) = drag.as_mut() else {
             return Ok(false);
         };
-        let x = (state.start_window_x + cursor.x - state.start_cursor_x).round();
-        let y = (state.start_window_y + cursor.y - state.start_cursor_y).round();
-        if (x - state.current_x).abs() < 1.0 && (y - state.current_y).abs() < 1.0 {
+        if (next_origin.x - state.current_x).abs() < 1.0
+            && (next_origin.y - state.current_y).abs() < 1.0
+        {
             return Ok(true);
         }
-        state.current_x = x;
-        state.current_y = y;
-        (x, y)
-    };
+        state.current_x = next_origin.x;
+        state.current_y = next_origin.y;
+    }
 
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-        next_position.0 as i32,
-        next_position.1 as i32,
+        next_origin.x as i32,
+        next_origin.y as i32,
     )));
     Ok(true)
 }
@@ -3496,7 +4021,7 @@ fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
 async fn end_pet_drag(
     app: tauri::AppHandle,
 ) -> Result<Option<crate::config::WindowOrigin>, String> {
-    let final_origin = {
+    let mut final_origin = {
         let mut drag = pet_drag_state()
             .lock()
             .map_err(|e| format!("Pet drag lock error: {}", e))?;
@@ -3505,6 +4030,38 @@ async fn end_pet_drag(
             y: state.current_y.round(),
         })
     };
+
+    if let (Some(origin), Some(window)) = (final_origin.as_mut(), app.get_webview_window("pet")) {
+        if let Ok(size) = window.outer_size() {
+            let window_scale = window.scale_factor().unwrap_or(1.0);
+            let pet_scale = current_pet_scale_percent(&app);
+            if let Some(monitor) = monitor_for_pet_origin(
+                &app,
+                size.width as f64,
+                size.height as f64,
+                window_scale,
+                pet_scale,
+                origin.x,
+                origin.y,
+            )
+            .or_else(|| window.current_monitor().ok().flatten())
+            .or_else(|| window.primary_monitor().ok().flatten())
+            {
+                *origin = clamp_pet_window_origin(
+                    &monitor,
+                    size.width as f64,
+                    size.height as f64,
+                    window_scale,
+                    pet_scale,
+                    origin.x,
+                    origin.y,
+                );
+                let _ = window.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition::new(origin.x as i32, origin.y as i32),
+                ));
+            }
+        }
+    }
 
     if let Some(origin) = final_origin.clone() {
         let state = app.state::<AppState>();
@@ -3657,11 +4214,21 @@ pub fn run() {
             // Initialize config store
             let mut config_store = ConfigStore::new();
             config_store.set_app_handle(app.handle().clone());
+            let should_show_onboarding = !config_store.get().analytics_consent_prompt_completed;
 
             // Pet window: position to the saved (or default) corner and show
             // only when pet surface mode is active. The pet lives in its own
             // Tauri window so dragging it doesn't move the island shell.
             sync_pet_window_visibility(app.handle(), &config_store.get());
+
+            // Cursor-monitor tracker: a single background poller that emits
+            // `cursor-monitor-changed` to the frontend (notch) and invokes
+            // in-process listeners (pet) only on real monitor transitions.
+            // Centralizing this avoids per-window polling loops.
+            platform::monitor_tracker::subscribe(|app, _change| {
+                follow_pet_window_to_cursor_monitor(app);
+            });
+            platform::monitor_tracker::start(app.handle().clone());
 
             // Bootstrap: discover sessions that were already running before we launched
             {
@@ -3915,6 +4482,15 @@ pub fn run() {
             }
             let conversation_watcher = Arc::new(std::sync::Mutex::new(conversation_watcher));
 
+            let codex_app_server = Arc::new(commands::CodexAppServerBridge::new());
+
+            hooks::claude_desktop_watcher::start(session_store.clone(), app.handle().clone());
+            commands::start_codex_app_server_background_sync(
+                config_store.clone(),
+                session_store.clone(),
+                codex_app_server.clone(),
+            );
+
             // Store shared state for Tauri commands
             // Initialize display controller
             let display_controller =
@@ -3933,19 +4509,29 @@ pub fn run() {
                 }
             }
             remote_manager.startup();
+            commands::start_remote_codex_state_sync(
+                config_store.clone(),
+                session_store.clone(),
+                remote_manager.clone(),
+            );
 
             // Initialize diagnostic ring buffer
             let diagnostic_buffer = Arc::new(hooks::diagnostics::DiagnosticRingBuffer::new());
             let network_monitor = Arc::new(NetworkMonitor::new());
 
-            let switch_db = Arc::new(
-                switch::db::SwitchDatabase::open().expect("failed to open switch database"),
-            );
+            let switch_db = Arc::new(switch::db::SwitchDatabase::open().unwrap_or_else(|err| {
+                log::error!("Failed to open switch database: {err}");
+                switch::db::SwitchDatabase::open_in_memory().unwrap_or_else(|fallback_err| {
+                    log::error!("Failed to open in-memory switch database: {fallback_err}");
+                    std::process::exit(1);
+                })
+            }));
             let telemetry = Arc::new(TelemetryService::new());
 
             let app_state = AppState {
                 session_store,
                 hook_server,
+                codex_app_server,
                 config_store,
                 adapters: (*adapters).clone(),
                 sound_engine,
@@ -3975,6 +4561,9 @@ pub fn run() {
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
                 log::warn!("Failed to register island global shortcuts: {}", err);
             }
+            if should_show_onboarding {
+                let _ = show_settings_window(app.handle());
+            }
 
             // Deep link handler
             {
@@ -3999,6 +4588,7 @@ pub fn run() {
             commands::get_sessions,
             commands::get_usage_rate_limits,
             commands::get_usage_snapshots,
+            commands::sync_codex_app_server_threads,
             commands::list_usage_providers,
             commands::authorize_usage_provider,
             commands::respond_permission,
@@ -4048,6 +4638,7 @@ pub fn run() {
             set_sound_event_enabled,
             set_sound_event_rule,
             import_custom_sound,
+            import_sound_pack,
             set_custom_sounds,
             set_notch_opacity,
             list_displays,
@@ -4060,7 +4651,14 @@ pub fn run() {
             start_pet_drag,
             end_pet_drag,
             pets::discover_pets,
+            market::check_abpets_available,
+            market::install_abpets_globally,
+            market::install_pet_from_market,
+            market::uninstall_pet_from_market,
+            market::fetch_market_manifest,
+            market::ping_market_download,
             commands::set_active_pet_id,
+            commands::set_agent_default_pet,
             is_cursor_in_window_zones,
             should_suppress,
             get_cursor_position,
@@ -4094,6 +4692,8 @@ pub fn run() {
             install_remote_agent_hooks,
             uninstall_remote_agent_hooks,
             check_remote_hooks,
+            probe_remote_host,
+            probe_codex_app_server,
             list_remote_installable_agents,
             get_remote_status,
             list_ssh_config_hosts,
@@ -4117,6 +4717,7 @@ pub fn run() {
             perform_haptic,
             set_notch_focusable,
             restart_app,
+            is_homebrew_install,
             open_image,
             open_system_path,
             list_themes,

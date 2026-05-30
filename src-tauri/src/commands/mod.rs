@@ -6,6 +6,7 @@ pub mod persistence;
 
 use crate::agents::{AdapterInfo, AgentAdapter};
 use crate::config::{AppConfig, ConfigStore};
+use crate::energy::{self, EnergyMode};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs,
@@ -16,11 +17,12 @@ use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::{HookServer, RawHookEvent};
 use crate::hooks::session_store::{
-    PendingQuestion, RateLimitInfo, SessionState, SessionStore, SubagentInfo, UsageRateWindow,
+    PendingQuestion, RateLimitInfo, SessionPhase, SessionState, SessionStore, SubagentInfo,
+    UsageRateWindow,
 };
 use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
-use crate::remote::RemoteManager;
+use crate::remote::{ConnectionStatus, RemoteHost, RemoteManager};
 use crate::sound::SoundEngine;
 use crate::switch::db::SwitchDatabase;
 use crate::telemetry::TelemetryService;
@@ -34,12 +36,14 @@ use std::time::{Duration, Instant};
 
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
-use tokio::process::{ChildStdin, ChildStdout, Command as TokioCommand};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command as TokioCommand};
+use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 
 /// Shared app state accessible from Tauri commands
 pub struct AppState {
     pub session_store: Arc<SessionStore>,
     pub hook_server: Arc<HookServer>,
+    pub codex_app_server: Arc<CodexAppServerBridge>,
     pub config_store: ConfigStore,
     pub adapters: Vec<Arc<dyn AgentAdapter>>,
     pub sound_engine: Option<Arc<SoundEngine>>,
@@ -54,6 +58,109 @@ pub struct AppState {
     pub telemetry: Arc<TelemetryService>,
     #[allow(dead_code)]
     pub tray_icon: tauri::tray::TrayIcon,
+}
+
+#[derive(Clone)]
+pub struct CodexAppServerBridge {
+    tx: Arc<TokioMutex<Option<mpsc::UnboundedSender<CodexAppServerCommand>>>>,
+}
+
+impl CodexAppServerBridge {
+    pub fn new() -> Self {
+        Self {
+            tx: Arc::new(TokioMutex::new(None)),
+        }
+    }
+
+    async fn attach(&self, tx: mpsc::UnboundedSender<CodexAppServerCommand>) {
+        *self.tx.lock().await = Some(tx);
+    }
+
+    async fn detach(&self) {
+        *self.tx.lock().await = None;
+    }
+
+    pub async fn respond_permission(
+        &self,
+        thread_id: &str,
+        allowed: bool,
+        always: bool,
+    ) -> Result<bool, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = CodexAppServerCommand::Permission {
+            thread_id: thread_id.to_string(),
+            allowed,
+            always,
+            reply: reply_tx,
+        };
+        let Some(tx) = self.tx.lock().await.clone() else {
+            return Ok(false);
+        };
+        if tx.send(command).is_err() {
+            self.detach().await;
+            return Ok(false);
+        }
+        reply_rx
+            .await
+            .map_err(|_| "Codex app-server monitor stopped before responding".to_string())?
+    }
+
+    pub async fn respond_question(
+        &self,
+        thread_id: &str,
+        answers: BTreeMap<String, Vec<String>>,
+    ) -> Result<bool, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = CodexAppServerCommand::Question {
+            thread_id: thread_id.to_string(),
+            answers,
+            reply: reply_tx,
+        };
+        let Some(tx) = self.tx.lock().await.clone() else {
+            return Ok(false);
+        };
+        if tx.send(command).is_err() {
+            self.detach().await;
+            return Ok(false);
+        }
+        reply_rx
+            .await
+            .map_err(|_| "Codex app-server monitor stopped before responding".to_string())?
+    }
+}
+
+enum CodexAppServerCommand {
+    Permission {
+        thread_id: String,
+        allowed: bool,
+        always: bool,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    Question {
+        thread_id: String,
+        answers: BTreeMap<String, Vec<String>>,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexAppServerPendingKind {
+    CommandApproval,
+    FileApproval,
+    PermissionsApproval,
+    UserInput,
+}
+
+#[derive(Debug, Clone)]
+struct CodexAppServerPendingRequest {
+    request_id: serde_json::Value,
+    kind: CodexAppServerPendingKind,
+    requested_permissions: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexAppServerOutgoingRequest {
+    ThreadList,
 }
 
 // ── Session Commands ──────────────────────────────────────────────
@@ -83,6 +190,132 @@ pub async fn get_usage_snapshots(state: State<'_, AppState>) -> Result<Vec<RateL
         return Ok(Vec::new());
     }
     Ok(load_usage_snapshots().await)
+}
+
+#[tauri::command]
+pub async fn sync_codex_app_server_threads(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    include_turns: Option<bool>,
+) -> Result<CodexAppServerSyncReport, String> {
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    let include_turns = include_turns.unwrap_or(true);
+    sync_codex_app_server_threads_inner(&state.session_store, limit, include_turns).await
+}
+
+pub fn start_codex_app_server_background_sync(
+    config_store: ConfigStore,
+    session_store: Arc<SessionStore>,
+    bridge: Arc<CodexAppServerBridge>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut last_error: Option<String> = None;
+        loop {
+            let config = config_store.get();
+            if !config.codex_app_server_sync_enabled {
+                bridge.detach().await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+
+            match run_codex_app_server_monitor_once(
+                config_store.clone(),
+                session_store.clone(),
+                bridge.clone(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    if last_error.is_some() {
+                        log::info!("Codex app-server background sync recovered");
+                    }
+                    last_error = None;
+                }
+                Err(err) => {
+                    if last_error.as_deref() != Some(err.as_str()) {
+                        log::warn!("Codex app-server monitor failed: {}", err);
+                        last_error = Some(err.clone());
+                    }
+                    bridge.detach().await;
+                    tokio::time::sleep(Duration::from_secs(15)).await;
+                }
+            }
+        }
+    });
+}
+
+fn codex_app_server_refresh_interval_seconds(
+    store: &SessionStore,
+    configured_seconds: u32,
+) -> (EnergyMode, u64) {
+    let mode = energy::mode_for_sessions(&store.get_all_sessions());
+    let interval = energy::interval_seconds(mode, configured_seconds, 15, 60, 300);
+    (mode, interval)
+}
+
+pub fn start_remote_codex_state_sync(
+    config_store: ConfigStore,
+    store: Arc<SessionStore>,
+    remote_manager: Arc<RemoteManager>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut delivered: HashMap<String, i64> = HashMap::new();
+        let mut last_energy_mode: Option<EnergyMode> = None;
+
+        loop {
+            let config = config_store.get();
+            if !config.codex_app_server_sync_enabled {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+
+            let (energy_mode, interval) = codex_app_server_refresh_interval_seconds(
+                &store,
+                config.codex_app_server_sync_interval_seconds,
+            );
+            if last_energy_mode != Some(energy_mode) {
+                log::debug!(
+                    "Remote Codex state sync energy mode: {:?}, interval={}s",
+                    energy_mode,
+                    interval
+                );
+                last_energy_mode = Some(energy_mode);
+            }
+
+            let cutoff_ms = chrono::Utc::now().timestamp_millis() - 15 * 60 * 1000;
+            for host in remote_manager.hosts() {
+                if remote_manager.status(&host.id) != ConnectionStatus::Connected {
+                    continue;
+                }
+
+                match crate::remote::installer::RemoteInstaller::read_recent_codex_threads(
+                    &host, cutoff_ms, 12,
+                )
+                .await
+                {
+                    Ok(threads) => {
+                        for thread in threads {
+                            let key = format!("{}:{}", host.id, thread.id);
+                            if thread.updated_at_ms <= delivered.get(&key).copied().unwrap_or(0) {
+                                continue;
+                            }
+                            delivered.insert(key, thread.updated_at_ms);
+                            sync_remote_codex_thread_to_store(&store, &host, &thread);
+                        }
+                    }
+                    Err(err) => {
+                        log::debug!(
+                            "Remote Codex state sync skipped host {}: {}",
+                            host.name,
+                            err
+                        );
+                    }
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(interval)).await;
+        }
+    });
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,6 +348,28 @@ pub async fn list_usage_providers(
     providers.extend(catalog_supported_agent_usage_providers(enabled));
     providers.extend(catalog_unsupported_agent_usage_providers(enabled));
     Ok(providers)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAppServerThreadSummary {
+    id: String,
+    name: Option<String>,
+    preview: Option<String>,
+    cwd: Option<String>,
+    status: Option<String>,
+    phase: String,
+    updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAppServerSyncReport {
+    total: usize,
+    synced: usize,
+    read: usize,
+    errors: Vec<String>,
+    threads: Vec<CodexAppServerThreadSummary>,
 }
 
 #[tauri::command]
@@ -515,6 +770,1110 @@ async fn read_json_rpc_response(
     None
 }
 
+async fn read_json_rpc_response_result(
+    lines: &mut tokio::io::Lines<TokioBufReader<ChildStdout>>,
+    expected_id: i64,
+) -> Result<serde_json::Value, String> {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|err| format!("Failed to read codex app-server response: {err}"))?
+    {
+        let value: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|err| format!("Invalid codex app-server JSON response: {err}"))?;
+        if value.get("id").and_then(|id| id.as_i64()) != Some(expected_id) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            let message = error
+                .get("message")
+                .and_then(|message| message.as_str())
+                .unwrap_or("Codex app-server request failed");
+            return Err(message.to_string());
+        }
+        return Ok(value);
+    }
+    Err("Codex app-server closed before returning a response".to_string())
+}
+
+async fn spawn_codex_app_server_stdio() -> Result<
+    (
+        Child,
+        ChildStdin,
+        tokio::io::Lines<TokioBufReader<ChildStdout>>,
+    ),
+    String,
+> {
+    let binary = resolve_codex_binary()
+        .ok_or_else(|| "Could not find codex CLI for app-server".to_string())?;
+    let mut child = TokioCommand::new(binary)
+        .arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start codex app-server: {}", err))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open codex app-server stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to open codex app-server stdout".to_string())?;
+    let lines = TokioBufReader::new(stdout).lines();
+    Ok((child, stdin, lines))
+}
+
+async fn initialize_codex_app_server_stdio(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<TokioBufReader<ChildStdout>>,
+) -> Result<(), String> {
+    write_json_rpc(
+        stdin,
+        serde_json::json!({
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "AgentBro",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        }),
+    )
+    .await
+    .ok_or_else(|| "Failed to initialize codex app-server".to_string())?;
+    read_json_rpc_response_result(lines, 1).await?;
+
+    write_json_rpc(
+        stdin,
+        serde_json::json!({
+            "method": "initialized",
+            "params": {}
+        }),
+    )
+    .await
+    .ok_or_else(|| "Failed to send codex app-server initialized".to_string())
+}
+
+async fn shutdown_codex_app_server_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+}
+
+async fn run_codex_app_server_monitor_once(
+    config_store: ConfigStore,
+    store: Arc<SessionStore>,
+    bridge: Arc<CodexAppServerBridge>,
+) -> Result<(), String> {
+    let (mut child, mut stdin, mut lines) = spawn_codex_app_server_stdio().await?;
+    let result = async {
+        initialize_codex_app_server_stdio(&mut stdin, &mut lines).await?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bridge.attach(tx).await;
+
+        let mut next_request_id = 2_i64;
+        let mut outgoing: HashMap<i64, CodexAppServerOutgoingRequest> = HashMap::new();
+        let mut pending_requests: HashMap<String, CodexAppServerPendingRequest> = HashMap::new();
+        let mut last_energy_mode: Option<EnergyMode> = None;
+
+        send_codex_app_server_thread_list_request(&mut stdin, &mut outgoing, &mut next_request_id)
+            .await?;
+
+        loop {
+            if !config_store.get().codex_app_server_sync_enabled {
+                break Ok(());
+            }
+
+            let (energy_mode, interval) = codex_app_server_refresh_interval_seconds(
+                &store,
+                config_store.get().codex_app_server_sync_interval_seconds,
+            );
+            if last_energy_mode != Some(energy_mode) {
+                log::debug!(
+                    "Codex app-server energy mode: {:?}, thread/list interval={}s",
+                    energy_mode,
+                    interval
+                );
+                last_energy_mode = Some(energy_mode);
+            }
+
+            tokio::select! {
+                line = lines.next_line() => {
+                    let line = line
+                        .map_err(|err| format!("Failed to read codex app-server message: {err}"))?
+                        .ok_or_else(|| "Codex app-server closed stdout".to_string())?;
+                    let message: serde_json::Value = serde_json::from_str(&line)
+                        .map_err(|err| format!("Invalid codex app-server JSON message: {err}"))?;
+                    handle_codex_app_server_message(
+                        &store,
+                        &mut pending_requests,
+                        &mut outgoing,
+                        &message,
+                    )
+                    .await?;
+                }
+                Some(command) = rx.recv() => {
+                    handle_codex_app_server_command(
+                        &store,
+                        &mut stdin,
+                        &mut pending_requests,
+                        command,
+                    )
+                    .await;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(interval)) => {
+                    send_codex_app_server_thread_list_request(
+                        &mut stdin,
+                        &mut outgoing,
+                        &mut next_request_id,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    .await;
+
+    bridge.detach().await;
+    shutdown_codex_app_server_child(&mut child).await;
+    result
+}
+
+async fn send_codex_app_server_thread_list_request(
+    stdin: &mut ChildStdin,
+    outgoing: &mut HashMap<i64, CodexAppServerOutgoingRequest>,
+    next_request_id: &mut i64,
+) -> Result<(), String> {
+    let request_id = *next_request_id;
+    *next_request_id += 1;
+    write_json_rpc(
+        stdin,
+        serde_json::json!({
+            "id": request_id,
+            "method": "thread/list",
+            "params": {
+                "archived": false,
+                "limit": 30,
+                "sortKey": "updated_at"
+            }
+        }),
+    )
+    .await
+    .ok_or_else(|| "Failed to request Codex thread list".to_string())?;
+    outgoing.insert(request_id, CodexAppServerOutgoingRequest::ThreadList);
+    Ok(())
+}
+
+async fn handle_codex_app_server_message(
+    store: &SessionStore,
+    pending_requests: &mut HashMap<String, CodexAppServerPendingRequest>,
+    outgoing: &mut HashMap<i64, CodexAppServerOutgoingRequest>,
+    message: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(method) = message.get("method").and_then(|value| value.as_str()) {
+        let params = message
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(request_id) = message.get("id").cloned() {
+            handle_codex_app_server_request(store, pending_requests, request_id, method, &params)
+                .await?;
+        } else {
+            handle_codex_app_server_notification(store, pending_requests, method, &params).await?;
+        }
+        return Ok(());
+    }
+
+    let Some(id) = message.get("id").and_then(|value| value.as_i64()) else {
+        return Ok(());
+    };
+    let Some(kind) = outgoing.remove(&id) else {
+        return Ok(());
+    };
+    if let Some(error) = message.get("error") {
+        log::warn!("Codex app-server request {} failed: {}", id, error);
+        return Ok(());
+    }
+    match kind {
+        CodexAppServerOutgoingRequest::ThreadList => {
+            if let Some(threads) = codex_thread_list_from_response(message) {
+                for thread in threads {
+                    sync_codex_app_server_thread_to_store(store, &thread);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_codex_app_server_notification(
+    store: &SessionStore,
+    pending_requests: &HashMap<String, CodexAppServerPendingRequest>,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), String> {
+    match method {
+        "thread/status/changed" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            if store.get_session(&thread_id).is_none() && !pending_requests.contains_key(&thread_id)
+            {
+                return Ok(());
+            }
+            let phase = codex_phase_from_status(
+                params.get("status"),
+                pending_requests
+                    .get(&thread_id)
+                    .map(|pending| &pending.kind),
+            );
+            store.get_or_create_session(&thread_id, "codex", "Codex", "/", "Codex");
+            store.update_session(&thread_id, |session| {
+                session.agent_type = "codex".to_string();
+                session.engine_label = Some("Codex App".to_string());
+                session.terminal = "Codex".to_string();
+                session.term_bundle_id = Some("com.openai.codex".to_string());
+                session.phase = phase;
+            });
+        }
+        "thread/started" => {
+            if let Some(thread) = params.get("thread") {
+                sync_codex_app_server_thread_to_store(store, thread);
+            }
+        }
+        "thread/name/updated" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            let name = codex_string(params, "threadName");
+            store.update_session(&thread_id, |session| {
+                if let Some(name) = name.clone() {
+                    session.project = name.clone();
+                    session.session_title = Some(name);
+                }
+            });
+        }
+        "thread/archived" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            store.update_session(&thread_id, |session| {
+                session.phase = SessionPhase::Done;
+                session.description = Some("Session ended".to_string());
+                session.last_response = Some("Session ended".to_string());
+            });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn handle_codex_app_server_request(
+    store: &SessionStore,
+    pending_requests: &mut HashMap<String, CodexAppServerPendingRequest>,
+    request_id: serde_json::Value,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), String> {
+    match method {
+        "item/commandExecution/requestApproval" => {
+            let thread_id = codex_string(params, "threadId")
+                .or_else(|| codex_string(params, "conversationId"))
+                .unwrap_or_default();
+            if thread_id.is_empty() {
+                return Ok(());
+            }
+            let command = params
+                .get("command")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            let reason = codex_string(params, "reason");
+            let cwd = codex_string(params, "cwd");
+            let preview = if command.is_empty() {
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "Codex wants to run a terminal command.".to_string())
+            } else {
+                command.clone()
+            };
+            pending_requests.insert(
+                thread_id.clone(),
+                CodexAppServerPendingRequest {
+                    request_id: request_id.clone(),
+                    kind: CodexAppServerPendingKind::CommandApproval,
+                    requested_permissions: None,
+                },
+            );
+            upsert_codex_app_server_pending_permission(
+                store,
+                &thread_id,
+                cwd.as_deref(),
+                &preview,
+                request_id_to_string(&request_id),
+                "exec_command",
+                &preview,
+            );
+        }
+        "item/fileChange/requestApproval" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            let preview = codex_string(params, "reason")
+                .or_else(|| codex_string(params, "grantRoot"))
+                .unwrap_or_else(|| "Codex wants to modify files in this workspace.".to_string());
+            pending_requests.insert(
+                thread_id.clone(),
+                CodexAppServerPendingRequest {
+                    request_id: request_id.clone(),
+                    kind: CodexAppServerPendingKind::FileApproval,
+                    requested_permissions: None,
+                },
+            );
+            upsert_codex_app_server_pending_permission(
+                store,
+                &thread_id,
+                None,
+                &preview,
+                request_id_to_string(&request_id),
+                "file_change",
+                &preview,
+            );
+        }
+        "item/permissions/requestApproval" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            let permissions = params
+                .get("permissions")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let preview = codex_string(params, "reason")
+                .unwrap_or_else(|| codex_app_server_permission_summary(&permissions));
+            pending_requests.insert(
+                thread_id.clone(),
+                CodexAppServerPendingRequest {
+                    request_id: request_id.clone(),
+                    kind: CodexAppServerPendingKind::PermissionsApproval,
+                    requested_permissions: Some(permissions.clone()),
+                },
+            );
+            upsert_codex_app_server_pending_permission(
+                store,
+                &thread_id,
+                None,
+                &preview,
+                request_id_to_string(&request_id),
+                "permissions_request",
+                &preview,
+            );
+        }
+        "item/tool/requestUserInput" => {
+            let Some(thread_id) = codex_string(params, "threadId") else {
+                return Ok(());
+            };
+            let pending_question = codex_app_server_pending_question(params, &request_id);
+            let preview = pending_question.question.clone();
+            pending_requests.insert(
+                thread_id.clone(),
+                CodexAppServerPendingRequest {
+                    request_id,
+                    kind: CodexAppServerPendingKind::UserInput,
+                    requested_permissions: None,
+                },
+            );
+            upsert_codex_app_server_pending_question(store, &thread_id, &preview, pending_question);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn handle_codex_app_server_command(
+    store: &SessionStore,
+    stdin: &mut ChildStdin,
+    pending_requests: &mut HashMap<String, CodexAppServerPendingRequest>,
+    command: CodexAppServerCommand,
+) {
+    match command {
+        CodexAppServerCommand::Permission {
+            thread_id,
+            allowed,
+            always,
+            reply,
+        } => {
+            let result = match pending_requests.remove(&thread_id) {
+                Some(pending)
+                    if matches!(
+                        pending.kind,
+                        CodexAppServerPendingKind::CommandApproval
+                            | CodexAppServerPendingKind::FileApproval
+                            | CodexAppServerPendingKind::PermissionsApproval
+                    ) =>
+                {
+                    let response = codex_app_server_permission_response(&pending, allowed, always);
+                    match write_json_rpc(
+                        stdin,
+                        serde_json::json!({
+                            "id": pending.request_id,
+                            "result": response
+                        }),
+                    )
+                    .await
+                    {
+                        Some(()) => {
+                            clear_codex_app_server_interaction(store, &thread_id);
+                            Ok(true)
+                        }
+                        None => {
+                            Err("Failed to send Codex app-server permission response".to_string())
+                        }
+                    }
+                }
+                Some(pending) => {
+                    pending_requests.insert(thread_id.clone(), pending);
+                    Ok(false)
+                }
+                None => Ok(false),
+            };
+            let _ = reply.send(result);
+        }
+        CodexAppServerCommand::Question {
+            thread_id,
+            answers,
+            reply,
+        } => {
+            let result = match pending_requests.remove(&thread_id) {
+                Some(pending) if pending.kind == CodexAppServerPendingKind::UserInput => {
+                    match write_json_rpc(
+                        stdin,
+                        serde_json::json!({
+                            "id": pending.request_id,
+                            "result": codex_request_user_input_payload(answers)
+                        }),
+                    )
+                    .await
+                    {
+                        Some(()) => {
+                            clear_codex_app_server_interaction(store, &thread_id);
+                            Ok(true)
+                        }
+                        None => {
+                            Err("Failed to send Codex app-server question response".to_string())
+                        }
+                    }
+                }
+                Some(pending) => {
+                    pending_requests.insert(thread_id.clone(), pending);
+                    Ok(false)
+                }
+                None => Ok(false),
+            };
+            let _ = reply.send(result);
+        }
+    }
+}
+
+fn upsert_codex_app_server_pending_permission(
+    store: &SessionStore,
+    thread_id: &str,
+    cwd: Option<&str>,
+    preview: &str,
+    tool_use_id: String,
+    tool_name: &str,
+    tool_input: &str,
+) {
+    let cwd = cwd.unwrap_or("/");
+    store.get_or_create_session(thread_id, "codex", "Codex", cwd, "Codex");
+    store.update_session(thread_id, |session| {
+        session.agent_type = "codex".to_string();
+        session.engine_label = Some("Codex App".to_string());
+        session.project = session
+            .project
+            .trim()
+            .is_empty()
+            .then(|| "Codex".to_string())
+            .unwrap_or_else(|| session.project.clone());
+        session.cwd = cwd.to_string();
+        session.terminal = "Codex".to_string();
+        session.term_bundle_id = Some("com.openai.codex".to_string());
+        session.phase = SessionPhase::WaitingApproval;
+        session.description = Some(preview.to_string());
+        session.pending_permission = Some(crate::hooks::session_store::PendingPermission {
+            tool_use_id: Some(tool_use_id),
+            tool_name: tool_name.to_string(),
+            tool_input: tool_input.to_string(),
+            diff: None,
+            options: None,
+        });
+        session.pending_question = None;
+        session.pending_plan = None;
+    });
+}
+
+fn upsert_codex_app_server_pending_question(
+    store: &SessionStore,
+    thread_id: &str,
+    preview: &str,
+    pending_question: PendingQuestion,
+) {
+    store.get_or_create_session(thread_id, "codex", "Codex", "/", "Codex");
+    store.update_session(thread_id, |session| {
+        session.agent_type = "codex".to_string();
+        session.engine_label = Some("Codex App".to_string());
+        session.terminal = "Codex".to_string();
+        session.term_bundle_id = Some("com.openai.codex".to_string());
+        session.phase = SessionPhase::WaitingInput;
+        session.description = Some(preview.to_string());
+        session.pending_question = Some(pending_question);
+        session.pending_permission = None;
+        session.pending_plan = None;
+    });
+}
+
+fn clear_codex_app_server_interaction(store: &SessionStore, thread_id: &str) {
+    store.update_session(thread_id, |session| {
+        session.pending_permission = None;
+        session.pending_question = None;
+        session.pending_plan = None;
+        session.phase = SessionPhase::Processing;
+    });
+}
+
+fn codex_app_server_permission_response(
+    pending: &CodexAppServerPendingRequest,
+    allowed: bool,
+    always: bool,
+) -> serde_json::Value {
+    match pending.kind {
+        CodexAppServerPendingKind::PermissionsApproval => serde_json::json!({
+            "permissions": if allowed {
+                pending.requested_permissions.clone().unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            },
+            "scope": if allowed && always { "session" } else { "turn" }
+        }),
+        _ => serde_json::json!({
+            "decision": if allowed {
+                if always { "acceptForSession" } else { "accept" }
+            } else {
+                "decline"
+            }
+        }),
+    }
+}
+
+fn codex_app_server_permission_summary(permissions: &serde_json::Value) -> String {
+    let Some(object) = permissions.as_object() else {
+        return "Codex requested extra permissions.".to_string();
+    };
+    if object.is_empty() {
+        return "Codex requested extra permissions.".to_string();
+    }
+    object
+        .keys()
+        .map(|key| format!("Codex requested {key} permission."))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn codex_app_server_pending_question(
+    params: &serde_json::Value,
+    request_id: &serde_json::Value,
+) -> PendingQuestion {
+    let questions = params
+        .get("questions")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(codex_app_server_question_item)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let first = questions.first();
+    let question = first
+        .map(|item| item.question.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Codex needs your input.".to_string());
+    let options = first
+        .map(|item| {
+            item.options
+                .iter()
+                .map(|option| option.label.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let descriptions = first
+        .map(|item| {
+            item.options
+                .iter()
+                .map(|option| option.description.clone().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    PendingQuestion {
+        question,
+        options,
+        descriptions,
+        header: first.and_then(|item| item.header.clone()),
+        multi_select: first.map(|item| item.multi_select).unwrap_or(false),
+        questions,
+        tool_use_id: Some(request_id_to_string(request_id)),
+        source: Some("codex_app_server_request_user_input".to_string()),
+        response_mode: Some("app_server".to_string()),
+    }
+}
+
+fn codex_app_server_question_item(
+    value: &serde_json::Value,
+) -> crate::hooks::session_store::QuestionItem {
+    let question = codex_string(value, "question").unwrap_or_default();
+    let id = codex_string(value, "id");
+    let header = codex_string(value, "header");
+    let multi_select = value
+        .get("isMultiple")
+        .or_else(|| value.get("allowsMultiple"))
+        .or_else(|| value.get("multiSelect"))
+        .or_else(|| value.get("multiple"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let options = value
+        .get("options")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, option)| crate::hooks::session_store::QuestionOption {
+                        label: codex_string(option, "label")
+                            .unwrap_or_else(|| format!("Option {}", index + 1)),
+                        description: codex_string(option, "description"),
+                    },
+                )
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::hooks::session_store::QuestionItem {
+        id,
+        question,
+        header,
+        options,
+        multi_select,
+    }
+}
+
+fn request_id_to_string(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .unwrap_or_else(|| value.to_string())
+}
+
+async fn sync_codex_app_server_threads_inner(
+    store: &SessionStore,
+    limit: u32,
+    include_turns: bool,
+) -> Result<CodexAppServerSyncReport, String> {
+    let (mut child, mut stdin, mut lines) = spawn_codex_app_server_stdio().await?;
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        initialize_codex_app_server_stdio(&mut stdin, &mut lines).await?;
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "id": 2,
+                "method": "thread/list",
+                "params": {
+                    "archived": false,
+                    "limit": limit,
+                    "sortKey": "updated_at"
+                }
+            }),
+        )
+        .await
+        .ok_or_else(|| "Failed to request Codex thread list".to_string())?;
+        let list_response = read_json_rpc_response_result(&mut lines, 2).await?;
+        let threads = codex_thread_list_from_response(&list_response)
+            .ok_or_else(|| "Invalid Codex thread/list response".to_string())?;
+
+        let mut report = CodexAppServerSyncReport {
+            total: threads.len(),
+            synced: 0,
+            read: 0,
+            errors: Vec::new(),
+            threads: Vec::new(),
+        };
+
+        let mut request_id = 3_i64;
+        for thread in threads {
+            let thread_id = thread
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let mut effective_thread = thread.clone();
+
+            if include_turns {
+                if let Some(thread_id) = thread_id.as_deref() {
+                    write_json_rpc(
+                        &mut stdin,
+                        serde_json::json!({
+                            "id": request_id,
+                            "method": "thread/read",
+                            "params": {
+                                "threadId": thread_id,
+                                "includeTurns": true
+                            }
+                        }),
+                    )
+                    .await
+                    .ok_or_else(|| "Failed to request Codex thread detail".to_string())?;
+                    match read_json_rpc_response_result(&mut lines, request_id).await {
+                        Ok(response) => {
+                            if let Some(read_thread) = response
+                                .get("result")
+                                .and_then(|result| result.get("thread"))
+                                .cloned()
+                            {
+                                effective_thread = read_thread;
+                                report.read += 1;
+                            } else {
+                                report
+                                    .errors
+                                    .push(format!("{thread_id}: invalid thread/read response"));
+                            }
+                        }
+                        Err(err) => report.errors.push(format!("{thread_id}: {err}")),
+                    }
+                    request_id += 1;
+                }
+            }
+
+            if let Some(summary) = sync_codex_app_server_thread_to_store(store, &effective_thread) {
+                report.synced += 1;
+                report.threads.push(summary);
+            }
+        }
+
+        Ok::<CodexAppServerSyncReport, String>(report)
+    })
+    .await
+    .map_err(|_| "Timed out syncing Codex app-server threads".to_string())
+    .and_then(|inner| inner);
+
+    shutdown_codex_app_server_child(&mut child).await;
+    result
+}
+
+fn codex_thread_list_from_response(response: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    let result = response.get("result")?;
+    let threads = result
+        .get("data")
+        .or_else(|| result.get("threads"))
+        .or_else(|| result.get("items"))?
+        .as_array()?;
+    Some(threads.clone())
+}
+
+fn sync_codex_app_server_thread_to_store(
+    store: &SessionStore,
+    thread: &serde_json::Value,
+) -> Option<CodexAppServerThreadSummary> {
+    let thread_id = codex_string(thread, "id")?;
+    let name = codex_string(thread, "name");
+    let preview = codex_string(thread, "preview");
+    let cwd = codex_string(thread, "cwd")
+        .or_else(|| codex_string(thread, "path"))
+        .unwrap_or_else(|| "/".to_string());
+    let phase = codex_phase_from_thread(thread);
+    let status = thread
+        .get("status")
+        .and_then(|status| status.get("type"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let updated_at = codex_timestamp(thread.get("updatedAt").or_else(|| thread.get("updated_at")));
+    let created_at = codex_timestamp(thread.get("createdAt").or_else(|| thread.get("created_at")));
+    let (last_user_message, last_response) = codex_latest_messages_from_thread(thread);
+    let project = name
+        .clone()
+        .or_else(|| preview.clone())
+        .or_else(|| {
+            Path::new(&cwd)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Codex".to_string());
+
+    store.get_or_create_session(&thread_id, "codex", &project, &cwd, "Codex");
+    store.update_session(&thread_id, |session| {
+        session.agent_type = "codex".to_string();
+        session.engine_label = Some("Codex App".to_string());
+        session.project = project.clone();
+        session.cwd = cwd.clone();
+        session.terminal = "Codex".to_string();
+        session.term_bundle_id = Some("com.openai.codex".to_string());
+        session.phase = if session.pending_permission.is_some() || session.pending_plan.is_some() {
+            SessionPhase::WaitingApproval
+        } else if session.pending_question.is_some() {
+            SessionPhase::WaitingInput
+        } else {
+            phase.clone()
+        };
+        session.session_title = name.clone().or_else(|| preview.clone());
+        session.description = preview.clone();
+        if let Some(created_at) = created_at {
+            session.started_at = created_at;
+        }
+        if let Some(updated_at) = updated_at {
+            session.last_main_agent_at = Some(updated_at);
+        }
+        if last_user_message.is_some() {
+            session.last_user_message = last_user_message.clone();
+        }
+        if last_response.is_some() {
+            session.last_response = last_response.clone();
+        }
+    });
+
+    Some(CodexAppServerThreadSummary {
+        id: thread_id,
+        name,
+        preview,
+        cwd: Some(cwd),
+        status,
+        phase: format!("{:?}", phase),
+        updated_at,
+    })
+}
+
+fn sync_remote_codex_thread_to_store(
+    store: &SessionStore,
+    host: &RemoteHost,
+    thread: &crate::remote::installer::RemoteCodexThreadSnapshot,
+) -> Option<CodexAppServerThreadSummary> {
+    let thread_id = thread.id.trim();
+    let cwd = thread.cwd.trim();
+    if thread_id.is_empty() || cwd.is_empty() {
+        return None;
+    }
+
+    let preview = thread
+        .preview
+        .clone()
+        .or_else(|| thread.title.clone())
+        .filter(|value| !value.trim().is_empty());
+    let name = thread
+        .title
+        .clone()
+        .or_else(|| preview.clone())
+        .filter(|value| !value.trim().is_empty());
+    let project = name
+        .clone()
+        .or_else(|| {
+            Path::new(cwd)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Codex".to_string());
+    let updated_at = (thread.updated_at_ms > 0).then_some(thread.updated_at_ms / 1000);
+    let status = Some(
+        thread
+            .thread_source
+            .clone()
+            .or_else(|| thread.source.clone())
+            .unwrap_or_else(|| "remote-state".to_string()),
+    );
+
+    store.get_or_create_session(thread_id, "codex", &project, cwd, &host.name);
+    store.update_session(thread_id, |session| {
+        session.agent_type = "codex".to_string();
+        session.engine_label = Some(format!("Codex App · {}", host.name));
+        session.project = project.clone();
+        session.cwd = cwd.to_string();
+        session.terminal = host.name.clone();
+        session.term_bundle_id = None;
+        session.pid = None;
+        session.tty = None;
+        session.remote_host_id = Some(host.id.clone());
+        session.remote_host_name = Some(host.name.clone());
+        session.phase = if session.pending_permission.is_some() || session.pending_plan.is_some() {
+            SessionPhase::WaitingApproval
+        } else if session.pending_question.is_some() {
+            SessionPhase::WaitingInput
+        } else {
+            SessionPhase::Processing
+        };
+        session.session_title = name.clone();
+        session.description = preview.clone();
+        if let Some(updated_at) = updated_at {
+            session.last_main_agent_at = Some(updated_at);
+        }
+        if let Some(title) = name
+            .as_deref()
+            .filter(|title| preview.as_deref() != Some(*title))
+        {
+            session.last_user_message = Some(title.to_string());
+        }
+        if let Some(preview) = preview.clone() {
+            session.last_response = Some(preview);
+        }
+    });
+
+    Some(CodexAppServerThreadSummary {
+        id: thread_id.to_string(),
+        name,
+        preview,
+        cwd: Some(cwd.to_string()),
+        status,
+        phase: format!("{:?}", SessionPhase::Processing),
+        updated_at,
+    })
+}
+
+fn codex_phase_from_thread(thread: &serde_json::Value) -> SessionPhase {
+    codex_phase_from_status(thread.get("status"), None)
+}
+
+fn codex_phase_from_status(
+    status: Option<&serde_json::Value>,
+    pending_kind: Option<&CodexAppServerPendingKind>,
+) -> SessionPhase {
+    if matches!(
+        pending_kind,
+        Some(
+            CodexAppServerPendingKind::CommandApproval
+                | CodexAppServerPendingKind::FileApproval
+                | CodexAppServerPendingKind::PermissionsApproval
+        )
+    ) {
+        return SessionPhase::WaitingApproval;
+    }
+    if pending_kind == Some(&CodexAppServerPendingKind::UserInput) {
+        return SessionPhase::WaitingInput;
+    }
+
+    let status_type = status
+        .and_then(|status| status.get("type"))
+        .and_then(|value| value.as_str());
+    match status_type {
+        Some("active") | Some("running") | Some("processing") => {
+            let flags = status
+                .and_then(|status| status.get("activeFlags"))
+                .or_else(|| status.and_then(|status| status.get("active_flags")))
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if flags.iter().any(|flag| *flag == "waitingOnApproval") {
+                SessionPhase::WaitingApproval
+            } else if flags.iter().any(|flag| *flag == "waitingOnUserInput") {
+                SessionPhase::WaitingInput
+            } else {
+                SessionPhase::Processing
+            }
+        }
+        Some("error") | Some("failed") => SessionPhase::Error,
+        _ => SessionPhase::Idle,
+    }
+}
+
+fn codex_latest_messages_from_thread(
+    thread: &serde_json::Value,
+) -> (Option<String>, Option<String>) {
+    let mut latest_user = None;
+    let mut latest_agent = None;
+    let Some(turns) = thread.get("turns").and_then(|value| value.as_array()) else {
+        return (latest_user, latest_agent);
+    };
+
+    for item in turns
+        .iter()
+        .filter_map(|turn| turn.get("items").and_then(|items| items.as_array()))
+        .flatten()
+    {
+        match item.get("type").and_then(|value| value.as_str()) {
+            Some("userMessage") => {
+                if let Some(text) = codex_user_message_text(item) {
+                    latest_user = Some(text);
+                }
+            }
+            Some("agentMessage") => {
+                if let Some(text) = codex_string(item, "text") {
+                    latest_agent = Some(text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (latest_user, latest_agent)
+}
+
+fn codex_user_message_text(item: &serde_json::Value) -> Option<String> {
+    if let Some(text) = codex_string(item, "text") {
+        return Some(text);
+    }
+    let content = item.get("content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter_map(|part| {
+            part.as_str()
+                .map(str::to_string)
+                .or_else(|| codex_string(part, "text"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+fn codex_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn codex_timestamp(value: Option<&serde_json::Value>) -> Option<i64> {
+    match value? {
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value.round() as i64)),
+        serde_json::Value::String(value) => chrono::DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|value| value.timestamp())
+            .or_else(|| value.parse::<i64>().ok()),
+        _ => None,
+    }
+}
+
 fn codex_usage_snapshot_from_rpc_message(
     message: &serde_json::Value,
 ) -> Option<UsageRateLimitSnapshot> {
@@ -856,6 +2215,20 @@ pub async fn respond_permission(
         always
     );
 
+    match state
+        .codex_app_server
+        .respond_permission(&session_id, allowed, always)
+        .await
+    {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        Err(err) => log::warn!(
+            "Codex app-server permission response failed for {}: {}",
+            session_id,
+            err
+        ),
+    }
+
     // Try hook socket first
     let hook_result = state
         .hook_server
@@ -991,7 +2364,7 @@ fn is_codex_desktop_session(session: &SessionState) -> bool {
     let missing_tty = session
         .tty
         .as_deref()
-        .map_or(true, |tty| tty.trim().is_empty());
+        .is_none_or(|tty| tty.trim().is_empty());
     missing_tty
         && !terminal.starts_with("/dev/")
         && (terminal.is_empty() || terminal.to_ascii_lowercase().contains("codex"))
@@ -1013,6 +2386,75 @@ fn is_qoder_app_session(session: &SessionState) -> bool {
             .as_deref()
             .is_some_and(is_qoder_app_bundle)
             || session.terminal.to_ascii_lowercase().contains("qoder"))
+}
+
+fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    matches!(
+        (session.agent_type.as_str(), lower.as_str()),
+        ("codex", "com.openai.codex")
+            | ("cursor", "com.todesktop.230313mzl4w4u92")
+            | ("cursor-cli", "com.todesktop.230313mzl4w4u92")
+            | ("trae", "com.trae.app")
+            | ("traecn", "com.trae.app")
+            | ("trae-cli", "com.trae.app")
+            | ("traecli", "com.trae.app")
+            | ("qoder", "com.qoder.ide")
+            | ("qoder-cli", "com.qoder.ide")
+            | ("droid", "com.factory.app")
+            | ("codebuddy", "com.tencent.codebuddy")
+            | ("codebuddycn", "com.tencent.codebuddy.cn")
+            | ("codybuddycn", "com.tencent.codebuddy.cn")
+            | ("stepfun", "com.stepfun.app")
+            | ("opencode", "ai.opencode.desktop")
+            | ("workbuddy", "com.workbuddy.workbuddy")
+    )
+}
+
+fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    lower.contains("vscode")
+        || lower.contains("vscodium")
+        || lower.contains("todesktop.230313mzl4w4u92")
+        || lower.contains("cursor")
+        || lower.contains("windsurf")
+        || lower.contains("codeium")
+        || lower.contains("zed")
+        || lower.contains("jetbrains")
+        || lower.contains("xcode")
+        || lower == "com.apple.dt.xcode"
+        || lower.contains("panic.nova")
+        || lower.contains("android.studio")
+        || lower.contains("antigravity")
+        || lower == "com.trae.app"
+        || lower == "com.qoder.ide"
+        || lower == "com.qoder.ide.helper"
+        || lower == "com.factory.app"
+        || lower == "com.tencent.codebuddy"
+        || lower == "com.tencent.codebuddy.cn"
+        || lower == "com.stepfun.app"
+        || lower == "ai.opencode.desktop"
+        || lower == "com.workbuddy.workbuddy"
+}
+
+fn is_ide_terminal_session(session: &SessionState) -> bool {
+    let Some(bundle_id) = session
+        .term_bundle_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    if crate::terminal::registry::is_terminal_bundle(bundle_id)
+        && !is_known_ide_or_agent_host_bundle(bundle_id)
+    {
+        return false;
+    }
+
+    is_known_ide_or_agent_host_bundle(bundle_id)
+        && !native_app_bundle_matches_session(session, bundle_id)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1075,6 +2517,11 @@ fn codex_session_meta_payload(entry: &serde_json::Value) -> Option<&serde_json::
 fn app_host_bundle_id(session: &SessionState) -> Option<&str> {
     let bundle_id = session.term_bundle_id.as_deref()?.trim();
     if bundle_id.is_empty() || crate::terminal::registry::is_terminal_bundle(bundle_id) {
+        return None;
+    }
+    if is_known_ide_or_agent_host_bundle(bundle_id)
+        && !native_app_bundle_matches_session(session, bundle_id)
+    {
         return None;
     }
     Some(bundle_id)
@@ -1656,6 +3103,22 @@ pub async fn respond_question(
 
     if let Some(session) = state.session_store.get_session(&session_id) {
         if let Some(question) = session.pending_question.clone() {
+            if is_codex_app_server_question(&question) {
+                let answers = codex_answers_for_pending_question(&question, &answer);
+                match state
+                    .codex_app_server
+                    .respond_question(&session_id, answers)
+                    .await
+                {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(err) => log::warn!(
+                        "Codex app-server question response failed for {}: {}",
+                        session_id,
+                        err
+                    ),
+                }
+            }
             if is_codex_rollout_question(&question) {
                 let call_id = question
                     .tool_use_id
@@ -1684,6 +3147,11 @@ pub async fn respond_question(
 fn is_codex_rollout_question(question: &PendingQuestion) -> bool {
     question.source.as_deref() == Some("codex_rollout_request_user_input")
         && question.response_mode.as_deref() == Some("external_only")
+}
+
+fn is_codex_app_server_question(question: &PendingQuestion) -> bool {
+    question.source.as_deref() == Some("codex_app_server_request_user_input")
+        && question.response_mode.as_deref() == Some("app_server")
 }
 
 fn codex_answers_for_pending_question(
@@ -1859,11 +3327,15 @@ async fn submit_codex_request_user_input_output(
 }
 
 fn codex_request_user_input_output(answers: BTreeMap<String, Vec<String>>) -> String {
+    codex_request_user_input_payload(answers).to_string()
+}
+
+fn codex_request_user_input_payload(answers: BTreeMap<String, Vec<String>>) -> serde_json::Value {
     let formatted_answers = answers
         .into_iter()
         .map(|(key, values)| (key, serde_json::json!({ "answers": values })))
         .collect::<serde_json::Map<_, _>>();
-    serde_json::json!({ "answers": formatted_answers }).to_string()
+    serde_json::json!({ "answers": formatted_answers })
 }
 
 // ── Plan Response Command ────────────────────────────────────────
@@ -2295,7 +3767,29 @@ pub async fn jump_to_terminal(
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
-    if app_host_bundle_id(&session).is_some() || is_codex_desktop_session(&session) {
+    if is_codex_desktop_session(&session) {
+        return open_app_host_session(&session);
+    }
+    if is_ide_terminal_session(&session) {
+        let bundle_id = session
+            .term_bundle_id
+            .as_deref()
+            .ok_or_else(|| "IDE terminal session has no app bundle metadata".to_string())?;
+        return match crate::terminal::jump::jump_to_ide_window(
+            bundle_id,
+            Some(session.cwd.as_str()),
+        ) {
+            crate::terminal::jump::JumpResult::Success => Ok(()),
+            crate::terminal::jump::JumpResult::SessionNotFound => {
+                Err("Session not found".to_string())
+            }
+            crate::terminal::jump::JumpResult::TerminalNotFound => {
+                Err("IDE host app not found".to_string())
+            }
+            crate::terminal::jump::JumpResult::Failed(msg) => Err(msg),
+        };
+    }
+    if app_host_bundle_id(&session).is_some() {
         return open_app_host_session(&session);
     }
 
@@ -2686,17 +4180,43 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         status: if bridge.exists() { "ok" } else { "error" }.to_string(),
         detail: bridge.display().to_string(),
     });
-
     checks.push(HookDoctorCheck {
-        id: "hook-server".to_string(),
-        label: "Hook server socket".to_string(),
-        status: if std::path::Path::new(&hook_endpoint::current().socket_path).exists() {
+        id: "bridge-current".to_string(),
+        label: "Bridge version".to_string(),
+        status: if crate::agents::hook_manager::bridge_binary_is_current() {
             "ok"
         } else {
             "warn"
         }
         .to_string(),
-        detail: hook_endpoint::current().socket_path,
+        detail: "Installed hook bridge matches bundled bridge".to_string(),
+    });
+
+    let endpoint = hook_endpoint::current();
+    let socket_status = tokio::time::timeout(
+        Duration::from_millis(300),
+        tokio::net::UnixStream::connect(&endpoint.socket_path),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    checks.push(HookDoctorCheck {
+        id: "hook-server".to_string(),
+        label: "Hook server socket".to_string(),
+        status: if socket_status { "ok" } else { "warn" }.to_string(),
+        detail: endpoint.socket_path.clone(),
+    });
+
+    let tcp_status = tokio::time::timeout(
+        Duration::from_millis(300),
+        tokio::net::TcpStream::connect(endpoint.tcp_addr()),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    checks.push(HookDoctorCheck {
+        id: "hook-server-tcp".to_string(),
+        label: "Hook server TCP".to_string(),
+        status: if tcp_status { "ok" } else { "warn" }.to_string(),
+        detail: endpoint.tcp_addr(),
     });
 
     let adapters = state
@@ -2709,6 +4229,47 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         label: "Installed hooks".to_string(),
         status: if adapters > 0 { "ok" } else { "warn" }.to_string(),
         detail: format!("{adapters} adapter configs contain AgentBro hooks"),
+    });
+
+    let mut present_profiles = 0usize;
+    let mut unhealthy_profiles = Vec::new();
+    for adapter in &state.adapters {
+        let Some(profile) = crate::agents::profiles::profile_for_agent(adapter.name()) else {
+            continue;
+        };
+        let health = crate::agents::profiles::install_health_for_profile(&profile);
+        if !health.is_present() {
+            continue;
+        }
+        present_profiles += 1;
+        if health != crate::agents::profiles::HookInstallHealth::Installed {
+            unhealthy_profiles.push(format!("{}={}", profile.id, health.as_status_str()));
+            checks.push(HookDoctorCheck {
+                id: format!("hook-profile-{}", profile.id),
+                label: format!("{} hook profile", adapter.display_name()),
+                status: doctor_status_for_hook_health(health).to_string(),
+                detail: health.as_status_str().to_string(),
+            });
+        }
+    }
+    checks.push(HookDoctorCheck {
+        id: "hook-profile-health".to_string(),
+        label: "Hook event coverage".to_string(),
+        status: if unhealthy_profiles.is_empty() {
+            if present_profiles > 0 {
+                "ok"
+            } else {
+                "warn"
+            }
+        } else {
+            "warn"
+        }
+        .to_string(),
+        detail: if unhealthy_profiles.is_empty() {
+            format!("{present_profiles} installed profiles checked")
+        } else {
+            unhealthy_profiles.join(", ")
+        },
     });
 
     checks.push(HookDoctorCheck {
@@ -2743,6 +4304,18 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         generated_at: chrono::Utc::now().timestamp(),
         checks,
     })
+}
+
+fn doctor_status_for_hook_health(
+    health: crate::agents::profiles::HookInstallHealth,
+) -> &'static str {
+    match health {
+        crate::agents::profiles::HookInstallHealth::Installed => "ok",
+        crate::agents::profiles::HookInstallHealth::SettingsCorrupted
+        | crate::agents::profiles::HookInstallHealth::Error => "error",
+        crate::agents::profiles::HookInstallHealth::NotInstalled
+        | crate::agents::profiles::HookInstallHealth::NeedsReinstall => "warn",
+    }
 }
 
 // ── Config Commands ───────────────────────────────────────────────
@@ -2925,8 +4498,14 @@ pub async fn set_island_surface_options(
         let handle = app.clone();
         let saved_origin = config.island_pet_window_origin.clone();
         let is_pet_mode = config.island_surface_mode == "pet";
+        let pet_scale = config.island_pet_scale.clamp(50, 120) as f64;
         app.run_on_main_thread(move || {
-            crate::sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
+            crate::sync_pet_window_visibility_inner(
+                &handle,
+                is_pet_mode,
+                saved_origin.as_ref(),
+                pet_scale,
+            );
         })
         .map_err(|e| e.to_string())?;
     }
@@ -2940,6 +4519,24 @@ pub async fn set_active_pet_id(
 ) -> Result<(), String> {
     let mut config = state.config_store.get();
     config.island_active_pet_id = pet_id.filter(|s| !s.is_empty());
+    state.config_store.update(config)
+}
+
+#[tauri::command]
+pub async fn set_agent_default_pet(
+    state: State<'_, AppState>,
+    agent: String,
+    pet_id: Option<String>,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    match pet_id.filter(|s| !s.is_empty()) {
+        Some(pid) => {
+            config.island_agent_pet_map.insert(agent, pid);
+        }
+        None => {
+            config.island_agent_pet_map.remove(&agent);
+        }
+    }
     state.config_store.update(config)
 }
 
@@ -3021,12 +4618,15 @@ pub async fn get_chat_history(
     }
 
     // Try to discover the JSONL file for this session.
-    let file_path = if session.as_ref().is_some_and(|s| s.agent_type == "codex") {
-        discover_codex_session_file(&session_id)
-            .or_else(|| discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs))
-    } else {
-        discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs)
-    };
+    let file_path =
+        if session.as_ref().and_then(|s| s.engine_label.as_deref()) == Some("Claude Desktop") {
+            crate::hooks::claude_desktop_watcher::find_audit_file_for_cli_session(&session_id)
+        } else if session.as_ref().is_some_and(|s| s.agent_type == "codex") {
+            discover_codex_session_file(&session_id)
+                .or_else(|| discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs))
+        } else {
+            discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs)
+        };
 
     let Some(file_path) = file_path else {
         if let Some(ref session) = session {
@@ -3325,6 +4925,7 @@ fn parse_subagent_chat_history_for_session(
     session: &SessionState,
     transcript_path: &str,
 ) -> Result<Vec<ParsedMessage>, String> {
+    let (transcript_path, requested_agent_id) = split_subagent_history_request(transcript_path);
     let requested_path = crate::agents::claude_code::expand_tilde(transcript_path);
     let requested_path = requested_path
         .canonicalize()
@@ -3345,10 +4946,73 @@ fn parse_subagent_chat_history_for_session(
         return Err("Subagent transcript is not registered on this session".to_string());
     }
 
+    if let Some(subagent) = session.subagents.iter().find(|subagent| {
+        requested_agent_id
+            .as_deref()
+            .map(|agent_id| subagent.agent_id == agent_id)
+            .unwrap_or(true)
+            && subagent.agent_transcript_path.is_none()
+            && subagent
+                .transcript_path
+                .as_ref()
+                .map(|path| crate::agents::claude_code::expand_tilde(path))
+                .and_then(|path| path.canonicalize().ok())
+                .map(|path| path == requested_path)
+                .unwrap_or(false)
+    }) {
+        return Ok(synthetic_subagent_chat_history(subagent));
+    }
+
+    if requested_agent_id.is_some() {
+        return Err("Subagent transcript is not registered on this session".to_string());
+    }
+
     let mut parser = crate::hooks::conversation_parser::ConversationParser::new(requested_path);
     parser
         .parse_full()
         .map_err(|e| format!("Failed to parse subagent conversation: {}", e))
+}
+
+fn split_subagent_history_request(transcript_path: &str) -> (&str, Option<String>) {
+    if let Some((path, agent_id)) = transcript_path.split_once("#agentbro-subagent=") {
+        (path, Some(agent_id.to_string()))
+    } else {
+        (transcript_path, None)
+    }
+}
+
+fn synthetic_subagent_chat_history(subagent: &SubagentInfo) -> Vec<ParsedMessage> {
+    let mut messages = Vec::new();
+    if !subagent.description.trim().is_empty() {
+        messages.push(ParsedMessage {
+            id: format!("{}-prompt", subagent.agent_id),
+            role: ChatRole::User,
+            timestamp: timestamp_to_rfc3339(subagent.started_at),
+            blocks: vec![MessageBlock::Text {
+                text: subagent.description.clone(),
+            }],
+        });
+    }
+    if let Some(text) = subagent
+        .last_assistant_message
+        .as_ref()
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+    {
+        messages.push(ParsedMessage {
+            id: format!("{}-response", subagent.agent_id),
+            role: ChatRole::Assistant,
+            timestamp: subagent.completed_at.and_then(timestamp_to_rfc3339),
+            blocks: vec![MessageBlock::Text {
+                text: text.to_string(),
+            }],
+        });
+    }
+    messages
+}
+
+fn timestamp_to_rfc3339(timestamp: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).map(|dt| dt.to_rfc3339())
 }
 
 // ── Diagnostics Commands ────────────────────────────────────────
@@ -3359,7 +5023,7 @@ fn redact_paths(text: &str) -> String {
         let home_str = home.to_string_lossy();
         if let Some(user_name) = home_str.rsplit('/').next() {
             let full = home_str.as_ref();
-            let redacted = format!("/Users/<user>");
+            let redacted = "/Users/<user>".to_string();
             let mut result = text.replace(full, &redacted);
             // Also redact just the username in remaining paths
             result = result.replace(&format!("/Users/{}", user_name), "/Users/<user>");
@@ -3367,6 +5031,73 @@ fn redact_paths(text: &str) -> String {
         }
     }
     text.to_string()
+}
+
+fn redact_remote_urls(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = match (rest.find("http://"), rest.find("https://")) {
+        (Some(http), Some(https)) => Some(http.min(https)),
+        (Some(http), None) => Some(http),
+        (None, Some(https)) => Some(https),
+        (None, None) => None,
+    } {
+        output.push_str(&rest[..start]);
+        let url_rest = &rest[start..];
+        let end = url_rest
+            .char_indices()
+            .find_map(|(idx, ch)| {
+                if ch.is_whitespace() || matches!(ch, '"' | '\'' | ')' | ']' | '}' | '<' | '`') {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(url_rest.len());
+        let url = &url_rest[..end];
+        if url.starts_with("http://localhost")
+            || url.starts_with("http://127.")
+            || url.starts_with("http://[::1]")
+        {
+            output.push_str(url);
+        } else {
+            output.push_str("[REDACTED_URL]");
+        }
+        rest = &url_rest[end..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn redact_sensitive_hook_config(text: &str) -> String {
+    let text = redact_remote_urls(&redact_paths(text));
+    text.lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let sensitive = [
+                "api_key",
+                "apikey",
+                "authorization",
+                "bearer ",
+                "password",
+                "secret",
+                "token",
+                "webhook",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle));
+            if sensitive {
+                let indent = line
+                    .chars()
+                    .take_while(|ch| ch.is_whitespace())
+                    .collect::<String>();
+                format!("{indent}[REDACTED sensitive hook config line]")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Generate or retrieve an anonymous install ID stored in the config directory.
@@ -3476,6 +5207,31 @@ fn sanitized_config_json(config: &AppConfig) -> serde_json::Value {
         }
     }
 
+    if let Some(value) = val.get_mut("excludedHookCwdSubstrings") {
+        let s = value.as_str().unwrap_or("");
+        *value = serde_json::Value::String(redact_paths(s));
+    }
+    if let Some(rules) = val
+        .get_mut("sessionSilenceRules")
+        .and_then(|v| v.as_array_mut())
+    {
+        for rule in rules.iter_mut() {
+            let kind = rule
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(pattern) = rule.get_mut("pattern") {
+                let s = pattern.as_str().unwrap_or("");
+                *pattern = serde_json::Value::String(if kind == "cwd" {
+                    redact_paths(s)
+                } else {
+                    "[REDACTED]".to_string()
+                });
+            }
+        }
+    }
+
     val
 }
 
@@ -3504,7 +5260,7 @@ fn collect_hooks_sections(adapters: &[Arc<dyn AgentAdapter>]) -> Vec<String> {
                                 block.push_str(&format!(
                                     "**{}**\n```json\n{}\n```\n\n",
                                     cp,
-                                    redact_paths(&content)
+                                    redact_sensitive_hook_config(&content)
                                 ));
                             }
                             Err(e) => {
@@ -3519,7 +5275,7 @@ fn collect_hooks_sections(adapters: &[Arc<dyn AgentAdapter>]) -> Vec<String> {
                         block.push_str(&format!(
                             "**{}**\n```json\n{}\n```\n\n",
                             display_path,
-                            redact_paths(&content)
+                            redact_sensitive_hook_config(&content)
                         ));
                     }
                     Err(e) => {
@@ -3598,6 +5354,7 @@ pub async fn export_diagnostics(
     let config = state.config_store.get();
     let sessions = state.session_store.get_all_sessions();
     let diagnostic_events = state.diagnostic_buffer.all();
+    let raw_event_summaries = state.hook_server.recent_raw_event_summaries(500);
     let install_id = get_or_create_install_id();
     let now = chrono::Local::now();
     let timestamp = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
@@ -3607,7 +5364,7 @@ pub async fn export_diagnostics(
 
     // Header
     md.push_str("# AgentBro Diagnostic Report\n\n");
-    md.push_str(&format!("| Field | Value |\n|---|---|\n"));
+    md.push_str("| Field | Value |\n|---|---|\n");
     md.push_str(&format!("| Generated | {} |\n", timestamp));
     md.push_str(&format!("| Version | {} |\n", env!("CARGO_PKG_VERSION")));
     md.push_str(&format!("| Install ID | {} |\n", install_id));
@@ -3644,7 +5401,7 @@ pub async fn export_diagnostics(
             hooks_str
         ));
     }
-    md.push_str("\n");
+    md.push('\n');
 
     // CLI tool versions
     md.push_str("## CLI Tools\n\n");
@@ -3674,14 +5431,14 @@ pub async fn export_diagnostics(
         for (agent, count) in &by_agent {
             md.push_str(&format!("| {} | {} |\n", agent, count));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
     if !by_phase.is_empty() {
         md.push_str("| Phase | Count |\n|---|---|\n");
         for (phase, count) in &by_phase {
             md.push_str(&format!("| {} | {} |\n", phase, count));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
     md.push_str("---\n\n");
 
@@ -3694,6 +5451,34 @@ pub async fn export_diagnostics(
         for section in &hooks_sections {
             md.push_str(section);
         }
+    }
+    md.push_str("---\n\n");
+
+    // Raw hook event summaries
+    md.push_str("## Recent Hook Events\n\n");
+    if raw_event_summaries.is_empty() {
+        md.push_str("_No raw hook events recorded._\n\n");
+    } else {
+        md.push_str(
+            "| Seq | Agent | Event | Session | CWD | Payload keys |\n|---|---|---|---|---|---|\n",
+        );
+        for event in &raw_event_summaries {
+            let cwd = event
+                .cwd
+                .as_deref()
+                .map(redact_paths)
+                .unwrap_or_else(|| "—".to_string());
+            md.push_str(&format!(
+                "| {} | {} | {} | `{}` | {} | {} |\n",
+                event.seq,
+                event.agent.as_deref().unwrap_or("—"),
+                event.event_name,
+                event.session_id,
+                cwd,
+                event.payload_keys.join(", ")
+            ));
+        }
+        md.push('\n');
     }
     md.push_str("---\n\n");
 
@@ -3715,6 +5500,9 @@ pub async fn export_diagnostics(
     md.push_str("| File | Description |\n|---|---|\n");
     md.push_str("| `Diagnostic-Report.md` | This report |\n");
     md.push_str("| `config.json` | Sanitized app configuration (JSON) |\n");
+    md.push_str(
+        "| `recent-hook-events.json` | Recent hook event summaries without raw payload content |\n",
+    );
     md.push_str("| `logs/` | Recent application logs |\n");
     md.push_str("| `crashes/` | System crash reports (if any) |\n");
 
@@ -3739,6 +5527,13 @@ pub async fn export_diagnostics(
 
     write_text(&mut zip, "Diagnostic-Report.md", &md)?;
     write_text(&mut zip, "config.json", &redact_paths(&config_json))?;
+    let hook_events_json = serde_json::to_string_pretty(&raw_event_summaries)
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+    write_text(
+        &mut zip,
+        "recent-hook-events.json",
+        &redact_paths(&hook_events_json),
+    )?;
 
     // Logs
     for (name, data) in collect_log_files() {
@@ -3847,18 +5642,27 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 mod tests {
     use super::{
         app_host_message_unsupported_error, can_fallback_to_terminal_app,
-        codex_answers_for_pending_question, codex_desktop_send_message_script,
-        codex_desktop_send_message_without_activation_script, codex_request_user_input_output,
-        fallback_terminal_app_name, is_codex_desktop_session, is_uuid_like,
-        parse_subagent_chat_history_for_session, qoder_app_send_message_script,
-        read_codex_session_meta_from_path, remote_session_chat_history, resolve_session_tty,
-        terminal_hint_for_fallback,
+        codex_answers_for_pending_question, codex_app_server_pending_question,
+        codex_app_server_permission_response, codex_app_server_refresh_interval_seconds,
+        codex_desktop_send_message_script, codex_desktop_send_message_without_activation_script,
+        codex_phase_from_thread, codex_request_user_input_output, fallback_terminal_app_name,
+        handle_codex_app_server_request, is_codex_desktop_session, is_ide_terminal_session,
+        is_uuid_like, parse_subagent_chat_history_for_session, qoder_app_send_message_script,
+        read_codex_session_meta_from_path, redact_sensitive_hook_config,
+        remote_session_chat_history, resolve_session_tty, sync_codex_app_server_thread_to_store,
+        sync_remote_codex_thread_to_store, terminal_hint_for_fallback, CodexAppServerPendingKind,
+        CodexAppServerPendingRequest,
     };
+    use crate::energy::EnergyMode;
+    use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
     use crate::hooks::server::RawHookEvent;
     use crate::hooks::session_store::{
-        PendingQuestion, QuestionItem, QuestionOption, SessionState, SubagentInfo,
+        PendingQuestion, QuestionItem, QuestionOption, SessionPhase, SessionState, SessionStore,
+        SubagentInfo,
     };
-    use std::fs;
+    use crate::remote::installer::RemoteCodexThreadSnapshot;
+    use crate::remote::RemoteHost;
+    use std::{collections::HashMap, fs};
 
     fn session(agent_type: &str, terminal: &str, tty: Option<&str>) -> SessionState {
         let mut session = SessionState::new(
@@ -3870,6 +5674,237 @@ mod tests {
         );
         session.tty = tty.map(ToString::to_string);
         session
+    }
+
+    #[test]
+    fn codex_app_server_status_maps_to_attention_phase() {
+        let thread = serde_json::json!({
+            "status": {
+                "type": "active",
+                "activeFlags": ["waitingOnUserInput"]
+            }
+        });
+
+        assert_eq!(codex_phase_from_thread(&thread), SessionPhase::WaitingInput);
+    }
+
+    #[test]
+    fn codex_app_server_thread_sync_updates_session_store() {
+        let store = SessionStore::new();
+        let thread = serde_json::json!({
+            "id": "thread-1",
+            "name": "Fix flaky tests",
+            "preview": "Investigate test timing",
+            "cwd": "/tmp/agentbro",
+            "createdAt": 1_700_000_000,
+            "updatedAt": 1_700_000_120,
+            "status": { "type": "active", "activeFlags": [] },
+            "turns": [{
+                "items": [
+                    {
+                        "type": "userMessage",
+                        "content": [{ "type": "input_text", "text": "Please fix tests" }]
+                    },
+                    {
+                        "type": "agentMessage",
+                        "text": "I found the timing issue.",
+                        "phase": "final"
+                    }
+                ]
+            }]
+        });
+
+        let summary = sync_codex_app_server_thread_to_store(&store, &thread).unwrap();
+        let session = store.get_session("thread-1").unwrap();
+
+        assert_eq!(summary.phase, "Processing");
+        assert_eq!(session.agent_type, "codex");
+        assert_eq!(session.engine_label.as_deref(), Some("Codex App"));
+        assert_eq!(session.project, "Fix flaky tests");
+        assert_eq!(session.cwd, "/tmp/agentbro");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(
+            session.last_user_message.as_deref(),
+            Some("Please fix tests")
+        );
+        assert_eq!(
+            session.last_response.as_deref(),
+            Some("I found the timing issue.")
+        );
+        assert_eq!(session.term_bundle_id.as_deref(), Some("com.openai.codex"));
+    }
+
+    #[test]
+    fn remote_codex_state_sync_marks_session_as_remote_codex_app() {
+        let store = SessionStore::new();
+        let host = RemoteHost {
+            id: "host-1".to_string(),
+            name: "GPU Box".to_string(),
+            ssh_target: "dev@gpu-box".to_string(),
+            port: Some(22),
+            identity_file: None,
+            auth_socket: None,
+            remote_socket_path: "/tmp/agentbro-remote.sock".to_string(),
+            auto_connect: true,
+        };
+        let thread = RemoteCodexThreadSnapshot {
+            id: "remote-thread-1".to_string(),
+            cwd: "/srv/project".to_string(),
+            title: Some("Ship remote Codex".to_string()),
+            preview: Some("Remote Codex changed files.".to_string()),
+            rollout_path: Some("/home/dev/.codex/sessions/rollout.jsonl".to_string()),
+            source: Some("codex".to_string()),
+            thread_source: Some("app-server".to_string()),
+            updated_at_ms: 1_780_070_000_123,
+        };
+
+        let summary = sync_remote_codex_thread_to_store(&store, &host, &thread).unwrap();
+        let session = store.get_session("remote-thread-1").unwrap();
+
+        assert_eq!(summary.status.as_deref(), Some("app-server"));
+        assert_eq!(session.agent_type, "codex");
+        assert_eq!(session.engine_label.as_deref(), Some("Codex App · GPU Box"));
+        assert_eq!(session.remote_host_id.as_deref(), Some("host-1"));
+        assert_eq!(session.remote_host_name.as_deref(), Some("GPU Box"));
+        assert_eq!(session.terminal, "GPU Box");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(session.last_main_agent_at, Some(1_780_070_000));
+        assert_eq!(
+            session.last_response.as_deref(),
+            Some("Remote Codex changed files.")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_app_server_permission_request_creates_pending_session() {
+        let store = SessionStore::new();
+        let mut pending = HashMap::new();
+        let params = serde_json::json!({
+            "threadId": "thread-approval",
+            "command": ["pnpm", "test"],
+            "cwd": "/tmp/agentbro",
+            "reason": "Run the test suite"
+        });
+
+        handle_codex_app_server_request(
+            &store,
+            &mut pending,
+            serde_json::json!("request-1"),
+            "item/commandExecution/requestApproval",
+            &params,
+        )
+        .await
+        .unwrap();
+
+        let session = store.get_session("thread-approval").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert_eq!(session.cwd, "/tmp/agentbro");
+        assert_eq!(session.engine_label.as_deref(), Some("Codex App"));
+        assert_eq!(
+            session
+                .pending_permission
+                .as_ref()
+                .map(|p| p.tool_name.as_str()),
+            Some("exec_command")
+        );
+        assert_eq!(
+            pending.get("thread-approval").map(|p| &p.kind),
+            Some(&CodexAppServerPendingKind::CommandApproval)
+        );
+    }
+
+    #[test]
+    fn codex_app_server_thread_sync_preserves_pending_interaction() {
+        let store = SessionStore::new();
+        store.get_or_create_session("thread-waiting", "codex", "Codex", "/", "Codex");
+        store.set_pending_permission(
+            "thread-waiting",
+            Some(crate::hooks::session_store::PendingPermission {
+                tool_use_id: Some("approval-1".to_string()),
+                tool_name: "exec_command".to_string(),
+                tool_input: "pnpm test".to_string(),
+                diff: None,
+                options: None,
+            }),
+        );
+        let thread = serde_json::json!({
+            "id": "thread-waiting",
+            "name": "Waiting thread",
+            "cwd": "/tmp/agentbro",
+            "status": { "type": "active", "activeFlags": [] }
+        });
+
+        sync_codex_app_server_thread_to_store(&store, &thread).unwrap();
+        let session = store.get_session("thread-waiting").unwrap();
+
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert!(session.pending_permission.is_some());
+    }
+
+    #[test]
+    fn codex_app_server_energy_policy_slows_down_when_quiet() {
+        let store = SessionStore::new();
+
+        assert_eq!(
+            codex_app_server_refresh_interval_seconds(&store, 15),
+            (EnergyMode::QuietBackground, 300)
+        );
+
+        store.get_or_create_session("idle-thread", "codex", "Codex", "/", "Codex");
+        store.update_phase("idle-thread", SessionPhase::Idle);
+        assert_eq!(
+            codex_app_server_refresh_interval_seconds(&store, 15),
+            (EnergyMode::IdleVisible, 60)
+        );
+
+        store.update_phase("idle-thread", SessionPhase::Processing);
+        assert_eq!(
+            codex_app_server_refresh_interval_seconds(&store, 15),
+            (EnergyMode::Active, 15)
+        );
+    }
+
+    #[test]
+    fn codex_app_server_question_request_maps_options_and_payload() {
+        let params = serde_json::json!({
+            "questions": [{
+                "id": "target",
+                "header": "Target",
+                "question": "Which target?",
+                "isMultiple": true,
+                "options": [
+                    { "label": "Preview", "description": "Dry run" },
+                    { "label": "Ship" }
+                ]
+            }]
+        });
+
+        let pending = codex_app_server_pending_question(&params, &serde_json::json!("req-q"));
+        assert_eq!(
+            pending.source.as_deref(),
+            Some("codex_app_server_request_user_input")
+        );
+        assert_eq!(pending.response_mode.as_deref(), Some("app_server"));
+        assert_eq!(pending.questions[0].id.as_deref(), Some("target"));
+        assert!(pending.questions[0].multi_select);
+        assert_eq!(
+            pending.options,
+            vec!["Preview".to_string(), "Ship".to_string()]
+        );
+
+        let response = codex_app_server_permission_response(
+            &CodexAppServerPendingRequest {
+                request_id: serde_json::json!("perm-1"),
+                kind: CodexAppServerPendingKind::PermissionsApproval,
+                requested_permissions: Some(
+                    serde_json::json!({ "network": { "domains": ["example.com"] } }),
+                ),
+            },
+            true,
+            true,
+        );
+        assert_eq!(response["scope"], "session");
+        assert!(response["permissions"].get("network").is_some());
     }
 
     #[test]
@@ -3954,6 +5989,32 @@ mod tests {
             &messages[1].blocks[0],
             crate::hooks::conversation_parser::MessageBlock::Text { text } if text == "Task completed"
         ));
+    }
+
+    #[test]
+    fn diagnostics_hook_config_redacts_inline_secrets_and_remote_urls() {
+        let redacted = redact_sensitive_hook_config(
+            r#"{
+  "command": "curl -H 'Authorization: Bearer abc123' https://hooks.example.com/path?token=abc",
+  "safe": "http://localhost:17894"
+}"#,
+        );
+
+        assert!(!redacted.contains("abc123"));
+        assert!(!redacted.contains("hooks.example.com"));
+        assert!(redacted.contains("[REDACTED sensitive hook config line]"));
+        assert!(redacted.contains("http://localhost:17894"));
+    }
+
+    #[test]
+    fn diagnostics_hook_config_redacts_https_before_later_http_url() {
+        let redacted = redact_sensitive_hook_config(
+            r#"{"remote":"https://example.com/callback?id=abc","local":"http://localhost:17894"}"#,
+        );
+
+        assert!(!redacted.contains("example.com"));
+        assert!(redacted.contains("[REDACTED_URL]"));
+        assert!(redacted.contains("http://localhost:17894"));
     }
 
     #[test]
@@ -4063,6 +6124,24 @@ mod tests {
         let mut terminal_session = session("claude-code", "iTerm2", Some("/dev/ttys001"));
         terminal_session.term_bundle_id = Some("com.googlecode.iterm2".to_string());
         assert!(app_host_message_unsupported_error(&terminal_session).is_none());
+    }
+
+    #[test]
+    fn ide_host_bundles_are_terminal_sessions_when_source_does_not_match() {
+        let mut claude_in_cursor = session("claude-code", "Cursor", Some("/dev/ttys001"));
+        claude_in_cursor.term_bundle_id = Some("com.todesktop.230313mzl4w4u92".to_string());
+
+        assert!(is_ide_terminal_session(&claude_in_cursor));
+        assert!(app_host_message_unsupported_error(&claude_in_cursor).is_none());
+
+        let mut cursor_app = session("cursor", "Cursor", None);
+        cursor_app.term_bundle_id = Some("com.todesktop.230313mzl4w4u92".to_string());
+        assert!(!is_ide_terminal_session(&cursor_app));
+
+        let mut claude_in_qoder = session("claude-code", "Qoder", Some("/dev/ttys002"));
+        claude_in_qoder.term_bundle_id = Some("com.qoder.ide".to_string());
+        assert!(is_ide_terminal_session(&claude_in_qoder));
+        assert!(app_host_message_unsupported_error(&claude_in_qoder).is_none());
     }
 
     #[test]
@@ -4266,5 +6345,59 @@ mod tests {
 
         let _ = fs::remove_file(transcript_path);
         let _ = fs::remove_file(other_path);
+    }
+
+    #[test]
+    fn subagent_chat_history_synthesizes_codex_main_transcript_rows() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let transcript_path =
+            std::env::temp_dir().join(format!("agentbro-codex-subagent-history-{nonce}.jsonl"));
+        fs::write(&transcript_path, "").expect("write transcript");
+
+        let transcript_path = transcript_path.to_string_lossy().to_string();
+        let mut session = session("codex", "Codex App", None);
+        session.subagents.push(SubagentInfo {
+            agent_id: "019e73f1-5808-7a91-bfd4-2aadc13d2c77".to_string(),
+            name: Some("Laplace".to_string()),
+            agent_type: None,
+            description: "请只计算这个表达式并返回最终结果：1+1。".to_string(),
+            transcript_path: Some(transcript_path.clone()),
+            agent_transcript_path: None,
+            last_assistant_message: Some("2".to_string()),
+            started_at: 1_780_061_657,
+            completed_at: Some(1_780_061_664),
+            status: "completed".to_string(),
+            tools: Vec::new(),
+        });
+        session.subagents.push(SubagentInfo {
+            agent_id: "019e73f1-5899-7342-9013-b3ffa5404cac".to_string(),
+            name: Some("Newton".to_string()),
+            agent_type: None,
+            description: "请只计算这个表达式并返回最终结果：2+2。".to_string(),
+            transcript_path: Some(transcript_path.clone()),
+            agent_transcript_path: None,
+            last_assistant_message: Some("4".to_string()),
+            started_at: 1_780_061_657,
+            completed_at: Some(1_780_061_668),
+            status: "completed".to_string(),
+            tools: Vec::new(),
+        });
+
+        let request_path =
+            format!("{transcript_path}#agentbro-subagent=019e73f1-5899-7342-9013-b3ffa5404cac");
+        let messages =
+            parse_subagent_chat_history_for_session(&session, &request_path).expect("parse");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, ChatRole::User);
+        assert_eq!(messages[1].role, ChatRole::Assistant);
+        match &messages[1].blocks[0] {
+            MessageBlock::Text { text } => assert_eq!(text, "4"),
+            other => panic!("expected text block, got {other:?}"),
+        }
+
+        let _ = fs::remove_file(transcript_path);
     }
 }

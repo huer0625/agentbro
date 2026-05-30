@@ -32,6 +32,21 @@ export interface SoundRule {
   sound: SoundChoice
 }
 
+const LEGACY_CHIME_SOUND_CHOICE = `builtin:${'p'}${'i'}${'n'}${'g'}` as const
+
+function normalizeSoundChoice(sound: SoundChoice): SoundChoice {
+  return sound === LEGACY_CHIME_SOUND_CHOICE ? 'builtin:chime' : sound
+}
+
+function normalizeSoundRules(rules: Record<string, SoundRule>): Record<string, SoundRule> {
+  return Object.fromEntries(
+    Object.entries(rules).map(([id, rule]) => [
+      id,
+      { ...rule, sound: normalizeSoundChoice(rule.sound) },
+    ]),
+  )
+}
+
 export interface CustomSound {
   id: string
   name: string
@@ -153,6 +168,8 @@ interface ConfigState {
   islandPetWindowOrigin: { x: number; y: number } | null
   /** Active pet identifier (e.g. 'codex:dewey'). `null` = auto-follow active session's agent type. */
   islandActivePetId: string | null
+  /** AUTO 模式下每个 agent 默认显示的宠物。Key = adapter name（'claude-code'、'codex'...）。 */
+  islandAgentPetMap: Record<string, string>
 
   // General extras
   followFocus: boolean
@@ -180,6 +197,8 @@ interface ConfigState {
   // General — UI
   showUsageQuota: boolean
   usageQueryEnabled: boolean
+  codexAppServerSyncEnabled: boolean
+  codexAppServerSyncIntervalSeconds: number
 
   // Language
   language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'
@@ -193,6 +212,8 @@ interface ConfigState {
 
   // Idle Timeout
   idleTimeoutMinutes: number // 0 = disabled, otherwise minutes of inactivity before auto-hiding
+  idleInteractionRoutingEnabled: boolean
+  idleInteractionRoutingMinutes: number
 
   // Updates
   autoCheckUpdate: boolean
@@ -275,6 +296,7 @@ type ConfigStore = ConfigState & ConfigActions
 
 const defaultAgentHooks: AgentHook[] = [
   { agentType: 'claude-code', label: 'Claude Code', enabled: true, connected: true },
+  { agentType: 'cline', label: 'Cline', enabled: false, connected: false },
   { agentType: 'codex', label: 'Codex CLI', enabled: true, connected: false },
   { agentType: 'gemini-cli', label: 'Gemini CLI', enabled: false, connected: false },
   { agentType: 'cursor', label: 'Cursor', enabled: false, connected: false },
@@ -317,7 +339,7 @@ const defaultSoundRules: Record<string, SoundRule> = {
   'session-start': { enabled: false, sound: 'builtin:hero' },
   'session-end': { enabled: true, sound: 'default' },
   'session-error': { enabled: true, sound: 'builtin:basso' },
-  'permission-request': { enabled: true, sound: 'builtin:ping' },
+  'permission-request': { enabled: true, sound: 'builtin:chime' },
   'plan-approval': { enabled: true, sound: 'builtin:submarine' },
   'question-asked': { enabled: true, sound: 'builtin:pop' },
   'task-complete': { enabled: true, sound: 'builtin:glass' },
@@ -411,14 +433,13 @@ function createIslandDefaults(): Partial<ConfigState> {
     tipsEnabled: true,
     pixelCursorEnabled: true,
     confettiEnabled: true,
-    analyticsEnabled: true,
-    analyticsConsentPromptCompleted: true,
     islandSurfaceMode: 'island',
     petVitalsEnabled: true,
     petVitalsDebugOpen: false,
     islandPetScale: 72,
     islandPetWindowOrigin: null,
     islandActivePetId: null,
+    islandAgentPetMap: {},
     followFocus: false,
     globalShortcut: 'CommandOrControl+Shift+I',
     shortcutApprove: DEFAULT_GLOBAL_APPROVE_SHORTCUT,
@@ -432,6 +453,8 @@ function createIslandDefaults(): Partial<ConfigState> {
     shortcuts: defaultShortcuts.map((shortcut) => ({ ...shortcut })),
     quietHours: { enabled: false, start: '22:00', end: '08:00' },
     idleTimeoutMinutes: 5,
+    idleInteractionRoutingEnabled: false,
+    idleInteractionRoutingMinutes: 5,
     allowHorizontalDrag: true,
     panelHorizontalOffset: 0,
     collapsedWidthScale: 100,
@@ -513,14 +536,15 @@ export const useConfigStore = create<ConfigStore>()(
   tipsEnabled: true,
   pixelCursorEnabled: true,
   confettiEnabled: true,
-  analyticsEnabled: true,
-  analyticsConsentPromptCompleted: true,
+  analyticsEnabled: false,
+  analyticsConsentPromptCompleted: false,
   islandSurfaceMode: 'island',
   petVitalsEnabled: true,
   petVitalsDebugOpen: false,
   islandPetScale: 72,
   islandPetWindowOrigin: null,
   islandActivePetId: null,
+  islandAgentPetMap: {},
 
   // General extras
   followFocus: false,
@@ -548,6 +572,8 @@ export const useConfigStore = create<ConfigStore>()(
   // General — UI
   showUsageQuota: true,
   usageQueryEnabled: true,
+  codexAppServerSyncEnabled: false,
+  codexAppServerSyncIntervalSeconds: 30,
 
   // Language
   language: (() => {
@@ -564,6 +590,8 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Idle Timeout
   idleTimeoutMinutes: 5,
+  idleInteractionRoutingEnabled: false,
+  idleInteractionRoutingMinutes: 5,
 
   // Updates
   autoCheckUpdate: true,
@@ -789,6 +817,7 @@ export const useConfigStore = create<ConfigStore>()(
             }
           }
         }
+        merged.soundRules = normalizeSoundRules(merged.soundRules)
 
         return {
           ...merged,
