@@ -3281,6 +3281,45 @@
   white-space: nowrap;
 }
 
+.codex-advanced-panel {
+  margin: -4px 0 14px 62px;
+  padding: 14px 16px;
+  border: 1px solid rgba(40, 51, 77, 0.08);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(248, 250, 255, 0.92), rgba(241, 245, 252, 0.74));
+  box-shadow: 0 6px 14px rgba(31, 41, 71, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codex-advanced-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.codex-advanced-panel__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--settings-text-primary);
+}
+
+.codex-advanced-panel__desc {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--settings-text-secondary);
+  line-height: 1.5;
+}
+
+.codex-advanced-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .hook-options-overlay {
   position: fixed;
   inset: 0;

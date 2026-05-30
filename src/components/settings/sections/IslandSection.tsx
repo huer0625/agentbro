@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog, ask as askDialog } from '@tauri-apps/plugin-dialog'
@@ -1905,6 +1905,7 @@ function IntegrationTab() {
   const [codexProbeBusy, setCodexProbeBusy] = useState(false)
   const [codexSyncReport, setCodexSyncReport] = useState<CodexAppServerSyncReport | null>(null)
   const [codexSyncBusy, setCodexSyncBusy] = useState(false)
+  const [codexAdvancedOpen, setCodexAdvancedOpen] = useState(false)
   const [usageProviders, setUsageProviders] = useState<UsageProviderStatus[]>([])
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageAction, setUsageAction] = useState<string | null>(null)
@@ -2303,105 +2304,6 @@ function IntegrationTab() {
       </SettingGroup>
 
       <SettingGroup
-        actions={(
-          <>
-            <button className="settings-mini-button" disabled={codexProbeBusy || codexSyncBusy} onClick={runCodexProbe} type="button">
-              {codexProbeBusy
-                ? t('settings.codexAppServerProbeRunning', { defaultValue: 'Checking...' })
-                : t('settings.codexAppServerProbeRun', { defaultValue: 'Check readiness' })}
-            </button>
-            <button className="settings-mini-button" disabled={codexProbeBusy || codexSyncBusy} onClick={syncCodexThreads} type="button">
-              {codexSyncBusy
-                ? t('settings.codexAppServerSyncRunning', { defaultValue: 'Syncing...' })
-                : t('settings.codexAppServerSyncRun', { defaultValue: 'Sync threads' })}
-            </button>
-          </>
-        )}
-        label={t('settings.codexAppServerProbe', { defaultValue: 'Codex app-server readiness' })}
-      >
-        <div className="hook-doctor-intro">
-          {t('settings.codexAppServerProbeDesc', { defaultValue: 'Checks the local prerequisites for Codex app-server thread sync and realtime app-server prompts.' })}
-        </div>
-        <SettingRow
-          label={t('settings.codexAppServerBackgroundSync', { defaultValue: 'Background thread sync' })}
-          description={t('settings.codexAppServerBackgroundSyncDesc', { defaultValue: 'Periodically imports Codex app-server thread status into AgentBro sessions without waiting for hooks.' })}
-        >
-          <Toggle
-            checked={config.codexAppServerSyncEnabled}
-            onChange={(enabled) => {
-              config.updateConfig('codexAppServerSyncEnabled', enabled)
-              persistCodexAppServerSync({ enabled })
-            }}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t('settings.codexAppServerSyncInterval', { defaultValue: 'Sync interval' })}
-          description={t('settings.codexAppServerSyncIntervalDesc', { defaultValue: 'Base active interval. AgentBro slows to 60s for idle sessions and 5 min when quiet.' })}
-        >
-          <Slider
-            value={config.codexAppServerSyncIntervalSeconds}
-            min={15}
-            max={300}
-            step={15}
-            unit="s"
-            onChange={(intervalSeconds) => {
-              config.updateConfig('codexAppServerSyncIntervalSeconds', intervalSeconds)
-              persistCodexAppServerSync({ intervalSeconds })
-            }}
-          />
-        </SettingRow>
-        {codexProbe ? (
-          <div className="hook-doctor-report">
-            {codexProbe.checks.map((check) => (
-              <div className={`hook-doctor-check hook-doctor-check--${check.status}`} key={check.id}>
-                <strong>{check.status.toUpperCase()}</strong>
-                <div className="hook-doctor-check__body">
-                  <div className="hook-doctor-check__label">
-                    {t(`settings.codexAppServerChecks.${check.id}`, { defaultValue: check.label })}
-                  </div>
-                  <div className="hook-doctor-check__detail">{check.detail}</div>
-                  {check.suggestion && (
-                    <div className="hook-doctor-check__suggestion">
-                      {t('settings.hookDoctorNextStep', { defaultValue: 'Next step: ' })}{check.suggestion}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="hook-empty">
-            {t('settings.codexAppServerNoProbe', { defaultValue: 'Run readiness check to see whether this machine can host Codex app-server sync.' })}
-          </div>
-        )}
-        {codexSyncReport && (
-          <div className="hook-doctor-report">
-            <div className={`hook-doctor-check hook-doctor-check--${codexSyncReport.errors.length > 0 ? 'warn' : 'ok'}`}>
-              <strong>{codexSyncReport.errors.length > 0 ? 'WARN' : 'OK'}</strong>
-              <div className="hook-doctor-check__body">
-                <div className="hook-doctor-check__label">
-                  {t('settings.codexAppServerSyncResult', { defaultValue: 'Thread sync result' })}
-                </div>
-                <div className="hook-doctor-check__detail">
-                  {t('settings.codexAppServerSyncSummary', {
-                    defaultValue: 'Synced {{synced}}/{{total}} threads; read {{read}} detailed snapshots.',
-                    synced: codexSyncReport.synced,
-                    total: codexSyncReport.total,
-                    read: codexSyncReport.read,
-                  })}
-                </div>
-                {codexSyncReport.errors.length > 0 && (
-                  <div className="hook-doctor-check__suggestion">
-                    {codexSyncReport.errors.slice(0, 3).join('; ')}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </SettingGroup>
-
-      <SettingGroup
         actions={config.islandExternalEnabled ? (
           <>
             <button className="settings-mini-button" disabled={loading || bulkInstalling || bulkUninstalling} onClick={detectNow} type="button">
@@ -2431,8 +2333,10 @@ function IntegrationTab() {
             : undefined
           const isInstalled = installStatus === 'installed' || installStatus === 'needs_reinstall' || installStatus === 'settings_corrupted'
           const canConfigureHook = installStatus === 'installed' && tool.supportsEventSelection && tool.events && tool.events.length > 0
+          const isCodex = !tool.isCustom && toolId === 'codex'
           return (
-            <div key={toolId} className="hook-tool-row">
+            <Fragment key={toolId}>
+              <div className="hook-tool-row">
               <div className="hook-tool-row__icon">
                 <PlatformIcon agentId={toolId} displayName={tool.displayName || tool.name} size={30} />
               </div>
@@ -2465,6 +2369,18 @@ function IntegrationTab() {
                 />
               )}
               <div className="hook-tool-row__actions">
+                {isCodex && (
+                  <GlassButton
+                    variant="ghost"
+                    onClick={() => setCodexAdvancedOpen((open) => !open)}
+                    disabled={busy}
+                    title={t('settings.codexAdvancedToggleHint', { defaultValue: 'Codex 实时同步与准备度' })}
+                  >
+                    {codexAdvancedOpen
+                      ? t('settings.codexAdvancedCollapse', { defaultValue: '收起高级集成' })
+                      : t('settings.codexAdvancedExpand', { defaultValue: '高级集成' })}
+                  </GlassButton>
+                )}
                 {canConfigureHook && (
                   <GlassButton variant="ghost" onClick={() => setConfiguringTool(tool)} disabled={busy}>
                     {t('settings.configureHook', { defaultValue: '配置 Hook' })}
@@ -2488,7 +2404,111 @@ function IntegrationTab() {
                   </GlassButton>
                 )}
               </div>
-            </div>
+              </div>
+              {isCodex && codexAdvancedOpen && (
+                <div className="codex-advanced-panel">
+                  <div className="codex-advanced-panel__header">
+                    <div className="codex-advanced-panel__title">
+                      {t('settings.codexAppServerProbe', { defaultValue: 'Codex 实时同步与准备度' })}
+                    </div>
+                    <div className="codex-advanced-panel__desc">
+                      {t('settings.codexAppServerProbeDesc', { defaultValue: '可选：让 AgentBro 常驻一个 Codex app-server 连接，实时拉取线程状态并直接回复审批/问题。' })}
+                    </div>
+                    <div className="codex-advanced-panel__actions">
+                      <button className="settings-mini-button" disabled={codexProbeBusy || codexSyncBusy} onClick={runCodexProbe} type="button">
+                        {codexProbeBusy
+                          ? t('settings.codexAppServerProbeRunning', { defaultValue: 'Checking...' })
+                          : t('settings.codexAppServerProbeRun', { defaultValue: 'Check readiness' })}
+                      </button>
+                      <button className="settings-mini-button" disabled={codexProbeBusy || codexSyncBusy} onClick={syncCodexThreads} type="button">
+                        {codexSyncBusy
+                          ? t('settings.codexAppServerSyncRunning', { defaultValue: 'Syncing...' })
+                          : t('settings.codexAppServerSyncRun', { defaultValue: 'Sync threads' })}
+                      </button>
+                    </div>
+                  </div>
+                  <SettingRow
+                    label={t('settings.codexAppServerBackgroundSync', { defaultValue: 'Background thread sync' })}
+                    description={t('settings.codexAppServerBackgroundSyncDesc', { defaultValue: 'Periodically imports Codex app-server thread status into AgentBro sessions without waiting for hooks.' })}
+                  >
+                    <Toggle
+                      checked={config.codexAppServerSyncEnabled}
+                      onChange={(enabled) => {
+                        config.updateConfig('codexAppServerSyncEnabled', enabled)
+                        persistCodexAppServerSync({ enabled })
+                      }}
+                    />
+                  </SettingRow>
+                  {config.codexAppServerSyncEnabled && (
+                    <SettingRow
+                      label={t('settings.codexAppServerSyncInterval', { defaultValue: 'Sync interval' })}
+                      description={t('settings.codexAppServerSyncIntervalDesc', { defaultValue: 'Base active interval. AgentBro slows to 60s for idle sessions and 5 min when quiet.' })}
+                    >
+                      <Slider
+                        value={config.codexAppServerSyncIntervalSeconds}
+                        min={15}
+                        max={300}
+                        step={15}
+                        unit="s"
+                        onChange={(intervalSeconds) => {
+                          config.updateConfig('codexAppServerSyncIntervalSeconds', intervalSeconds)
+                          persistCodexAppServerSync({ intervalSeconds })
+                        }}
+                      />
+                    </SettingRow>
+                  )}
+                  {codexProbe ? (
+                    <div className="hook-doctor-report">
+                      {codexProbe.checks.map((check) => (
+                        <div className={`hook-doctor-check hook-doctor-check--${check.status}`} key={check.id}>
+                          <strong>{check.status.toUpperCase()}</strong>
+                          <div className="hook-doctor-check__body">
+                            <div className="hook-doctor-check__label">
+                              {t(`settings.codexAppServerChecks.${check.id}`, { defaultValue: check.label })}
+                            </div>
+                            <div className="hook-doctor-check__detail">{check.detail}</div>
+                            {check.suggestion && (
+                              <div className="hook-doctor-check__suggestion">
+                                {t('settings.hookDoctorNextStep', { defaultValue: 'Next step: ' })}{check.suggestion}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="hook-empty">
+                      {t('settings.codexAppServerNoProbe', { defaultValue: 'Run readiness check to see whether this machine can host Codex app-server sync.' })}
+                    </div>
+                  )}
+                  {codexSyncReport && (
+                    <div className="hook-doctor-report">
+                      <div className={`hook-doctor-check hook-doctor-check--${codexSyncReport.errors.length > 0 ? 'warn' : 'ok'}`}>
+                        <strong>{codexSyncReport.errors.length > 0 ? 'WARN' : 'OK'}</strong>
+                        <div className="hook-doctor-check__body">
+                          <div className="hook-doctor-check__label">
+                            {t('settings.codexAppServerSyncResult', { defaultValue: 'Thread sync result' })}
+                          </div>
+                          <div className="hook-doctor-check__detail">
+                            {t('settings.codexAppServerSyncSummary', {
+                              defaultValue: 'Synced {{synced}}/{{total}} threads; read {{read}} detailed snapshots.',
+                              synced: codexSyncReport.synced,
+                              total: codexSyncReport.total,
+                              read: codexSyncReport.read,
+                            })}
+                          </div>
+                          {codexSyncReport.errors.length > 0 && (
+                            <div className="hook-doctor-check__suggestion">
+                              {codexSyncReport.errors.slice(0, 3).join('; ')}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Fragment>
           )
         })}
       </SettingGroup>
