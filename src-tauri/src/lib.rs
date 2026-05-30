@@ -4611,6 +4611,7 @@ pub fn run() {
             commands::is_terminal_focused,
             commands::run_hook_doctor,
             commands::get_chat_history,
+            commands::get_chat_history_tail,
             commands::get_subagent_chat_history,
             commands::monitor::get_monitor_sessions,
             commands::monitor::get_monitor_session_detail,

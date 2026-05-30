@@ -1,7 +1,7 @@
 /* AgentBro — Session State Management (Zustand) */
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useConfigStore } from './configStore'
-import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
@@ -49,7 +49,8 @@ interface SessionStore {
   clearSessionOverlays: (sessionId: string) => void
   removeSession: (id: string) => void
   replaceAllSessions: (sessions: SessionState[], options?: { suppressed?: boolean }) => void
-  setChatHistory: (sessionId: string, messages: ChatMessage[]) => void
+  setChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
+  prependChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
   clearPermission: (sessionId: string) => void
   clearQuestion: (sessionId: string) => void
   clearPlan: (sessionId: string) => void
@@ -751,7 +752,25 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     saveSessionsDebounced()
   },
 
-  setActiveSession: (id) => set({ activeSessionId: id }),
+  setActiveSession: (id) => {
+    set((state) => {
+      if (state.activeSessionId === id) return state
+      const prevId = state.activeSessionId
+      // Release the previous session's chat history to keep store memory bounded
+      // when switching between long Codex transcripts. The next open re-fetches
+      // the tail via get_chat_history_tail (cheap), and the live session-update
+      // stream keeps activeTools/subagents/tasks fresh in the meantime.
+      if (prevId && prevId !== id && state.sessions[prevId]?.chatHistory.length) {
+        const prev = state.sessions[prevId]
+        const sessions = {
+          ...state.sessions,
+          [prevId]: { ...prev, chatHistory: [], chatHistoryMeta: undefined },
+        }
+        return { sessions, activeSessionId: id }
+      }
+      return { activeSessionId: id }
+    })
+  },
   setPanelState: (panelState) => {
     const layerMap: Record<PanelState, BaseLayer> = { collapsed: 'compact', hover: 'expanded', expanded: 'detail' }
     set({ panelState, baseLayer: layerMap[panelState] })
@@ -989,14 +1008,39 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     saveSessionsDebounced()
   },
 
-  setChatHistory: (sessionId, messages) => {
+  setChatHistory: (sessionId, messages, meta) => {
     set((state) => {
       const session = state.sessions[sessionId]
       if (!session) return state
       const chatHistory = mergeLocalUserMessages(messages, session.chatHistory)
       const sessions = {
         ...state.sessions,
-        [sessionId]: { ...session, chatHistory },
+        [sessionId]: { ...session, chatHistory, chatHistoryMeta: meta ?? session.chatHistoryMeta },
+      }
+      return { sessions, sessionList: toList(sessions) }
+    })
+  },
+
+  prependChatHistory: (sessionId, messages, meta) => {
+    set((state) => {
+      const session = state.sessions[sessionId]
+      if (!session || messages.length === 0) return state
+      const existing = session.chatHistory
+      const existingKeys = new Set(
+        existing
+          .map((message) => (typeof (message as { id?: string }).id === 'string'
+            ? (message as { id?: string }).id
+            : null))
+          .filter((id): id is string => Boolean(id)),
+      )
+      const filtered = messages.filter((message) => {
+        const id = (message as { id?: string }).id
+        return !id || !existingKeys.has(id)
+      })
+      const chatHistory = [...filtered, ...existing]
+      const sessions = {
+        ...state.sessions,
+        [sessionId]: { ...session, chatHistory, chatHistoryMeta: meta ?? session.chatHistoryMeta },
       }
       return { sessions, sessionList: toList(sessions) }
     })

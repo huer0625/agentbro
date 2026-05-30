@@ -4601,14 +4601,82 @@ pub async fn get_chat_history(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ParsedMessage>, String> {
-    // Look up the session to get its cwd and custom engine root for file discovery.
-    let session = state.session_store.get_session(&session_id);
-    let cwd = session.as_ref().map(|s| s.cwd.clone()).unwrap_or_default();
+    parse_session_messages_for_command(&state, &session_id).map(|either| match either {
+        SessionMessagesResult::Local(messages) => messages,
+        SessionMessagesResult::Remote(messages) => messages,
+    })
+}
 
+/// Paginated slice of a session's chat history. Used by the frontend to load
+/// only the tail of a transcript on first open (typical 50 messages instead
+/// of the full file, which can be 100MB+ for long Codex sessions).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatHistorySlice {
+    pub messages: Vec<ParsedMessage>,
+    pub has_more: bool,
+    pub first_message_id: Option<String>,
+    pub total_count: usize,
+    pub transcript_path: Option<String>,
+}
+
+const DEFAULT_TAIL_LIMIT: usize = 50;
+const MAX_TAIL_LIMIT: usize = 500;
+
+#[tauri::command]
+pub async fn get_chat_history_tail(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<usize>,
+    before_id: Option<String>,
+) -> Result<ChatHistorySlice, String> {
+    let limit = limit.unwrap_or(DEFAULT_TAIL_LIMIT).clamp(1, MAX_TAIL_LIMIT);
+    let (messages, transcript_path) = match parse_session_messages_for_command(&state, &session_id)?
+    {
+        SessionMessagesResult::Local(messages) => {
+            let path = resolve_transcript_path_for_session(&state, &session_id);
+            (messages, path)
+        }
+        SessionMessagesResult::Remote(messages) => (messages, None),
+    };
+
+    let total_count = messages.len();
+    let end = match before_id.as_deref() {
+        Some(id) => messages
+            .iter()
+            .position(|m| m.id == id)
+            .unwrap_or(total_count),
+        None => total_count,
+    };
+    let start = end.saturating_sub(limit);
+
+    let slice = messages[start..end].to_vec();
+    let first_message_id = slice.first().map(|m| m.id.clone());
+
+    Ok(ChatHistorySlice {
+        messages: slice,
+        has_more: start > 0,
+        first_message_id,
+        total_count,
+        transcript_path: transcript_path.map(|p| p.to_string_lossy().into_owned()),
+    })
+}
+
+enum SessionMessagesResult {
+    Local(Vec<ParsedMessage>),
+    Remote(Vec<ParsedMessage>),
+}
+
+fn resolve_transcript_path_for_session(
+    state: &State<'_, AppState>,
+    session_id: &str,
+) -> Option<PathBuf> {
+    let session = state.session_store.get_session(session_id)?;
+    let cwd = session.cwd.clone();
     let mut projects_dirs = all_projects_dirs();
     if let Some(root) = session
+        .engine_config_root
         .as_ref()
-        .and_then(|s| s.engine_config_root.as_ref())
         .filter(|root| !root.is_empty())
     {
         let custom_projects = crate::agents::claude_code::expand_tilde(root).join("projects");
@@ -4616,45 +4684,49 @@ pub async fn get_chat_history(
             projects_dirs.push(custom_projects);
         }
     }
+    if session.engine_label.as_deref() == Some("Claude Desktop") {
+        crate::hooks::claude_desktop_watcher::find_audit_file_for_cli_session(session_id)
+    } else if session.agent_type == "codex" {
+        discover_codex_session_file(session_id)
+            .or_else(|| discover_session_file_in_dirs(session_id, &cwd, &projects_dirs))
+    } else {
+        discover_session_file_in_dirs(session_id, &cwd, &projects_dirs)
+    }
+}
 
-    // Try to discover the JSONL file for this session.
-    let file_path =
-        if session.as_ref().and_then(|s| s.engine_label.as_deref()) == Some("Claude Desktop") {
-            crate::hooks::claude_desktop_watcher::find_audit_file_for_cli_session(&session_id)
-        } else if session.as_ref().is_some_and(|s| s.agent_type == "codex") {
-            discover_codex_session_file(&session_id)
-                .or_else(|| discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs))
-        } else {
-            discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs)
-        };
+fn parse_session_messages_for_command(
+    state: &State<'_, AppState>,
+    session_id: &str,
+) -> Result<SessionMessagesResult, String> {
+    let session = state.session_store.get_session(session_id);
+    let file_path = resolve_transcript_path_for_session(state, session_id);
 
     let Some(file_path) = file_path else {
         if let Some(ref session) = session {
             if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
-                return Ok(remote_session_chat_history(
+                return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
                     session,
-                    state.hook_server.raw_events_for_session(&session_id),
-                ));
+                    state.hook_server.raw_events_for_session(session_id),
+                )));
             }
         }
         return Err(format!("No JSONL file found for session {}", session_id));
     };
 
-    hydrate_subagents_from_file(&state.session_store, &session_id, &file_path);
+    hydrate_subagents_from_file(&state.session_store, session_id, &file_path);
 
-    // Try the watcher's parser first (it may already have state)
     if let Ok(watcher_guard) = state.conversation_watcher.lock() {
         if let Some(ref watcher) = *watcher_guard {
-            if let Some(result) = watcher.parse_session_full(&session_id, file_path.clone()) {
-                return Ok(result.all_messages);
+            if let Some(result) = watcher.parse_session_full(session_id, file_path.clone()) {
+                return Ok(SessionMessagesResult::Local(result.all_messages));
             }
         }
     }
 
-    // Fallback: create a one-off parser
     let mut parser = crate::hooks::conversation_parser::ConversationParser::new(file_path);
     parser
         .parse_full()
+        .map(SessionMessagesResult::Local)
         .map_err(|e| format!("Failed to parse conversation: {}", e))
 }
 

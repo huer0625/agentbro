@@ -17,7 +17,7 @@ import {
   type NetworkRequestDetail,
   type NetworkRequestSummary,
 } from '../../../services/monitorApi'
-import { getChatHistory, jumpToTerminal, openSystemPath } from '../../../services/tauriApi'
+import { getChatHistoryTail, jumpToTerminal, openSystemPath } from '../../../services/tauriApi'
 import { mapParsedMessages } from '../../../hooks/useTauri'
 import { selectSessionList, useSessionStore } from '../../../stores/sessionStore'
 import type { BackendSession } from '../../../services/tauriApi'
@@ -452,10 +452,10 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
     let cancelled = false
     setChatLoading(true)
     setChatError('')
-    getChatHistory(selectedId)
-      .then((parsed) => {
+    getChatHistoryTail(selectedId, { limit: 200 })
+      .then((slice) => {
         if (cancelled) return
-        setMessages(mapParsedMessages(parsed))
+        setMessages(mapParsedMessages(slice.messages))
       })
       .catch((err) => {
         if (cancelled) return

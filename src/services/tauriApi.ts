@@ -940,6 +940,34 @@ export async function getChatHistory(sessionId: string): Promise<ParsedMessage[]
   return invoke<ParsedMessage[]>('get_chat_history', { sessionId })
 }
 
+/** Paginated slice of a session's chat history. Matches Rust ChatHistorySlice. */
+export interface ChatHistorySlice {
+  messages: ParsedMessage[]
+  hasMore: boolean
+  firstMessageId: string | null
+  totalCount: number
+  transcriptPath: string | null
+}
+
+/**
+ * Load only the tail (most recent N messages) of a session's transcript.
+ * Pass `beforeId` to load the page immediately before a known message id
+ * (used when the user scrolls to the top of the history).
+ */
+export async function getChatHistoryTail(
+  sessionId: string,
+  options: { limit?: number; beforeId?: string } = {},
+): Promise<ChatHistorySlice> {
+  if (!isTauri()) {
+    return { messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null }
+  }
+  return invoke<ChatHistorySlice>('get_chat_history_tail', {
+    sessionId,
+    limit: options.limit ?? 50,
+    beforeId: options.beforeId ?? null,
+  })
+}
+
 function demoSubagentChatHistory(transcriptPath: string): ParsedMessage[] {
   const iso = (offsetMs: number) => new Date(Date.now() - offsetMs).toISOString()
 

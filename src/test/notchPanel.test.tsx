@@ -9,6 +9,7 @@ import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
+  getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   isTerminalFocused: vi.fn((sessionId?: string) => Promise.resolve(Boolean(sessionId && false))),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
   respondPermission: vi.fn(() => Promise.resolve()),
@@ -36,6 +37,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     isTerminalFocused: tauriMocks.isTerminalFocused,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     respondPermission: tauriMocks.respondPermission,

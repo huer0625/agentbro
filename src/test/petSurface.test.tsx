@@ -17,6 +17,7 @@ const tauriMocks = vi.hoisted(() => ({
   respondAutoApprove: vi.fn(() => Promise.resolve()),
   sendMessage: vi.fn(() => Promise.resolve()),
   getChatHistory: vi.fn(() => Promise.resolve([])),
+  getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   startPetDrag: vi.fn(() => Promise.resolve(true)),
   endPetDrag: vi.fn(() => Promise.resolve(null)),
 }))
@@ -33,6 +34,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     respondAutoApprove: tauriMocks.respondAutoApprove,
     sendMessage: tauriMocks.sendMessage,
     getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     startPetDrag: tauriMocks.startPetDrag,
     endPetDrag: tauriMocks.endPetDrag,
   }

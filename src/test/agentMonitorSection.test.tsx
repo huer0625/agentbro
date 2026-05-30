@@ -19,7 +19,7 @@ const monitorMocks = vi.hoisted(() => ({
 }))
 
 const tauriMocks = vi.hoisted(() => ({
-  getChatHistory: vi.fn(),
+  getChatHistoryTail: vi.fn(),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
   openSystemPath: vi.fn(() => Promise.resolve()),
 }))
@@ -41,7 +41,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
-    getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     openSystemPath: tauriMocks.openSystemPath,
   }
@@ -200,14 +200,20 @@ describe('AgentMonitorSection', () => {
     })
     monitorMocks.getNetworkMonitorRequests.mockResolvedValue([])
     monitorMocks.getNetworkMonitorRequestDetail.mockResolvedValue(null)
-    tauriMocks.getChatHistory.mockResolvedValue([
-      {
-        id: 'msg-1',
-        role: 'user',
-        timestamp: '2026-05-17T00:00:00Z',
-        blocks: [{ type: 'text', text: '请检查监控模块' }],
-      },
-    ])
+    tauriMocks.getChatHistoryTail.mockResolvedValue({
+      messages: [
+        {
+          id: 'msg-1',
+          role: 'user',
+          timestamp: '2026-05-17T00:00:00Z',
+          blocks: [{ type: 'text', text: '请检查监控模块' }],
+        },
+      ],
+      hasMore: false,
+      firstMessageId: 'msg-1',
+      totalCount: 1,
+      transcriptPath: '/Users/me/.claude/projects/agentbro/session-1.jsonl',
+    })
   })
 
   it('shows monitor sessions and loads detail tabs', async () => {
@@ -229,7 +235,7 @@ describe('AgentMonitorSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '对话' }))
     await waitFor(() => expect(screen.getByText('请检查监控模块')).toBeInTheDocument())
-    expect(tauriMocks.getChatHistory).toHaveBeenCalledWith('session-1')
+    expect(tauriMocks.getChatHistoryTail).toHaveBeenCalledWith('session-1', { limit: 200 })
 
     fireEvent.click(screen.getByRole('button', { name: 'Raw 事件' }))
     await waitFor(() => expect(screen.getByText('PreToolUse')).toBeInTheDocument())

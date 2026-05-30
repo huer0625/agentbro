@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
@@ -1210,14 +1210,19 @@ export function NotchPanel() {
       setPanelState('expanded')
     }, 0)
 
-    getChatHistory(sessionId)
-      .then((parsed) => {
-        if (parsed.length > 0) {
-          const messages = mapParsedMessages(parsed)
-          useSessionStore.getState().setChatHistory(sessionId, messages)
+    getChatHistoryTail(sessionId, { limit: 50 })
+      .then((slice) => {
+        if (slice.messages.length > 0) {
+          const messages = mapParsedMessages(slice.messages)
+          useSessionStore.getState().setChatHistory(sessionId, messages, {
+            hasMore: slice.hasMore,
+            firstMessageId: slice.firstMessageId ?? undefined,
+            totalCount: slice.totalCount,
+            transcriptPath: slice.transcriptPath ?? undefined,
+          })
         }
       })
-      .catch((e) => console.warn('[notch] getChatHistory:', e))
+      .catch((e) => console.warn('[notch] getChatHistoryTail:', e))
   }
 
   const handleSubagentClick = (sessionId: string, subagent: SubagentInfo) => {
