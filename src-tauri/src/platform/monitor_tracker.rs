@@ -76,12 +76,30 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
-            if let Some(change) = check_for_change(&app) {
+            // `check_for_change` calls `app.available_monitors()` which on macOS
+            // returns ObjC NSScreen objects that internally allocate autoreleased
+            // NSDictionary instances for `deviceDescription` and friends. Without
+            // an explicit pool here those objects live forever (the tokio task
+            // never drains the thread's default autoreleasepool), leaking ~25
+            // NSConcreteValue / NSDeviceDescription dicts every 250ms — measured
+            // at ~3-4 MB/min on a 2-display setup, several GB after a day.
+            let change = poll_for_change(&app);
+            if let Some(change) = change {
                 let _ = app.emit(CURSOR_MONITOR_CHANGED_EVENT, change.clone());
                 dispatch_listeners(&app, change);
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn poll_for_change(app: &AppHandle) -> Option<CursorMonitorChange> {
+    objc2::rc::autoreleasepool(|_pool| check_for_change(app))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn poll_for_change(app: &AppHandle) -> Option<CursorMonitorChange> {
+    check_for_change(app)
 }
 
 fn check_for_change(app: &AppHandle) -> Option<CursorMonitorChange> {

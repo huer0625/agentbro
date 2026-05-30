@@ -1306,18 +1306,20 @@ async fn is_cursor_in_window_zones(
     let Some(window) = app.get_webview_window(label) else {
         return Ok(false);
     };
-    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
-    let position = window.outer_position().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
-    let cx_logical = (cursor.x - position.x as f64) / scale;
-    let cy_logical = (cursor.y - position.y as f64) / scale;
+    drain_pool(|| {
+        let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+        let position = window.outer_position().map_err(|e| e.to_string())?;
+        let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+        let cx_logical = (cursor.x - position.x as f64) / scale;
+        let cy_logical = (cursor.y - position.y as f64) / scale;
 
-    Ok(zones.iter().any(|r| {
-        cx_logical >= r.left
-            && cx_logical <= r.left + r.width
-            && cy_logical >= r.top
-            && cy_logical <= r.top + r.height
-    }))
+        Ok(zones.iter().any(|r| {
+            cx_logical >= r.left
+                && cx_logical <= r.left + r.width
+                && cy_logical >= r.top
+                && cy_logical <= r.top + r.height
+        }))
+    })
 }
 
 #[tauri::command]
@@ -1331,27 +1333,29 @@ async fn is_cursor_over_notch(
         return Ok(false);
     };
 
-    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
-    let position = window.outer_position().map_err(|e| e.to_string())?;
-    let size = window.outer_size().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let hit_width = width
-        .filter(|value| *value > 0.0)
-        .map(|value| value * scale)
-        .unwrap_or(size.width as f64);
-    let hit_height = height
-        .filter(|value| *value > 0.0)
-        .map(|value| value * scale)
-        .unwrap_or(size.height as f64);
+    drain_pool(|| {
+        let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+        let position = window.outer_position().map_err(|e| e.to_string())?;
+        let size = window.outer_size().map_err(|e| e.to_string())?;
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let hit_width = width
+            .filter(|value| *value > 0.0)
+            .map(|value| value * scale)
+            .unwrap_or(size.width as f64);
+        let hit_height = height
+            .filter(|value| *value > 0.0)
+            .map(|value| value * scale)
+            .unwrap_or(size.height as f64);
 
-    let anchor_offset_x = anchor_offset_x.unwrap_or(0.0) * scale;
-    let left =
-        position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0) + anchor_offset_x;
-    let top = position.y as f64;
-    let right = left + hit_width.min(size.width as f64);
-    let bottom = top + hit_height.min(size.height as f64);
+        let anchor_offset_x = anchor_offset_x.unwrap_or(0.0) * scale;
+        let left =
+            position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0) + anchor_offset_x;
+        let top = position.y as f64;
+        let right = left + hit_width.min(size.width as f64);
+        let bottom = top + hit_height.min(size.height as f64);
 
-    Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
+        Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -3839,7 +3843,8 @@ async fn start_notch_drag(
                 }
                 break;
             }
-            let keep_dragging = update_notch_drag_position(&app_handle).unwrap_or(false);
+            let keep_dragging = drain_pool(|| update_notch_drag_position(&app_handle))
+                .unwrap_or(false);
             if !keep_dragging {
                 break;
             }
@@ -3847,6 +3852,23 @@ async fn start_notch_drag(
     });
 
     Ok(true)
+}
+
+/// Run `f` inside a macOS autorelease pool so any NSScreen / NSWindow /
+/// NSCursor objects created by Tauri's AppKit calls (e.g. `cursor_position`,
+/// `available_monitors`, `outer_position`) drain before the next iteration.
+/// On non-macOS this is a no-op. Used by the 60Hz drag loops to prevent
+/// runaway accumulation of autoreleased NSDictionary instances.
+#[inline]
+fn drain_pool<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::rc::autoreleasepool(|_pool| f())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f()
+    }
 }
 
 fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -3933,7 +3955,8 @@ async fn start_pet_drag(app: tauri::AppHandle) -> Result<bool, String> {
                 }
                 break;
             }
-            let keep_dragging = update_pet_drag_position(&app_handle).unwrap_or(false);
+            let keep_dragging = drain_pool(|| update_pet_drag_position(&app_handle))
+                .unwrap_or(false);
             if !keep_dragging {
                 break;
             }
