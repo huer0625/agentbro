@@ -759,6 +759,74 @@
 
 .pet-surface__toast--message .overlay-feedback__detail {
   --overlay-feedback-reader-min-height: 118px;
+  margin: 6px 14px 8px;
+  width: calc(100% - 28px);
+}
+
+.pet-surface__toast--message .overlay-feedback__session {
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px 6px;
+}
+
+.pet-surface__toast--message .overlay-feedback__avatar {
+  width: 24px;
+  flex: 0 0 24px;
+  border-radius: 8px;
+}
+
+.pet-surface__toast--message .overlay-feedback__session-copy {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+.pet-surface__toast--message .overlay-feedback__user-line,
+.pet-surface__toast--message .overlay-feedback__preview {
+  display: none;
+}
+
+.pet-surface__toast--message .overlay-feedback__scroll {
+  padding: 8px 10px 10px;
+}
+
+.pet-surface__toast--message .overlay-feedback__message--user {
+  font-size: 10.5px;
+  padding: 6px 8px;
+}
+
+.pet-surface__toast--message .overlay-feedback__message--assistant {
+  padding: 8px 9px 10px;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown {
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown h1 {
+  font-size: 13px;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown h2 {
+  font-size: 12px;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown h3,
+.pet-surface__toast--message .overlay-feedback__markdown h4 {
+  font-size: 11px;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown code {
+  font-size: 9.5px;
+}
+
+.pet-surface__toast--message .overlay-feedback__markdown pre code {
+  font-size: 9.8px;
+}
+
+.pet-surface__toast--message .overlay-feedback__reply {
+  padding: 7px 14px 8px;
 }
 
 .pet-surface__toast--message[data-placement="top-left"]::after,
