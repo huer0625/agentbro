@@ -3,7 +3,10 @@
 // and writes pets into ~/.agentbro/pets/ and ~/.codex/pets/, which the existing
 // pets::discover_all_pets() will pick up on the next refresh.
 
+use crate::agents::executable;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -20,6 +23,85 @@ static STATUS_CACHE: OnceLock<Mutex<Option<(AbpetsStatus, Instant)>>> = OnceLock
 
 fn status_cache() -> &'static Mutex<Option<(AbpetsStatus, Instant)>> {
     STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn resolve_program(program: &str) -> PathBuf {
+    executable::find_binary(program).unwrap_or_else(|| PathBuf::from(program))
+}
+
+fn market_path() -> OsString {
+    let mut paths = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for program in ["node", "npm", "npx"] {
+        if let Some(path) = executable::find_binary(program) {
+            if let Some(parent) = path.parent() {
+                paths.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    std::env::join_paths(paths).unwrap_or_else(|_| OsString::from(""))
+}
+
+fn market_command(program: &str) -> Command {
+    let mut command = Command::new(resolve_program(program));
+    command.env("PATH", market_path());
+    command
+}
+
+fn proxy_from_env() -> Option<String> {
+    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+async fn proxy_from_login_shell() -> Option<String> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    let output = Command::new(shell)
+        .args([
+            "-lc",
+            "printf '%s' \"${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}\"",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+async fn market_http_client() -> reqwest::Client {
+    let proxy = match proxy_from_env() {
+        Some(value) => Some(value),
+        None => proxy_from_login_shell().await,
+    };
+
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy_url) = proxy {
+        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +159,11 @@ fn validate_slug_segment(s: &str) -> Result<(), String> {
 // ── Status check ────────────────────────────────────────────────────────────
 
 async fn detect_node_version() -> Option<String> {
-    let output = Command::new("node").arg("--version").output().await.ok()?;
+    let output = market_command("node")
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -88,7 +174,7 @@ async fn detect_abpets_callable() -> bool {
     // `--no-install` returns non-zero if abpets isn't cached locally — we use
     // that as a hint to suggest a global install, not as a hard gate (install
     // still works via `npx --yes` which auto-fetches).
-    Command::new("npx")
+    market_command("npx")
         .args(["--no-install", "abpets", "--help"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -156,7 +242,7 @@ async fn spawn_and_stream(
     program: &str,
     args: Vec<String>,
 ) -> Result<(), String> {
-    let mut child = Command::new(program)
+    let mut child = market_command(program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -326,7 +412,7 @@ pub async fn uninstall_pet_from_market(
 //
 // The browser webview is blocked by CORS when calling agentbro.net directly,
 // so manifest and download-ping requests go through reqwest on the Rust side,
-// which honors the user's HTTPS_PROXY/HTTP_PROXY env vars automatically.
+// using HTTPS_PROXY/HTTP_PROXY from the app process or the user's login shell.
 
 fn resolve_base_url(base_url: Option<String>) -> String {
     base_url
@@ -339,7 +425,8 @@ fn resolve_base_url(base_url: Option<String>) -> String {
 #[tauri::command]
 pub async fn fetch_market_manifest(base_url: Option<String>) -> Result<String, String> {
     let url = format!("{}/api/manifest", resolve_base_url(base_url));
-    let resp = reqwest::Client::new()
+    let resp = market_http_client()
+        .await
         .get(&url)
         .header("Accept", "application/json")
         .header("User-Agent", "AgentBro/desktop")
@@ -368,7 +455,8 @@ pub async fn ping_market_download(
         handle,
         slug,
     );
-    let _ = reqwest::Client::new()
+    let _ = market_http_client()
+        .await
         .post(&url)
         .header("Content-Type", "application/json")
         .header("User-Agent", "AgentBro/desktop")
