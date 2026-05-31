@@ -131,9 +131,9 @@ export interface TerminalInfo {
 }
 
 /**
- * Pagination metadata for incrementally-loaded chat history. Backend returns
- * only the tail (e.g. last 50 messages) on first open; this records whether
- * older pages exist so the UI can fetch them on demand.
+ * Metadata for tail-only chat history. Backend returns only the newest slice
+ * (e.g. last 50 messages); hasMore lets the UI explain that older messages
+ * were intentionally skipped for performance.
  */
 export interface ChatHistoryMeta {
   hasMore: boolean

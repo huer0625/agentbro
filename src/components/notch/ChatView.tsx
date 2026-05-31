@@ -104,7 +104,6 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const contentRef = useRef<HTMLDivElement>(null)
   const [userScrolled, setUserScrolled] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [subagentHistory, setSubagentHistory] = useState<{
     sessionId: string
@@ -121,7 +120,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   // Auto-load chat history when ChatView mounts, and refresh it as hook
   // metadata changes so detail view does not look empty while a run is active.
-  // Only loads the tail (~50 messages); older pages are fetched on scroll.
+  // Only loads the tail (~50 messages) to keep the floating detail view light.
   useEffect(() => {
     if (!activeSessionId) return
 
@@ -171,43 +170,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     if (!contentRef.current) return
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current
     setUserScrolled(scrollHeight - scrollTop - clientHeight > 30)
-
-    // Load the previous page when the user scrolls near the top.
-    if (scrollTop < 80 && activeSessionId && !loadingMoreHistory) {
-      const session = useSessionStore.getState().sessions[activeSessionId]
-      const meta = session?.chatHistoryMeta
-      if (!meta?.hasMore || !meta.firstMessageId) return
-      const anchorId = meta.firstMessageId
-      const preservedHeight = scrollHeight
-      setLoadingMoreHistory(true)
-      getChatHistoryTail(activeSessionId, { limit: 50, beforeId: anchorId })
-        .then((slice) => {
-          if (slice.messages.length > 0) {
-            const messages = mapParsedMessages(slice.messages)
-            useSessionStore.getState().prependChatHistory(activeSessionId, messages, {
-              hasMore: slice.hasMore,
-              firstMessageId: slice.firstMessageId ?? undefined,
-              totalCount: slice.totalCount,
-              transcriptPath: slice.transcriptPath ?? undefined,
-            })
-            // Preserve scroll position relative to the previously-top message.
-            requestAnimationFrame(() => {
-              const el = contentRef.current
-              if (!el) return
-              el.scrollTop = el.scrollHeight - preservedHeight
-            })
-          } else {
-            // No older messages — flip hasMore off so we stop trying.
-            useSessionStore.getState().setChatHistory(activeSessionId, session.chatHistory, {
-              ...meta,
-              hasMore: false,
-            })
-          }
-        })
-        .catch((e) => console.warn('[ChatView] getChatHistoryTail(more):', e))
-        .finally(() => setLoadingMoreHistory(false))
-    }
-  }, [activeSessionId, loadingMoreHistory])
+  }, [])
 
   // Navigate back if session disappears (e.g. session ended)
   useEffect(() => {
@@ -354,6 +317,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const currentSubagentHistory = subagentHistory?.sessionId === activeSession.id ? subagentHistory : null
   const displayedMessages = currentSubagentHistory?.messages ?? remoteDisplayMessages(activeSession)
   const agentName = getAgentDisplayName(activeSession)
+  const showHistoryLimitNotice = !currentSubagentHistory && activeSession.chatHistoryMeta?.hasMore
 
   return (
     <div className="chat-view">
@@ -364,9 +328,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       )}
 
       <div className="chat-view__messages glass-scroll" ref={contentRef} onScroll={handleScroll} style={{ fontSize: contentFontSize }}>
-        {loadingMoreHistory && (
-          <div className="chat-view__load-more">
-            <span>{t('notch.loadingMoreHistory', '加载更早的消息…')}</span>
+        {showHistoryLimitNotice && (
+          <div className="chat-view__history-limit">
+            <span>{t('notch.historyLimitNotice', '性能优化，只加载最近几条消息。')}</span>
           </div>
         )}
         {currentSubagentHistory && (

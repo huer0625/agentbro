@@ -36,6 +36,7 @@
     "unexpectedError": "发生意外错误。",
     "checkTerminal": "请检查终端获取详情，或重新启动会话。",
     "waitingMessages": "等待消息...",
+    "historyLimitNotice": "性能优化，只加载最近几条消息。",
     "scrollToBottom": "滚动到底部",
     "subagents": "子代理",
     "subagentsPlural": "子代理",

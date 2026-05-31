@@ -36,6 +36,7 @@
     "unexpectedError": "Beklenmeyen bir hata oluştu.",
     "checkTerminal": "Ayrıntılar için terminali kontrol edin veya oturumu yeniden başlatın.",
     "waitingMessages": "Mesajlar bekleniyor...",
+    "historyLimitNotice": "Performans için yalnızca son mesajlar yüklenir.",
     "scrollToBottom": "En alta kaydır",
     "subagents": "alt ajan",
     "subagentsPlural": "alt ajanlar",

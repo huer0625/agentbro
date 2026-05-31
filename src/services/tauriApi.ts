@@ -957,8 +957,8 @@ export interface ChatHistorySlice {
 
 /**
  * Load only the tail (most recent N messages) of a session's transcript.
- * Pass `beforeId` to load the page immediately before a known message id
- * (used when the user scrolls to the top of the history).
+ * `beforeId` is kept for backend compatibility, but the floating chat view
+ * intentionally avoids loading older pages for performance.
  */
 export async function getChatHistoryTail(
   sessionId: string,

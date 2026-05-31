@@ -36,6 +36,7 @@
     "unexpectedError": "An unexpected error occurred.",
     "checkTerminal": "Check the terminal for details, or restart the session.",
     "waitingMessages": "Waiting for messages...",
+    "historyLimitNotice": "Performance optimization: only recent messages are loaded.",
     "scrollToBottom": "Scroll to bottom",
     "subagents": "subagent",
     "subagentsPlural": "subagents",

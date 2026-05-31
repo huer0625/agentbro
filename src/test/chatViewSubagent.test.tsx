@@ -53,6 +53,7 @@ vi.mock('react-i18next', () => ({
     t: (key: string, fallback?: string | { defaultValue?: string }) => {
       const translations: Record<string, string> = {
         'notch.subagents': '子代理',
+        'notch.historyLimitNotice': '性能优化，只加载最近几条消息。',
         'notch.expandSubagents': '展开',
         'notch.collapseSubagents': '收起',
         'notch.typeMessage': '输入消息...',
@@ -198,6 +199,43 @@ describe('ChatView subagent history', () => {
       expect(screen.getAllByText('@calc-a').length).toBeGreaterThan(0)
     })
     expect(screen.getAllByText('Calculate 1+1 (Agent A)').length).toBeGreaterThan(0)
+  })
+
+  it('shows the tail-only history notice and does not load older pages on upward scroll', async () => {
+    const current = session({
+      chatHistory: [
+        {
+          role: 'user',
+          content: '最近的问题',
+          timestamp: Date.now() - 1_000,
+        },
+      ],
+      chatHistoryMeta: {
+        hasMore: true,
+        firstMessageId: 'msg-latest',
+        totalCount: 80,
+        transcriptPath: '/tmp/main.jsonl',
+      },
+    })
+    useSessionStore.setState({
+      sessions: { [current.id]: current },
+      sessionList: [current],
+      activeSessionId: current.id,
+    })
+
+    const { container } = render(<ChatView onBack={vi.fn()} />)
+
+    expect(await screen.findByText('性能优化，只加载最近几条消息。')).toBeInTheDocument()
+    await waitFor(() => expect(tauriMocks.getChatHistoryTail).toHaveBeenCalledTimes(1))
+    tauriMocks.getChatHistoryTail.mockClear()
+
+    const scrollArea = container.querySelector('.chat-view__messages') as HTMLDivElement
+    Object.defineProperty(scrollArea, 'scrollHeight', { configurable: true, value: 1200 })
+    Object.defineProperty(scrollArea, 'clientHeight', { configurable: true, value: 360 })
+    Object.defineProperty(scrollArea, 'scrollTop', { configurable: true, value: 0 })
+    fireEvent.scroll(scrollArea)
+
+    expect(tauriMocks.getChatHistoryTail).not.toHaveBeenCalled()
   })
 
   it('shows plan-specific detail actions and routes them to plan modes', () => {

@@ -37,6 +37,7 @@
     "unexpectedError": "予期しないエラーが発生しました。",
     "checkTerminal": "ターミナルで詳細を確認するか、セッションを再起動してください。",
     "waitingMessages": "メッセージを待機中...",
+    "historyLimitNotice": "パフォーマンス最適化のため、最近のメッセージのみを読み込みます。",
     "scrollToBottom": "最下部にスクロール",
     "subagents": "サブエージェント",
     "subagentsPlural": "サブエージェント",
