@@ -2,7 +2,12 @@
 
 use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const TRAE_CN_APP_PATHS: &[&str] = &[
+    "/Applications/TRAE SOLO CN.app",
+    "/Applications/Trae CN.app",
+];
 
 pub struct TraeCNAdapter {
     config_root: PathBuf,
@@ -26,7 +31,9 @@ impl TraeCNAdapter {
 
     fn is_installed() -> bool {
         super::executable::command_exists("traecn")
-            || std::path::Path::new("/Applications/Trae.app").exists()
+            || TRAE_CN_APP_PATHS
+                .iter()
+                .any(|path| Path::new(path).exists())
     }
 
     fn config_path(&self) -> PathBuf {

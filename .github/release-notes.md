@@ -2,14 +2,16 @@
 
 ## English
 
-AgentBro is a native macOS desktop tool for AI coding agents. This release adds in-app update notifications, a faster China download mirror, and self-healing hook installation.
+AgentBro is a native macOS desktop tool for AI coding agents. This release improves terminal focus, overlay controls, pet marketplace state, and TRAE CN SOLO detection.
 
 ### Highlights
 
-- **In-app update notifications** — AgentBro now checks for new versions in the background and surfaces an update banner right in the island, with a dot on the collapsed bar and a richer update dialog. No more manually checking GitHub for releases.
-- **China download mirror** — Releases are now mirrored to an Aliyun OSS bucket, so users in mainland China get fast, reliable downloads and auto-updates without GitHub timeouts. The updater tries the China mirror first and falls back to GitHub automatically.
-- **Self-healing hooks** — If an external tool overwrites your agent settings and wipes AgentBro's hooks, they are now automatically restored, so the island keeps working without a manual reinstall.
-- **Pet tuning** — The pet scale slider now goes down to 10%, for an even more compact desktop pet.
+- **Better terminal jump behavior** — AgentBro now supports Wave terminal focus and keeps notification dismissal in sync after jumping back to the host terminal or IDE.
+- **TRAE CN SOLO support** — TRAE CN detection now recognizes the SOLO app bundle, app path, config root, and native focus target.
+- **Safer overlay replies** — Sessions that cannot receive direct messages now show a clear locked composer hint instead of an input that cannot deliver the reply.
+- **Cleaner permission prompts** — Common read-only tool approval prompts use a more compact layout while prompts with diffs still keep the larger review surface.
+- **Pet market polish** — Installed market pets are matched more reliably, install/uninstall jobs now stay attached to their pet cards, and the market adds a direct upload entry point.
+- **Island and chat refinements** — Local images render in notch chat, hover/focus behavior is steadier, and the settings window has more room for dense panels.
 
 ### Install And Update
 
@@ -22,7 +24,7 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release adds 
 - Recommended download: `AgentBro_latest_universal.dmg`
 - Versioned archive: `AgentBro_{{VERSION}}_universal.dmg`
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
-- 🇨🇳 Mainland China mirror (faster): `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
+- Mainland China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### Notes
 
@@ -31,27 +33,29 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release adds 
 
 ## 中文
 
-AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次发布带来应用内更新提示、更快的国内下载镜像,以及可自愈的 Hook 安装。
+AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次发布改进了终端聚焦、覆盖层控制、宠物市场状态和 TRAE CN SOLO 识别。
 
 ### 主要更新
 
-- **应用内更新提示** —— AgentBro 现在会在后台检查新版本,并直接在灵动岛里弹出更新横幅:折叠条上有小红点,更新弹窗也更完善。不用再手动去 GitHub 看有没有新版了。
-- **国内下载镜像** —— 发布产物现在会镜像到阿里云 OSS,国内用户无需再忍受 GitHub 超时,下载和自动更新又快又稳。更新器会优先走国内镜像,异常时自动回落到 GitHub。
-- **Hook 自愈** —— 如果外部工具覆盖了你的 Agent 配置、把 AgentBro 的 Hook 抹掉了,现在会自动恢复,灵动岛无需手动重装即可继续工作。
-- **宠物微调** —— 宠物大小滑块下限降到 10%,桌面宠物可以更小巧。
+- **终端跳转更稳** —— AgentBro 现在支持 Wave 终端聚焦,并在跳回终端或 IDE 后同步收起对应通知。
+- **支持 TRAE CN SOLO** —— TRAE CN 识别现在覆盖 SOLO 应用 bundle、应用路径、配置目录和原生聚焦目标。
+- **覆盖层回复更安全** —— 对暂时无法直发消息的会话,现在会显示明确的输入锁定提示,不再展示无法送达的输入框。
+- **权限提示更紧凑** —— 常见只读工具的权限请求会使用更紧凑的布局;带 diff 的请求仍保留更完整的审阅空间。
+- **宠物市场打磨** —— 市场宠物的已安装状态匹配更可靠,安装/卸载进度直接显示在对应卡片上,并新增上传入口。
+- **灵动岛和聊天细节** —— Notch 聊天支持本地图片渲染,悬停和焦点行为更稳定,设置窗口也为密集面板提供了更宽空间。
 
 ### 安装与更新
 
 - Homebrew 支持一行安装:`brew tap shirenchuang/tap && brew install --cask agentbro`
 - GitHub Release 和应用内自动更新会使用同一份版本说明。
-- 自动更新文件继续包含签名的 `AgentBro.app.tar.gz` 和 `latest.json`。
+- 自动更新文件继续包含签名的 `AgentBro.app.tar.gz` 与 `latest.json`。
 
 ### 下载
 
 - 推荐下载:`AgentBro_latest_universal.dmg`
 - 版本归档:`AgentBro_{{VERSION}}_universal.dmg`
 - 自动更新文件:`AgentBro.app.tar.gz` 与 `latest.json`
-- 🇨🇳 国内直链(速度更快):`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
+- 国内直链:`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### 说明
 

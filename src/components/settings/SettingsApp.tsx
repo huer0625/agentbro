@@ -39,6 +39,8 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [updateMinimized, setUpdateMinimized] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
+  const isMarketSection = activeSection === 'island' && activeIslandView === 'market'
+  const contentClassName = `settings-content settings-scroll${isMarketSection ? ' settings-content--market' : ''}`
   const openCustomAgentDialog = () => {
     setActiveSection('agents')
     setActiveCapabilityView('agent')
@@ -98,7 +100,7 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         onMonitorViewChange={setActiveMonitorView}
         onAddCustomAgent={openCustomAgentDialog}
       />
-      <div className="settings-content settings-scroll">
+      <div className={contentClassName}>
         <div className="settings-window-brand" aria-hidden="true">
           <span className="settings-window-brand__mark">
             <img src="/agentbro-app-icon.png" alt="" />

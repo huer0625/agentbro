@@ -531,6 +531,15 @@
   backdrop-filter: blur(14px);
 }
 
+.settings-content--market {
+  padding-right: 36px;
+  padding-left: 36px;
+}
+
+.settings-content--market .settings-window-brand {
+  left: 36px;
+}
+
 .settings-window-brand {
   position: absolute;
   top: 24px;
@@ -4308,4 +4317,3 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-

@@ -2065,6 +2065,23 @@ function IntegrationTab() {
   const setToolAction = (toolId: string, action: string | null) =>
     setActionLoading(prev => { const next = { ...prev }; if (action === null) delete next[toolId]; else next[toolId] = action; return next })
 
+  const hookToolLabel = (toolId: string) => {
+    const tool = visibleTools.find((item) => hookToolId(item) === toolId)
+    return tool?.displayName || tool?.name || toolId
+  }
+
+  const hookInstallError = (toolId: string, error: unknown) => t('settings.hookInstallFailed', {
+    defaultValue: '{{tool}} install failed: {{reason}}',
+    tool: hookToolLabel(toolId),
+    reason: readableError(error),
+  })
+
+  const hookReinstallError = (toolId: string, error: unknown) => t('settings.hookReinstallFailed', {
+    defaultValue: '{{tool}} reinstall failed: {{reason}}',
+    tool: hookToolLabel(toolId),
+    reason: readableError(error),
+  })
+
   const install = async (toolId: string) => {
     setError(null); setNotice(null)
     if (!isTauri()) {
@@ -2076,7 +2093,7 @@ function IntegrationTab() {
       await invoke('install_agent_hook', { toolName: toolId })
       await fetchStatus()
       setNotice(t('settings.hookInstallDone', { defaultValue: 'Hook installed. Restart the corresponding CLI session to load it.' }))
-    } catch (e) { setError(readableError(e)) }
+    } catch (e) { setError(hookInstallError(toolId, e)) }
     setToolAction(toolId, null)
   }
 
@@ -2106,7 +2123,7 @@ function IntegrationTab() {
       await invoke('install_agent_hook', { toolName: toolId })
       await fetchStatus()
       setNotice(t('settings.hookReinstallDone', { defaultValue: 'Hook reinstalled. Restart the corresponding CLI session to load it.' }))
-    } catch (e) { setError(readableError(e)) }
+    } catch (e) { setError(hookReinstallError(toolId, e)) }
     setToolAction(toolId, null)
   }
 
@@ -2272,7 +2289,7 @@ function IntegrationTab() {
           const installStatus = hookInstallStatus(tool)
           const cliUnavailable = tool.status === 'Unavailable'
           const busy = actionLoading[toolId] !== undefined || bulkInstalling || bulkUninstalling
-          const installBlocked = busy || cliUnavailable
+          const installBlocked = busy
           const cliMissingTitle = cliUnavailable
             ? t('settings.cliNotInstalled', { defaultValue: 'CLI 未安装，请先安装对应的命令行工具' })
             : undefined

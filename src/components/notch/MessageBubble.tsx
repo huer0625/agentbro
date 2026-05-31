@@ -1,7 +1,7 @@
 /* MessageBubble — Renders a single chat message by type */
-import { useState } from 'react'
+import { useEffect, useState, type ImgHTMLAttributes } from 'react'
 import { useTranslation } from 'react-i18next'
-import Markdown from 'react-markdown'
+import Markdown, { defaultUrlTransform, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage, ChatToolCall } from '../../types/agent'
 import { DiffView } from './DiffView'
@@ -9,7 +9,7 @@ import { StatusDot } from '../shared'
 import { PlatformIcon } from '../platform/PlatformIcon'
 import { parseMcpTool } from '../../utils/mcp'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { openImage } from '../../services/tauriApi'
+import { isLocalImageSource, openImage, resolveImageSrc } from '../../services/tauriApi'
 import { ExternalLink } from './ExternalLink'
 import './MessageBubble.css'
 
@@ -34,14 +34,7 @@ export function MessageBubble({ message, agentType = 'claude-code', agentName }:
             {message.images && message.images.length > 0 && (
               <div className="msg__images">
                 {message.images.map((src, index) => (
-                  <img
-                    key={`${src}-${index}`}
-                    className="msg__image"
-                    src={src}
-                    alt=""
-                    title="Open image"
-                    onClick={() => openImage(src).catch((e) => console.warn('[MessageBubble] openImage:', e))}
-                  />
+                  <ImageThumb key={`${src}-${index}`} src={src} />
                 ))}
               </div>
             )}
@@ -115,12 +108,12 @@ function AssistantMessage({
                 {message.thinking && (
                   <div className="msg__process-section msg__process-section--thinking markdown-body">
                     <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
-                    <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{message.thinking}</Markdown>
+                    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents} urlTransform={markdownUrlTransform}>{message.thinking}</Markdown>
                   </div>
                 )}
                 {hasIntermediateText && (
                   <div className="msg__process-section markdown-body">
-                    <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{message.content}</Markdown>
+                    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents} urlTransform={markdownUrlTransform}>{message.content}</Markdown>
                   </div>
                 )}
                 {toolCalls.length > 0 && (
@@ -137,7 +130,7 @@ function AssistantMessage({
 
         {finalContent && (
           <div className="msg__content selectable markdown-body">
-            <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{finalContent}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents} urlTransform={markdownUrlTransform}>{finalContent}</Markdown>
           </div>
         )}
         {message.images && message.images.length > 0 && (
@@ -190,12 +183,51 @@ function AssistantToolCall({ tool }: { tool: ChatToolCall }) {
   )
 }
 
-function ImageThumb({ src }: { src: string }) {
+const markdownComponents = {
+  a: ExternalLink,
+  img: MarkdownImage,
+}
+
+const markdownUrlTransform: UrlTransform = (url, key) => {
+  if (key === 'src' && (isLocalImageSource(url) || url.startsWith('data:image/'))) return url
+  return defaultUrlTransform(url)
+}
+
+function MarkdownImage({ src = '', alt = '' }: ImgHTMLAttributes<HTMLImageElement>) {
+  return <ImageThumb src={String(src)} alt={String(alt)} />
+}
+
+function ImageThumb({ src, alt = '' }: { src: string; alt?: string }) {
+  const localSource = isLocalImageSource(src)
+  const [resolvedSrc, setResolvedSrc] = useState<{ source: string; value: string } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!isLocalImageSource(src)) return () => {
+      cancelled = true
+    }
+    resolveImageSrc(src)
+      .then((resolved) => {
+        if (!cancelled) setResolvedSrc({ source: src, value: resolved })
+      })
+      .catch((e) => {
+        console.warn('[MessageBubble] resolveImageSrc:', e)
+        if (!cancelled) setResolvedSrc({ source: src, value: src })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [src])
+
+  const displaySrc = localSource
+    ? resolvedSrc?.source === src ? resolvedSrc.value : ''
+    : src
+
   return (
     <img
       className="msg__image"
-      src={src}
-      alt=""
+      src={displaySrc || undefined}
+      alt={alt}
       title="Open image"
       onClick={() => openImage(src).catch((e) => console.warn('[MessageBubble] openImage:', e))}
     />

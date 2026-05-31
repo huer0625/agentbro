@@ -10,6 +10,7 @@ import {
   type AbpetsStatus,
 } from '../services/tauriApi'
 import { usePetStore } from './petStore'
+import type { PetOption } from '../types/pet'
 
 const MARKET_API_BASE =
   (import.meta.env.VITE_AGENTBRO_API_BASE as string | undefined)?.replace(/\/$/, '') ||
@@ -362,7 +363,37 @@ export const useMarketStore = create<MarketStore>((set, get) => ({
 
 // ── Selector: derive installed state from petStore ───────────────────────────
 
-export function isMarketPetInstalled(slug: string, registryIds: string[]): boolean {
-  const target = `agentbro:${slug}`
-  return registryIds.includes(target)
+function normalizePetKey(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase()
+}
+
+function providerlessPetId(id: string): string {
+  const index = id.indexOf(':')
+  return index >= 0 ? id.slice(index + 1) : id
+}
+
+function petDirectoryName(spritesheetPath: string): string {
+  const parts = spritesheetPath.split(/[\\/]/).filter(Boolean)
+  return parts.length >= 2 ? parts[parts.length - 2] : ''
+}
+
+export function findInstalledMarketPet(pet: MarketPet, registry: PetOption[]): PetOption | null {
+  const candidates = new Set([
+    normalizePetKey(pet.slug),
+    normalizePetKey(pet.fullSlug.split('/').pop()),
+  ])
+  candidates.delete('')
+
+  return registry.find((localPet) => {
+    if (localPet.provider !== 'agentbro') return false
+    const localKeys = [
+      providerlessPetId(localPet.id),
+      petDirectoryName(localPet.spritesheetPath),
+    ].map(normalizePetKey)
+    return localKeys.some((key) => key.length > 0 && candidates.has(key))
+  }) ?? null
+}
+
+export function isMarketPetInstalled(pet: MarketPet, registry: PetOption[]): boolean {
+  return findInstalledMarketPet(pet, registry) !== null
 }

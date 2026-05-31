@@ -742,10 +742,10 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "https://www.trae.ai",
         ),
         "traecn" => app(
-            "trae",
-            "/Applications/Trae CN.app",
-            "~/.trae",
-            "https://www.trae.com.cn",
+            "traecn",
+            "/Applications/TRAE SOLO CN.app",
+            "~/.trae-cn",
+            "https://www.trae.cn/ide/download#solo-download",
         ),
         "qoder" => app(
             "qoder",

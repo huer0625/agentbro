@@ -10,7 +10,7 @@ import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionHasVisibleActivity, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
-import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
+import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
@@ -998,12 +998,18 @@ export function NotchPanel() {
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
+        const visibleFeedbackOverlay = Boolean(
+          activeOverlay
+          && isNonBlockingOverlay(activeOverlay)
+          && !interaction.isHidden,
+        )
         const ignoreTransparentHost = !islandEnabled
           || (
             !isDragging
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
+            && !visibleFeedbackOverlay
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
@@ -1356,10 +1362,17 @@ export function NotchPanel() {
   )
   const usesWideApprovalOverlay = hasBlockingOverlayContent
     && (activeOverlay?.type === 'permission' || activeOverlay?.type === 'plan' || activeOverlay?.type === 'question')
+  const usesCompactPermissionOverlay = hasBlockingOverlayContent
+    && activeOverlay?.type === 'permission'
+    && isCompactPermissionPrompt(activeOverlay.data)
   const expandedPanelContentWidth = isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50)
+  const compactPermissionPanelWidth = Math.min(600, expandedPanelContentWidth)
   const approvalPanelWidth = typeof window === 'undefined'
-    ? expandedPanelContentWidth
-    : Math.min(expandedPanelContentWidth, Math.max(360, window.innerWidth - 24))
+    ? (usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth)
+    : Math.min(
+        usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth,
+        Math.max(360, window.innerWidth - 24),
+      )
   const feedbackPresentationOpen = Boolean(
     !layoutPreview
     && activeOverlay
@@ -1649,10 +1662,8 @@ export function NotchPanel() {
   }, [])
 
   // Keep the native transparent host at a stable max canvas. macOS can briefly
-  // show the old WebView backing store when a transparent NSWindow is resized
+  // flash the old WebView backing store when a transparent NSWindow is resized
   // during hover/collapse; fixed host geometry avoids that repaint path.
-  // Cursor passthrough for the transparent area is handled with
-  // set_ignore_cursor_events while collapsed.
   useLayoutEffect(() => {
     if (isDragging) return
     const current = hostHitboxSizeRef.current

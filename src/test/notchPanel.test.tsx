@@ -263,6 +263,9 @@ describe('NotchPanel island shell', () => {
 
       fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
 
+      expect(hostWidthVar()).toBe('754px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+
       act(() => {
         vi.advanceTimersByTime(120)
       })
@@ -319,7 +322,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('uses only the visible micro pill for native hover passthrough', async () => {
+  it('keeps the visible collapsed pill inside a passthrough stable native host', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const currentSession = session({ phase: 'idle' })
     useSessionStore.setState({
@@ -338,6 +341,7 @@ describe('NotchPanel island shell', () => {
     render(<NotchPanel />)
 
     expect(hitboxWidthVar()).toBe('140px')
+    expect(hostWidthVar()).toBe('754px')
     await waitFor(() => {
       expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
     })
@@ -413,14 +417,15 @@ describe('NotchPanel island shell', () => {
     })
   })
 
-  it('serializes native cursor passthrough so a stale collapsed request cannot disable hover', async () => {
+  it('serializes native cursor passthrough so a stale hidden request cannot disable hover', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const pendingCollapsedPassthrough = deferred()
     tauriMocks.setNotchIgnoreCursorEvents
       .mockImplementationOnce(() => pendingCollapsedPassthrough.promise)
       .mockResolvedValue(undefined)
 
-    const currentSession = session({ phase: 'idle' })
+    useConfigStore.setState({ interactionMode: 'minimal' })
+    const currentSession = session({ phase: 'processing' })
     useSessionStore.setState({
       sessions: { [currentSession.id]: currentSession },
       sessionList: [currentSession],
@@ -700,6 +705,47 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     })
     expect(useSessionStore.getState().panelState).toBe('collapsed')
+    expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
+  })
+
+  it('keeps collapsed feedback popups interactive without delayed cursor passthrough', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(false)
+    const activeOverlay: OverlayItem = {
+      id: 'response-s1-no-passthrough',
+      sessionId: 's1',
+      type: 'response',
+      data: {
+        responseText: 'Visible feedback should stay clickable',
+        userMessage: 'Can I click it?',
+      },
+      createdAt: Date.now(),
+    }
+    const currentSession = session()
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 260))
+    })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
     expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
   })
 
@@ -1030,8 +1076,8 @@ describe('NotchPanel island shell', () => {
     })
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'alert_permission')
-    expect(hostWidthVar()).toBe('754px')
-    expect(hitboxWidthVar()).toBe('686px')
+    expect(hostWidthVar()).toBe('724px')
+    expect(hitboxWidthVar()).toBe('656px')
     expect(document.querySelector('.notch-panel__alert-content')).toBeInTheDocument()
     expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
     expect(document.querySelector('.hover-list')).not.toBeInTheDocument()
@@ -1490,7 +1536,7 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__session')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
 
     cleanup()
     mountIsland({
@@ -1680,7 +1726,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('keeps feedback overlays visible when the feedback body jumps to the terminal', () => {
+  it('dismisses feedback overlays when the feedback body jumps to the terminal', () => {
     mountIsland({
       id: 'completion-s1',
       sessionId: 's1',
@@ -1692,8 +1738,8 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__detail')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
-    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.id)).toContain('completion-s1')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.id)).not.toContain('completion-s1')
   })
 
   it('keeps the feedback countdown running while hovered', () => {

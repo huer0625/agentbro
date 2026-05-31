@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { OverlayItem, SessionState } from '../../types/agent'
@@ -186,6 +186,7 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                     onChange={(e) => setInputTexts(prev => ({ ...prev, [qi]: e.target.value }))}
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
+                    onFocus={() => { void setNotchFocusable(true) }}
                     onCompositionStart={() => setComposing(true)}
                     onCompositionEnd={() => setComposing(false)}
                     onKeyDown={(e) => {
@@ -213,9 +214,13 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
                     className="question-card__chip question-card__chip--other"
                     onMouseDown={(e) => {
                       e.preventDefault()
-                      setNotchFocusable(true).then(() => {
-                        setInputStates(prev => ({ ...prev, [qi]: true }))
-                      })
+                      setNotchFocusable(true)
+                        .then(() => {
+                          setInputStates(prev => ({ ...prev, [qi]: true }))
+                        })
+                        .catch(() => {
+                          setInputStates(prev => ({ ...prev, [qi]: true }))
+                        })
                     }}
                   >
                     {t('notch.typeHint', { defaultValue: 'Other' })}
@@ -253,6 +258,9 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
     showCustom: boolean
     customText: string
   }>({ overlayId: overlay.id, selected: new Set(), showCustom: false, customText: '' })
+  const customInputRef = useRef<HTMLInputElement>(null)
+  const customRefocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [customComposing, setCustomComposing] = useState(false)
   const isCurrentOverlay = responseState.overlayId === overlay.id
   const selected = isCurrentOverlay ? responseState.selected : new Set<number>()
   const showCustom = isCurrentOverlay && responseState.showCustom
@@ -271,6 +279,12 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
 
   useEffect(() => {
     return () => { setNotchFocusable(false) }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (customRefocusTimerRef.current) clearTimeout(customRefocusTimerRef.current)
+    }
   }, [])
 
   if (isMultiQuestionSet) {
@@ -308,6 +322,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
   }
 
   const handleCustomSubmit = () => {
+    if (customComposing) return
     const val = customText.trim()
     if (val) {
       onAnswer(val)
@@ -318,7 +333,13 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
 
   const showCustomInput = async () => {
     setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText })
-    await setNotchFocusable(true)
+    await setNotchFocusable(true).catch(() => undefined)
+    window.requestAnimationFrame(() => customInputRef.current?.focus())
+    if (customRefocusTimerRef.current) clearTimeout(customRefocusTimerRef.current)
+    customRefocusTimerRef.current = setTimeout(() => {
+      customRefocusTimerRef.current = null
+      customInputRef.current?.focus()
+    }, 80)
   }
 
   return (
@@ -396,6 +417,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
           <form className="question-card__option-row question-card__option-row--custom-active" onSubmit={(e) => { e.preventDefault(); handleCustomSubmit() }}>
             <span className="question-card__option-index">{options.length + 1}</span>
             <input
+              ref={customInputRef}
               autoFocus
               type="text"
               className="question-card__input"
@@ -403,7 +425,11 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
               value={customText}
               onChange={(e) => setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText: e.target.value })}
               placeholder={t('notch.typePlaceholder', { defaultValue: 'Type your response...' })}
+              onFocus={() => { void setNotchFocusable(true) }}
+              onCompositionStart={() => setCustomComposing(true)}
+              onCompositionEnd={() => setCustomComposing(false)}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || customComposing) return
                 if (e.key === 'Escape') {
                   setResponseState({ overlayId: overlay.id, selected, showCustom: false, customText: '' })
                   setNotchFocusable(false)

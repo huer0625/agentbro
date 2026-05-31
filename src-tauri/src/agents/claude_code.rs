@@ -963,27 +963,45 @@ pub fn send_message_to_terminal(
         return Ok(());
     }
 
+    let terminal_env = if let Some(pid) = pid {
+        let tree = crate::terminal::process_tree::build_tree();
+        crate::terminal::process_tree::read_terminal_env(pid, &tree)
+    } else {
+        Default::default()
+    };
+
     if let Some(pid) = pid {
         let jump_context = crate::terminal::jump::JumpContext {
             pid,
-            iterm_session_id: None,
-            kitty_window_id: None,
-            wezterm_pane: None,
-            zellij_pane_id: None,
-            zellij_session_name: None,
-            cmux_surface_id: None,
-            cmux_workspace_id: None,
+            iterm_session_id: terminal_env.iterm_session_id.clone(),
+            kitty_window_id: terminal_env.kitty_window_id.clone(),
+            wezterm_pane: terminal_env.wezterm_pane.clone(),
+            waveterm_block_id: terminal_env.waveterm_block_id.clone(),
+            waveterm_tab_id: terminal_env.waveterm_tab_id.clone(),
+            waveterm_jwt: terminal_env.waveterm_jwt.clone(),
+            zellij_pane_id: terminal_env.zellij_pane_id.clone(),
+            zellij_session_name: terminal_env.zellij_session_name.clone(),
+            cmux_surface_id: terminal_env.cmux_surface_id.clone(),
+            cmux_workspace_id: terminal_env.cmux_workspace_id.clone(),
             tmux_pane: None,
-            tmux_env: None,
+            tmux_env: terminal_env.tmux.clone(),
             cwd: None,
             tty_path: Some(tty.to_string()),
             terminal_app: Some(terminal_app.clone()),
-            term_program: None,
-            term_bundle_id: term_bundle_id.map(ToString::to_string),
+            term_program: terminal_env.term_program.clone(),
+            term_bundle_id: term_bundle_id
+                .map(ToString::to_string)
+                .or(terminal_env.cf_bundle_identifier.clone()),
             agent_type: Some("claude-code".to_string()),
         };
         let _ = crate::terminal::jump::jump_to_terminal_with_context(&jump_context);
         std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    if terminal_app.eq_ignore_ascii_case("wave") {
+        if send_message_via_wave_rpc(&terminal_env, message).is_ok() {
+            return Ok(());
+        }
     }
 
     run_osascript(&build_system_events_paste_script(message))
@@ -1028,6 +1046,9 @@ fn resolve_terminal_app_label(
     if bundle.contains("kitty") {
         return "kitty".to_string();
     }
+    if bundle.contains("waveterm") || bundle.contains("commandline.wave") {
+        return "Wave".to_string();
+    }
 
     let lower = terminal.to_ascii_lowercase();
     if lower.contains("iterm") {
@@ -1042,6 +1063,9 @@ fn resolve_terminal_app_label(
     if lower.contains("kitty") {
         return "kitty".to_string();
     }
+    if lower.contains("wave") {
+        return "Wave".to_string();
+    }
 
     if let Some(pid) = pid {
         let tree = crate::terminal::process_tree::build_tree();
@@ -1051,6 +1075,23 @@ fn resolve_terminal_app_label(
     }
 
     "Terminal".to_string()
+}
+
+fn send_message_via_wave_rpc(
+    terminal_env: &crate::terminal::process_tree::TerminalEnv,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let block_id = terminal_env
+        .waveterm_block_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("Wave block id missing")?;
+    let jwt = terminal_env
+        .waveterm_jwt
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("Wave JWT missing")?;
+    crate::terminal::wave::send_input(block_id, jwt, &format!("{message}\r")).map_err(Into::into)
 }
 
 fn build_iterm_write_script(tty: &str, message: &str) -> String {

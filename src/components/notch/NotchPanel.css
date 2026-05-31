@@ -83,6 +83,18 @@
   z-index: 1;
 }
 
+.notch-panel,
+.notch-panel * {
+  scrollbar-width: none;
+}
+
+.notch-panel::-webkit-scrollbar,
+.notch-panel *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 .notch-panel[data-island-state="micro"],
 .notch-panel[data-island-state="compact"] {
   border-radius: 0 0 22px 22px;

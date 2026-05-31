@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { GlassButton } from '../../shared'
 import type { MarketJob } from '../../../stores/marketStore'
@@ -46,7 +47,7 @@ export function MarketInstallModal({ job, onClose }: MarketInstallModalProps) {
       ? t('settings.market.jobSuccess')
       : t('settings.market.jobFailed')
 
-  return (
+  return createPortal(
     <div
       className="market-modal-backdrop"
       role="dialog"
@@ -98,6 +99,7 @@ export function MarketInstallModal({ job, onClose }: MarketInstallModalProps) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

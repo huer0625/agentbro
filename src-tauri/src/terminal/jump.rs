@@ -29,6 +29,10 @@ pub struct JumpContext {
     pub kitty_window_id: Option<String>,
     /// WEZTERM_PANE env var
     pub wezterm_pane: Option<String>,
+    /// Wave Terminal block routing metadata for native RPC focus.
+    pub waveterm_block_id: Option<String>,
+    pub waveterm_tab_id: Option<String>,
+    pub waveterm_jwt: Option<String>,
     /// Zellij pane/session identifiers
     pub zellij_pane_id: Option<String>,
     pub zellij_session_name: Option<String>,
@@ -210,6 +214,15 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
             ctx.wezterm_pane.as_deref(),
             ctx.tty_path.as_deref(),
             ctx.cwd.as_deref(),
+        );
+    }
+
+    // ── Wave: focus the owning block through Wave's native RPC ───────────────
+    if lower.contains("wave") {
+        return jump_wave(
+            ctx.waveterm_block_id.as_deref(),
+            ctx.waveterm_tab_id.as_deref(),
+            ctx.waveterm_jwt.as_deref(),
         );
     }
 
@@ -769,6 +782,26 @@ fn jump_wezterm(pane_id: Option<&str>, tty: Option<&str>, cwd: Option<&str>) -> 
     JumpResult::Success
 }
 
+// ─── Wave ───────────────────────────────────────────────────────────────────
+
+fn jump_wave(block_id: Option<&str>, tab_id: Option<&str>, jwt: Option<&str>) -> JumpResult {
+    let _ = activate_app("Wave").or_else(|_| activate_bundle("dev.commandline.waveterm"));
+
+    let Some(block_id) = block_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(tab_id) = tab_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(jwt) = jwt.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    match crate::terminal::wave::focus_block(block_id, tab_id, jwt) {
+        Ok(()) => JumpResult::Success,
+        Err(err) => JumpResult::Failed(err),
+    }
+}
+
 // ─── Zellij ──────────────────────────────────────────────────────────────────
 
 fn jump_zellij(pane_id: Option<&str>, session_name: Option<&str>) -> JumpResult {
@@ -1149,6 +1182,7 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
                 "com.openai.codex" => "com.openai.codex",
                 "com.todesktop.230313mzl4w4u92" => "com.todesktop.230313mzl4w4u92",
                 "com.trae.app" => "com.trae.app",
+                "cn.trae.solo.app" => "cn.trae.solo.app",
                 "com.qoder.ide" => "com.qoder.ide",
                 "com.factory.app" => "com.factory.app",
                 "com.tencent.codebuddy" => "com.tencent.codebuddy",
@@ -1163,7 +1197,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
 
     match ctx.agent_type.as_deref() {
         Some("cursor") => Some("com.todesktop.230313mzl4w4u92"),
-        Some("trae") | Some("traecn") => Some("com.trae.app"),
+        Some("trae") => Some("com.trae.app"),
+        Some("traecn") => Some("cn.trae.solo.app"),
         Some("qoder") => Some("com.qoder.ide"),
         Some("droid") => Some("com.factory.app"),
         Some("codebuddy") => Some("com.tencent.codebuddy"),
@@ -1184,6 +1219,7 @@ fn native_bundle_matches_context(ctx: &JumpContext, bundle_id: &str) -> bool {
             | (Some("cursor-cli"), "com.todesktop.230313mzl4w4u92")
             | (Some("trae"), "com.trae.app")
             | (Some("traecn"), "com.trae.app")
+            | (Some("traecn"), "cn.trae.solo.app")
             | (Some("trae-cli"), "com.trae.app")
             | (Some("traecli"), "com.trae.app")
             | (Some("qoder"), "com.qoder.ide")
@@ -1214,6 +1250,7 @@ fn is_ide_host_bundle(bundle_id: &str) -> bool {
         || lower.contains("android.studio")
         || lower.contains("antigravity")
         || lower == "com.trae.app"
+        || lower == "cn.trae.solo.app"
         || lower == "com.qoder.ide"
         || lower == "com.qoder.ide.helper"
         || lower == "com.factory.app"
@@ -1271,6 +1308,8 @@ fn terminal_app_from_bundle_id(bundle_id: &str) -> Option<&'static str> {
         Some("cmux")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("waveterm") || lower.contains("commandline.wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") || lower.contains("microsoft.vscode") {
@@ -1300,6 +1339,8 @@ fn terminal_app_from_term_program(term_program: &str) -> Option<&'static str> {
         Some("kitty")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") {
@@ -1328,6 +1369,8 @@ fn normalized_app_name(name: &str) -> &str {
         "cmux"
     } else if lower.contains("warp") {
         "Warp"
+    } else if lower.contains("wave") {
+        "Wave"
     } else if lower.contains("alacritty") {
         "Alacritty"
     } else if lower.contains("terminal") && !lower.contains("ghostty") {
@@ -1573,7 +1616,12 @@ mod tests {
             terminal_app_from_bundle_id("com.googlecode.iterm2"),
             Some("iTerm2")
         );
+        assert_eq!(
+            terminal_app_from_bundle_id("dev.commandline.waveterm"),
+            Some("Wave")
+        );
         assert_eq!(terminal_app_from_term_program("iTerm.app"), Some("iTerm2"));
+        assert_eq!(terminal_app_from_term_program("Wave"), Some("Wave"));
         assert_eq!(terminal_app_from_bundle_id("com.anthropic.claude"), None);
     }
 

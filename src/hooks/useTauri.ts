@@ -843,8 +843,8 @@ export function useConversationUpdates() {
 
           // Truncated payload: backend trimmed older messages from the
           // streaming buffer, so allMessages is just the tail. Replacing the
-          // store with the tail would erase older history the UI already has
-          // (e.g. from getChatHistoryTail / "load more"), causing a flash.
+          // store with the tail can erase local messages that arrived between
+          // the initial tail load and the watcher update, causing a flash.
           // Append only the genuinely-newer delta instead, keyed off the
           // existing tail timestamp to avoid duplicating the initial-load
           // window when the watcher fires for the first time.

@@ -10,15 +10,6 @@ export type ComposerCapability =
   | { kind: 'sendable' }
   | { kind: 'locked'; reason: ComposerLockReason }
 
-export interface ComposerCapabilityOptions {
-  /**
-   * True when AgentBro has a live Codex app-server WebSocket bridge attached.
-   * Phase 3 wires this in; until then it stays false and Codex.app sessions
-   * remain locked (we have no way to deliver the message).
-   */
-  codexAppServerLive?: boolean
-}
-
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {
   if (!termBundleId) return false
   return termBundleId.toLowerCase().includes('openai.codex')
@@ -65,14 +56,9 @@ function hasNoTerminalAffinity(session: SessionState): boolean {
 
 export function getComposerCapability(
   session: SessionState,
-  options: ComposerCapabilityOptions = {},
 ): ComposerCapability {
-  const { codexAppServerLive = false } = options
-
   if (isCodexDesktopSession(session)) {
-    return codexAppServerLive
-      ? { kind: 'sendable' }
-      : { kind: 'locked', reason: 'codex-app' }
+    return { kind: 'locked', reason: 'codex-app' }
   }
 
   if (isQoderAppSession(session)) {

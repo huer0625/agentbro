@@ -56,14 +56,14 @@ describe('getComposerCapability', () => {
     expect(getComposerCapability(s)).toEqual({ kind: 'sendable' })
   })
 
-  it('unlocks Codex.app sessions when the app-server bridge is live', () => {
+  it('keeps Codex.app follow-up composer locked when the app-server bridge is live', () => {
     const s = session({
       agentType: 'codex',
       termBundleId: 'com.openai.codex',
       terminal: 'Codex',
       tty: undefined,
     })
-    expect(getComposerCapability(s, { codexAppServerLive: true })).toEqual({ kind: 'sendable' })
+    expect(getComposerCapability(s)).toEqual({ kind: 'locked', reason: 'codex-app' })
   })
 
   it('locks Qoder.app sessions', () => {
@@ -81,7 +81,7 @@ describe('getComposerCapability', () => {
       termBundleId: 'com.qoder.ide',
       terminal: 'Qoder',
     })
-    expect(getComposerCapability(s, { codexAppServerLive: true })).toEqual({
+    expect(getComposerCapability(s)).toEqual({
       kind: 'locked',
       reason: 'qoder-app',
     })

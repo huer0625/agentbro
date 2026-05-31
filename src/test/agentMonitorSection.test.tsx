@@ -356,7 +356,7 @@ describe('AgentMonitorSection', () => {
 
     await waitFor(() => expect(screen.getByText('已开启')).toBeInTheDocument())
     await waitFor(() => expect(screen.getAllByText('MainAgent').length).toBeGreaterThan(0))
-    expect(screen.getByText('cache read 40')).toBeInTheDocument()
+    expect(await screen.findByText('cache read 40')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Tools' }))
     await waitFor(() => expect(screen.getAllByText('Edit').length).toBeGreaterThan(0))

@@ -2531,6 +2531,7 @@ fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) ->
             | ("cursor-cli", "com.todesktop.230313mzl4w4u92")
             | ("trae", "com.trae.app")
             | ("traecn", "com.trae.app")
+            | ("traecn", "cn.trae.solo.app")
             | ("trae-cli", "com.trae.app")
             | ("traecli", "com.trae.app")
             | ("qoder", "com.qoder.ide")
@@ -2561,6 +2562,7 @@ fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
         || lower.contains("android.studio")
         || lower.contains("antigravity")
         || lower == "com.trae.app"
+        || lower == "cn.trae.solo.app"
         || lower == "com.qoder.ide"
         || lower == "com.qoder.ide.helper"
         || lower == "com.factory.app"
@@ -3981,6 +3983,9 @@ pub async fn jump_to_terminal(
         iterm_session_id: terminal_env.iterm_session_id,
         kitty_window_id: terminal_env.kitty_window_id,
         wezterm_pane: session.wezterm_pane.clone().or(terminal_env.wezterm_pane),
+        waveterm_block_id: terminal_env.waveterm_block_id,
+        waveterm_tab_id: terminal_env.waveterm_tab_id,
+        waveterm_jwt: terminal_env.waveterm_jwt,
         zellij_pane_id: session
             .zellij_pane_id
             .clone()
@@ -4161,6 +4166,8 @@ fn fallback_terminal_app_name(terminal: &str) -> &'static str {
         "iTerm"
     } else if lower.contains("ghostty") {
         "Ghostty"
+    } else if lower.contains("wave") {
+        "Wave"
     } else if lower.contains("wezterm") || lower.contains("wez") {
         "WezTerm"
     } else if lower.contains("kitty") {
@@ -6404,6 +6411,10 @@ mod tests {
     fn cwd_fallback_uses_real_terminal_app_names() {
         assert_eq!(fallback_terminal_app_name("iTerm·tmux"), "iTerm");
         assert_eq!(fallback_terminal_app_name("Ghostty"), "Ghostty");
+        assert_eq!(
+            fallback_terminal_app_name("dev.commandline.waveterm"),
+            "Wave"
+        );
         assert_eq!(fallback_terminal_app_name("AntCC"), "Terminal");
         assert_eq!(fallback_terminal_app_name(""), "Terminal");
     }
@@ -6417,6 +6428,10 @@ mod tests {
         let mut bundle_session = session("claude-code", "", None);
         bundle_session.term_bundle_id = Some("com.mitchellh.ghostty".to_string());
         assert_eq!(terminal_hint_for_fallback(&bundle_session), "Ghostty");
+
+        let mut wave_session = session("claude-code", "", None);
+        wave_session.term_bundle_id = Some("dev.commandline.waveterm".to_string());
+        assert_eq!(terminal_hint_for_fallback(&wave_session), "Wave");
     }
 
     #[test]
