@@ -4400,9 +4400,8 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         detail: "Required for terminal focus".to_string(),
     });
 
-    for binary in [
-        "tmux", "zellij", "cmux", "wezterm", "kaku", "kitten", "sqlite3",
-    ] {
+    // Check required binaries
+    for binary in ["tmux", "sqlite3"] {
         checks.push(HookDoctorCheck {
             id: format!("binary-{binary}"),
             label: format!("{binary} binary"),
@@ -4413,6 +4412,32 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
             }
             .to_string(),
             detail: find_binary(binary).unwrap_or_else(|| "not found in common paths".to_string()),
+        });
+    }
+
+    // Check optional terminal multiplexers — only report found ones as OK,
+    // and add a single info-level note if none are found
+    let optional_terminals = ["zellij", "cmux", "wezterm", "kaku", "kitten"];
+    let mut found_any_terminal = false;
+
+    for binary in optional_terminals {
+        if let Some(path) = find_binary(binary) {
+            found_any_terminal = true;
+            checks.push(HookDoctorCheck {
+                id: format!("binary-{binary}"),
+                label: format!("{binary} binary"),
+                status: "ok".to_string(),
+                detail: path,
+            });
+        }
+    }
+
+    if !found_any_terminal {
+        checks.push(HookDoctorCheck {
+            id: "optional-terminals".to_string(),
+            label: "Optional terminal multiplexers".to_string(),
+            status: "info".to_string(),
+            detail: "No optional terminals found (zellij, cmux, wezterm, kaku, kitten). Only install if you use them.".to_string(),
         });
     }
 

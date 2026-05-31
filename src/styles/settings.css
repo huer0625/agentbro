@@ -3031,6 +3031,10 @@
   color: var(--settings-status-active);
 }
 
+.hook-doctor-check--info > strong {
+  color: var(--settings-text-secondary);
+}
+
 .hook-doctor-check--warn > strong {
   color: #f59e0b;
 }
