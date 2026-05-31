@@ -62,6 +62,8 @@ git stash pop
 
 4. Update `.github/release-notes.md` for the actual release. The GitHub Release body and updater `latest.json` notes both come from this file.
 
+   **Before writing, derive the changelog from the actual diff** — do not hand-wave a short summary. See "Drafting Release Notes From the Diff" below. The notes must reflect everything shipped since the previous release.
+
    Release notes must be bilingual:
 
    - English first, under `## English`.
@@ -108,6 +110,54 @@ git ls-remote --tags origin refs/tags/vX.Y.Z
 git tag vX.Y.Z
 git push origin main vX.Y.Z
 ```
+
+## Drafting Release Notes From the Diff
+
+Past releases shipped thin, generic notes ("continues polishing the first
+release") that did not tell users what actually changed. Always derive the
+changelog from the real diff between the last released tag and the release
+commit. Never write the notes from memory of this session alone — you may have
+missed commits made by others, and features that landed in an earlier tag but
+were never announced still deserve a mention if users have not heard of them.
+
+1. Find the previous released tag and collect every change since it:
+
+```bash
+PREV=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | head -1)   # last tag before this release
+echo "Comparing $PREV..HEAD"
+git log "$PREV"..HEAD --no-merges --format='%h %s'        # every non-merge commit
+git diff "$PREV"..HEAD --stat                              # files touched + churn
+```
+
+2. Group the commits into user-facing buckets — **Features**, **Fixes**,
+   **Performance**, **Docs/Internal**. Internal-only churn (refactors, test-only
+   changes, generated schema files) can be collapsed into one line or omitted;
+   anything a user can see or feel must be called out.
+
+3. For each user-facing change, write what the user gets, not the code path.
+   "Codex subagent list anchors on the active spawn wave" → "Completed
+   subagents from earlier turns no longer linger in the hover list."
+
+4. Cross-check against what was actually announced. Compare the previous
+   release body to the features present in the code — a capability that shipped
+   in code but was never described in any release note is still news:
+
+```bash
+gh release view "$PREV" --json body -q .body          # what users were last told
+```
+
+   If the diff or the comparison surfaces a notable feature that prior notes
+   never mentioned (e.g. Pet Market shipped silently in an earlier tag),
+   include it in this release's highlights.
+
+5. Lead with a one-line summary of the release's theme, then a **Highlights**
+   list ordered by user impact (biggest feature first, minor fixes last). Keep
+   the existing Install / Downloads / Notes sections.
+
+6. Mirror every fact into the `## 中文` section. Same buckets, same ordering.
+
+This step is mandatory, not optional polish. A release note that does not
+account for the full `$PREV..HEAD` diff is incomplete.
 
 ## Release Notes Gotcha
 
