@@ -166,6 +166,7 @@ interface ConfigState {
   petVitalsDebugOpen: boolean
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
+  islandPetWindowAnchor: { left: boolean; top: boolean } | null
   /** Active pet identifier (e.g. 'codex:dewey'). `null` = auto-follow active session's agent type. */
   islandActivePetId: string | null
   /** AUTO 模式下每个 agent 默认显示的宠物。Key = adapter name（'claude-code'、'codex'...）。 */
@@ -438,6 +439,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     petVitalsDebugOpen: false,
     islandPetScale: 72,
     islandPetWindowOrigin: null,
+    islandPetWindowAnchor: null,
     islandActivePetId: null,
     islandAgentPetMap: {},
     followFocus: false,
@@ -543,6 +545,7 @@ export const useConfigStore = create<ConfigStore>()(
   petVitalsDebugOpen: false,
   islandPetScale: 72,
   islandPetWindowOrigin: null,
+  islandPetWindowAnchor: null,
   islandActivePetId: null,
   islandAgentPetMap: {},
 

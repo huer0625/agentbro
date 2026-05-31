@@ -376,6 +376,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('petVitalsDebugOpen', import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false)
   store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
   store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
+  store.updateConfig('islandPetWindowAnchor', config.islandPetWindowAnchor ?? null)
   store.updateConfig('islandActivePetId', config.islandActivePetId ?? null)
   store.updateConfig('islandAgentPetMap', config.islandAgentPetMap ?? {})
   store.updateConfig('followFocus', config.followFocus)

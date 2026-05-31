@@ -3170,6 +3170,7 @@ async fn set_display_id(
     let mut config = state.config_store.get();
     if config.display_id != display_id {
         config.island_pet_window_origin = None;
+        config.island_pet_window_anchor = None;
     }
     config.display_id = display_id.clone();
     state.config_store.update(config)?;
@@ -3353,6 +3354,20 @@ struct PetStageAnchor {
     top: bool,
 }
 
+fn pet_stage_anchor_from_config(anchor: &config::PetWindowAnchor) -> PetStageAnchor {
+    PetStageAnchor {
+        left: anchor.left,
+        top: anchor.top,
+    }
+}
+
+fn pet_stage_anchor_to_config(anchor: PetStageAnchor) -> config::PetWindowAnchor {
+    config::PetWindowAnchor {
+        left: anchor.left,
+        top: anchor.top,
+    }
+}
+
 /// Show / position / hide the pet companion window based on the active
 /// island surface mode. The pet is its own Tauri window so dragging it
 /// doesn't drag the island shell along with it.
@@ -3360,10 +3375,17 @@ pub fn sync_pet_window_visibility(app: &tauri::AppHandle, config: &config::AppCo
     let handle = app.clone();
     let is_pet_mode = config.island_surface_mode == "pet";
     let saved_origin = config.island_pet_window_origin.clone();
+    let saved_anchor = config.island_pet_window_anchor.clone();
     let pet_scale = config.island_pet_scale.clamp(50, 120) as f64;
 
     let _ = app.run_on_main_thread(move || {
-        sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref(), pet_scale);
+        sync_pet_window_visibility_inner(
+            &handle,
+            is_pet_mode,
+            saved_origin.as_ref(),
+            saved_anchor.as_ref(),
+            pet_scale,
+        );
     });
 }
 
@@ -3372,6 +3394,7 @@ pub fn sync_pet_window_visibility_inner(
     handle: &tauri::AppHandle,
     is_pet_mode: bool,
     saved_origin: Option<&config::WindowOrigin>,
+    saved_anchor: Option<&config::PetWindowAnchor>,
     pet_scale: f64,
 ) {
     if !is_pet_mode {
@@ -3418,6 +3441,7 @@ pub fn sync_pet_window_visibility_inner(
                 size.width as f64,
                 size.height as f64,
                 saved_origin,
+                saved_anchor,
                 pet_scale,
             );
         }
@@ -3459,18 +3483,44 @@ fn position_pet_window(
     width: f64,
     height: f64,
     saved_origin: Option<&config::WindowOrigin>,
+    saved_anchor: Option<&config::PetWindowAnchor>,
     pet_scale: f64,
 ) {
     if let Some(origin) = saved_origin {
         let scale = window
             .scale_factor()
             .unwrap_or_else(|_| monitor.scale_factor());
-        let monitor =
+        let monitor = if let Some(anchor) = saved_anchor {
+            monitor_for_pet_origin_with_anchor(
+                app,
+                width,
+                height,
+                scale,
+                pet_scale,
+                origin.x,
+                origin.y,
+                pet_stage_anchor_from_config(anchor),
+            )
+        } else {
             monitor_for_pet_origin(app, width, height, scale, pet_scale, origin.x, origin.y)
-                .unwrap_or_else(|| monitor.clone());
-        let origin = clamp_pet_window_origin(
-            &monitor, width, height, scale, pet_scale, origin.x, origin.y,
-        );
+        }
+        .unwrap_or_else(|| monitor.clone());
+        let origin = if let Some(anchor) = saved_anchor {
+            clamp_pet_window_origin_with_anchor(
+                &monitor,
+                width,
+                height,
+                scale,
+                pet_scale,
+                origin.x,
+                origin.y,
+                Some(pet_stage_anchor_from_config(anchor)),
+            )
+        } else {
+            clamp_pet_window_origin(
+                &monitor, width, height, scale, pet_scale, origin.x, origin.y,
+            )
+        };
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
             origin.x.round() as i32,
             origin.y.round() as i32,
@@ -3719,6 +3769,19 @@ fn pet_stage_anchor_for_origin(
     }
 }
 
+fn pet_stage_anchor_for_center(
+    monitor: &tauri::Monitor,
+    center_x: f64,
+    center_y: f64,
+) -> PetStageAnchor {
+    let pos = monitor.position();
+    let size = monitor.size();
+    PetStageAnchor {
+        left: center_x < pos.x as f64 + size.width as f64 / 2.0,
+        top: center_y < pos.y as f64 + size.height as f64 / 2.0,
+    }
+}
+
 fn monitor_for_pet_origin(
     app: &tauri::AppHandle,
     window_width: f64,
@@ -3761,6 +3824,26 @@ fn monitor_for_pet_origin(
         }
     }
     None
+}
+
+fn monitor_for_pet_origin_with_anchor(
+    app: &tauri::AppHandle,
+    window_width: f64,
+    window_height: f64,
+    window_scale: f64,
+    pet_scale_percent: f64,
+    x: f64,
+    y: f64,
+    anchor: PetStageAnchor,
+) -> Option<tauri::Monitor> {
+    let (pet_left, pet_top, pet_size) = pet_rect_in_window(
+        window_width,
+        window_height,
+        window_scale,
+        pet_scale_percent,
+        anchor,
+    );
+    monitor_containing_point(app, x + pet_left + pet_size / 2.0, y + pet_top + pet_size / 2.0)
 }
 
 fn clamp_pet_window_origin(
@@ -4050,6 +4133,8 @@ async fn start_pet_drag(
     app: tauri::AppHandle,
     cursor_x: Option<f64>,
     cursor_y: Option<f64>,
+    anchor_left: Option<bool>,
+    anchor_top: Option<bool>,
 ) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("pet") else {
         return Ok(false);
@@ -4061,30 +4146,39 @@ async fn start_pet_drag(
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let window_scale = window.scale_factor().unwrap_or(1.0);
     let pet_scale = current_pet_scale_percent(&app);
-    let start_anchor = monitor_for_pet_origin(
-        &app,
-        size.width as f64,
-        size.height as f64,
-        window_scale,
-        pet_scale,
-        position.x as f64,
-        position.y as f64,
-    )
-    .map(|m| {
-        pet_stage_anchor_for_origin(
-            &m,
-            size.width as f64,
-            size.height as f64,
-            window_scale,
-            pet_scale,
-            position.x as f64,
-            position.y as f64,
-        )
-    })
-    .unwrap_or(PetStageAnchor {
-        left: false,
-        top: false,
-    });
+    let start_anchor = match (anchor_left, anchor_top) {
+        (Some(left), Some(top)) => PetStageAnchor { left, top },
+        _ => app
+            .try_state::<AppState>()
+            .and_then(|state| state.config_store.get().island_pet_window_anchor)
+            .map(|anchor| pet_stage_anchor_from_config(&anchor))
+            .or_else(|| {
+                monitor_for_pet_origin(
+                    &app,
+                    size.width as f64,
+                    size.height as f64,
+                    window_scale,
+                    pet_scale,
+                    position.x as f64,
+                    position.y as f64,
+                )
+                .map(|m| {
+                    pet_stage_anchor_for_origin(
+                        &m,
+                        size.width as f64,
+                        size.height as f64,
+                        window_scale,
+                        pet_scale,
+                        position.x as f64,
+                        position.y as f64,
+                    )
+                })
+            })
+            .unwrap_or(PetStageAnchor {
+                left: false,
+                top: false,
+            }),
+    };
     {
         let mut drag = pet_drag_state()
             .lock()
@@ -4234,24 +4328,31 @@ async fn end_pet_drag(
             let pet_scale = current_pet_scale_percent(&app);
             let w = size.width as f64;
             let h = size.height as f64;
-            if let Some(monitor) = monitor_for_pet_origin(
-                &app, w, h, window_scale, pet_scale, origin.x, origin.y,
+            if let Some(monitor) = monitor_for_pet_origin_with_anchor(
+                &app,
+                w,
+                h,
+                scale,
+                pet_scale,
+                origin.x,
+                origin.y,
+                snap.start_anchor,
             )
             .or_else(|| window.current_monitor().ok().flatten())
             .or_else(|| window.primary_monitor().ok().flatten())
             {
-                let new_anchor = pet_stage_anchor_for_origin(
-                    &monitor, w, h, scale, pet_scale, origin.x, origin.y,
-                );
+                let (old_left, old_top, old_size) =
+                    pet_rect_in_window(w, h, scale, pet_scale, snap.start_anchor);
+                let pet_center_x = origin.x + old_left + old_size / 2.0;
+                let pet_center_y = origin.y + old_top + old_size / 2.0;
+                let new_anchor = pet_stage_anchor_for_center(&monitor, pet_center_x, pet_center_y);
                 if snap.start_anchor.left != new_anchor.left
                     || snap.start_anchor.top != new_anchor.top
                 {
-                    let (old_left, old_top, _) =
-                        pet_rect_in_window(w, h, scale, pet_scale, snap.start_anchor);
                     let (new_left, new_top, _) =
                         pet_rect_in_window(w, h, scale, pet_scale, new_anchor);
-                    origin.x += old_left - new_left;
-                    origin.y += old_top - new_top;
+                    origin.x = pet_center_x - new_left - old_size / 2.0;
+                    origin.y = pet_center_y - new_top - old_size / 2.0;
                 }
                 result_anchor = new_anchor;
                 origin = clamp_pet_window_origin_with_anchor(
@@ -4268,6 +4369,7 @@ async fn end_pet_drag(
     let state = app.state::<AppState>();
     let mut config = state.config_store.get();
     config.island_pet_window_origin = Some(origin.clone());
+    config.island_pet_window_anchor = Some(pet_stage_anchor_to_config(result_anchor));
     state.config_store.update(config)?;
 
     Ok(Some(PetDragResult {

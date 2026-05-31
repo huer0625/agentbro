@@ -94,6 +94,14 @@ const PET_IDLE_TIP_VISIBLE_MS = 8000
 const PET_IDLE_TIP_INTERVAL_MS = 15000
 const PET_IDLE_TIPS_REQUIRE_QUIET = true
 
+function configAnchorToStage(anchor: { left: boolean; top: boolean } | null | undefined): PetStageAnchor | null {
+  if (!anchor) return null
+  return {
+    x: anchor.left ? 'left' : 'right',
+    y: anchor.top ? 'top' : 'bottom',
+  }
+}
+
 function clearPermissionAfter(sessionId: string, work: Promise<void>) {
   work
     .then(() => useSessionStore.getState().clearPermission(sessionId))
@@ -141,6 +149,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const loadPetRegistry = usePetStore((s) => s.loadRegistry)
   const petLoading = usePetStore((s) => s.loading)
   const petError = usePetStore((s) => s.error)
+  const savedPetWindowAnchor = useConfigStore((s) => s.islandPetWindowAnchor)
   const activeOverlay = useSessionStore(selectActiveOverlay)
   const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
 
@@ -163,7 +172,13 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   )
   const visibleActiveOverlay = activeOverlay && activeOverlay.id !== suppressedOverlayId ? activeOverlay : null
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
-  const [stageAnchor, setStageAnchor] = usePetStageAnchor(!hidden, displayScale, dragging)
+  const savedStageAnchor = useMemo(() => configAnchorToStage(savedPetWindowAnchor), [savedPetWindowAnchor])
+  const [stageAnchor, setStageAnchor] = usePetStageAnchor(
+    !hidden,
+    displayScale,
+    dragging,
+    savedStageAnchor,
+  )
   const spriteSize = Math.round(PET_SLOT_SIZE * displayScale)
   const actionCount = useMemo(() => getPetActionCount(sessions, visibleActiveOverlay), [sessions, visibleActiveOverlay])
   const activeSessionCount = useMemo(
@@ -435,6 +450,10 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
             y: result.anchorTop ? 'top' : 'bottom',
           })
           updateConfig('islandPetWindowOrigin', result.origin)
+          updateConfig('islandPetWindowAnchor', {
+            left: result.anchorLeft,
+            top: result.anchorTop,
+          })
         }
       } catch (err) {
         console.warn('[PetSurface] endPetDrag:', err)
@@ -562,7 +581,12 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       updateDragDirection(signedDx, setDragDirection)
     }
     const dpr = window.devicePixelRatio || 1
-    startPetDrag(event.screenX * dpr, event.screenY * dpr)
+    startPetDrag(
+      event.screenX * dpr,
+      event.screenY * dpr,
+      stageAnchor.x === 'left',
+      stageAnchor.y === 'top',
+    )
       .then((started) => {
         if (!started) {
           console.warn('[PetSurface] startPetDrag returned false - Rust drag loop did not arm')
@@ -1247,8 +1271,25 @@ function sessionIsQuiet(session: SessionState): boolean {
   return session.phase === 'idle' || session.phase === 'done' || session.phase === 'ready'
 }
 
-function usePetStageAnchor(active: boolean, scale: number, frozen: boolean): [PetStageAnchor, (a: PetStageAnchor) => void] {
-  const [anchor, setAnchor] = useState<PetStageAnchor>(DEFAULT_PET_STAGE_ANCHOR)
+function usePetStageAnchor(
+  active: boolean,
+  scale: number,
+  frozen: boolean,
+  savedAnchor: PetStageAnchor | null,
+): [PetStageAnchor, (a: PetStageAnchor) => void] {
+  const [anchor, setAnchor] = useState<PetStageAnchor>(savedAnchor ?? DEFAULT_PET_STAGE_ANCHOR)
+  const anchorRef = useRef(anchor)
+
+  useEffect(() => {
+    anchorRef.current = anchor
+  }, [anchor])
+
+  useEffect(() => {
+    if (!active || frozen || !savedAnchor) return
+    setAnchor((current) => (
+      current.x === savedAnchor.x && current.y === savedAnchor.y ? current : savedAnchor
+    ))
+  }, [active, frozen, savedAnchor])
 
   useEffect(() => {
     if (!active || !isTauri() || frozen) {
@@ -1271,7 +1312,7 @@ function usePetStageAnchor(active: boolean, scale: number, frozen: boolean): [Pe
           currentMonitor(),
         ])
         if (!monitor || cancelled) return
-        const next = petStageAnchorFromWindow(position.x, position.y, monitor, scale)
+        const next = petStageAnchorFromWindow(position.x, position.y, monitor, scale, anchorRef.current)
         setAnchor((current) => (
           current.x === next.x && current.y === next.y ? current : next
         ))

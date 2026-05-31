@@ -69,6 +69,8 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | Instant actions | Handle permission requests, questions, plan approvals, completions, and response cards in the island. |
 | Quick replies | Type a message directly in the island without switching back to the terminal. |
 | Task awareness | Show tool activity, subagent progress, task summaries, and token/rate-limit data where supported. |
+| Pet mode | Switch the island into a pet status panel whose vitals react to context pressure and token usage. |
+| Pet Market | Browse community pets and install them with one click, powered by the abpets CLI. See [www.agentbro.net/pets](https://www.agentbro.net/pets). |
 | Hook integration | One-click hook installation, Hook Doctor diagnostics, and custom CLI hook templates. |
 | Desktop controls | Global shortcuts, sounds, notifications, themes, display placement, and terminal-focus suppression. |
 | Local-first | The hook server runs locally through `/tmp/agentbro.sock` or `127.0.0.1:17892`. |
@@ -101,12 +103,25 @@ AgentBro includes adapters and hook management for:
 | Pi | Supported |
 | Kiro | Supported |
 
+## Pet Market
+
+Beyond the island, AgentBro can switch the floating window into a **pet status panel**: a desktop pet follows your active agent, and its vitals react in real time to context pressure and token usage — so you can tell at a glance whether a session is relaxed or under strain.
+
+The **Pet Market** lets you browse community-contributed pets and install them with one click, all driven by the [`abpets`](https://www.npmjs.com/package/abpets) CLI (Node.js v18+). Open it from **Island -> Pet Market** in settings, or preview every pet on the web:
+
+👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
+
+<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro pet mode" width="100%" />
+
+<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro Pet Market" width="100%" />
+
 ## Roadmap
 
 AgentBro stays local-first. The first public release focuses on making the island, hook integration, quick actions, and SSH Remote reliable. Future directions we want to explore include:
 
 - Remote sync: sync settings, hooks, themes, prompts, skills, and remote host configuration across devices.
 - Skills community: discover, install, share, and update Skill Packs for different agents.
+- Pet ecosystem: ship more community pets, grow the Pet Market, and open up authoring and sharing of custom pets.
 - Team collaboration: shared configuration, team Skill Packs, access control, and clearer collaboration views.
 
 ## Join The Community
