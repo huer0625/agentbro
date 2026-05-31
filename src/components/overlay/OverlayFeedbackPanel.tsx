@@ -249,6 +249,7 @@ export function OverlayFeedbackPanel({
 
   const handleJump = useCallback(() => {
     onJumpToTerminal()
+    onDismissRef.current()
   }, [onJumpToTerminal])
 
   const handlePanelMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
