@@ -121,7 +121,10 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
                     unsafe {
                         let ns_window = ptr as *const NSWindow;
                         if focusable {
-                            (*ns_window).makeKeyWindow();
+                            let _ = window.set_ignore_cursor_events(false);
+                            activate_agentbro_app();
+                            let _ = window.set_focus();
+                            (*ns_window).makeKeyAndOrderFront(None);
                         } else {
                             (*ns_window).resignKeyWindow();
                         }
@@ -131,6 +134,7 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
             #[cfg(not(target_os = "macos"))]
             {
                 if focusable {
+                    let _ = window.set_ignore_cursor_events(false);
                     let _ = window.set_focus();
                 }
             }

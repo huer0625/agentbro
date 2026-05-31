@@ -66,6 +66,7 @@ export function OverlayFeedbackPanel({
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dismissAfterSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
   const countdownDeadline = countdownStartedAt + dwellMs
   const hasInputDraft = inputValue.trim().length > 0
@@ -127,6 +128,7 @@ export function OverlayFeedbackPanel({
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
       if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
       if (dismissAfterSendTimerRef.current) clearTimeout(dismissAfterSendTimerRef.current)
+      if (refocusTimerRef.current) clearTimeout(refocusTimerRef.current)
     }
   }, [countdownDeadline, dwellMs, scheduleDismiss, updateProgress])
 
@@ -160,9 +162,17 @@ export function OverlayFeedbackPanel({
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
     }
+    if (refocusTimerRef.current) {
+      clearTimeout(refocusTimerRef.current)
+      refocusTimerRef.current = null
+    }
     setNotchFocusable(true)
       .then(() => {
         window.requestAnimationFrame(() => inputRef.current?.focus())
+        refocusTimerRef.current = setTimeout(() => {
+          refocusTimerRef.current = null
+          if (inputFocusedRef.current) inputRef.current?.focus()
+        }, 80)
       })
       .catch(() => {
         inputRef.current?.focus()
@@ -171,6 +181,10 @@ export function OverlayFeedbackPanel({
 
   const releaseInputFocus = useCallback(() => {
     if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+    if (refocusTimerRef.current) {
+      clearTimeout(refocusTimerRef.current)
+      refocusTimerRef.current = null
+    }
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
       inputFocusedRef.current = false

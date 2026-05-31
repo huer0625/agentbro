@@ -237,7 +237,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('keeps a stable native host canvas while opening from micro', () => {
+  it('expands the native host canvas while opening from micro', () => {
     vi.useFakeTimers()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
@@ -257,11 +257,14 @@ describe('NotchPanel island shell', () => {
 
       render(<NotchPanel />)
 
-      expect(hostWidthVar()).toBe('754px')
+      expect(hostWidthVar()).toBe('140px')
       expect(hitboxWidthVar()).toBe('140px')
       expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
 
       fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+      expect(hostWidthVar()).toBe('754px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
 
       act(() => {
         vi.advanceTimersByTime(120)
@@ -269,13 +272,13 @@ describe('NotchPanel island shell', () => {
 
       expect(useSessionStore.getState().panelState).toBe('hover')
       expect(hostWidthVar()).toBe('754px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('keeps a stable native host canvas while returning to micro', () => {
+  it('shrinks the native host canvas after returning to micro', () => {
     vi.useFakeTimers()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
@@ -311,15 +314,15 @@ describe('NotchPanel island shell', () => {
         vi.advanceTimersByTime(520)
       })
 
-      expect(hostWidthVar()).toBe('754px')
+      expect(hostWidthVar()).toBe('140px')
       expect(hitboxWidthVar()).toBe('140px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('uses only the visible micro pill for native hover passthrough', async () => {
+  it('uses a pill-sized native host for visible collapsed hover', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const currentSession = session({ phase: 'idle' })
     useSessionStore.setState({
@@ -338,16 +341,15 @@ describe('NotchPanel island shell', () => {
     render(<NotchPanel />)
 
     expect(hitboxWidthVar()).toBe('140px')
+    expect(hostWidthVar()).toBe('140px')
     await waitFor(() => {
       expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
     })
-    await waitFor(() => {
-      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
-    })
+    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
     expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
-  it('aligns native hover probing with the collapsed shell anchor offset', async () => {
+  it('does not add a shell anchor offset when the collapsed host is pill-sized', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 36 })
     useConfigStore.setState({ allowHorizontalDrag: true, panelHorizontalOffset: 480 })
@@ -371,7 +373,7 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.resizeNotch).toHaveBeenCalled()
     })
     await waitFor(() => {
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 36)
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
     })
   })
 
@@ -413,14 +415,15 @@ describe('NotchPanel island shell', () => {
     })
   })
 
-  it('serializes native cursor passthrough so a stale collapsed request cannot disable hover', async () => {
+  it('serializes native cursor passthrough so a stale hidden request cannot disable hover', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const pendingCollapsedPassthrough = deferred()
     tauriMocks.setNotchIgnoreCursorEvents
       .mockImplementationOnce(() => pendingCollapsedPassthrough.promise)
       .mockResolvedValue(undefined)
 
-    const currentSession = session({ phase: 'idle' })
+    useConfigStore.setState({ interactionMode: 'minimal' })
+    const currentSession = session({ phase: 'processing' })
     useSessionStore.setState({
       sessions: { [currentSession.id]: currentSession },
       sessionList: [currentSession],
@@ -700,6 +703,47 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     })
     expect(useSessionStore.getState().panelState).toBe('collapsed')
+    expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
+  })
+
+  it('keeps collapsed feedback popups interactive without delayed cursor passthrough', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(false)
+    const activeOverlay: OverlayItem = {
+      id: 'response-s1-no-passthrough',
+      sessionId: 's1',
+      type: 'response',
+      data: {
+        responseText: 'Visible feedback should stay clickable',
+        userMessage: 'Can I click it?',
+      },
+      createdAt: Date.now(),
+    }
+    const currentSession = session()
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 260))
+    })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
     expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
   })
 

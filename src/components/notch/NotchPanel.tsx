@@ -998,12 +998,19 @@ export function NotchPanel() {
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
+        const visibleFeedbackOverlay = Boolean(
+          activeOverlay
+          && isNonBlockingOverlay(activeOverlay)
+          && !interaction.isHidden,
+        )
         const ignoreTransparentHost = !islandEnabled
           || (
-            !isDragging
+            interaction.isHidden
+            && !isDragging
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
+            && !visibleFeedbackOverlay
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
@@ -1502,7 +1509,12 @@ export function NotchPanel() {
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
-  const hostUsesStableCanvas = !isPetMode && islandEnabled
+  const hostUsesStableCanvas = !isPetMode && islandEnabled && (
+    effectivePanelState !== 'collapsed'
+    || preparingOpen
+    || isDragging
+    || layoutPreview != null
+  )
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
   const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
@@ -1648,11 +1660,10 @@ export function NotchPanel() {
       })
   }, [])
 
-  // Keep the native transparent host at a stable max canvas. macOS can briefly
-  // show the old WebView backing store when a transparent NSWindow is resized
-  // during hover/collapse; fixed host geometry avoids that repaint path.
-  // Cursor passthrough for the transparent area is handled with
-  // set_ignore_cursor_events while collapsed.
+  // Keep the native transparent host stable while the island is open or
+  // opening. Once it is only the collapsed visible pill, shrink the NSWindow
+  // back to that pill so first clicks do not depend on cursor-passthrough
+  // polling.
   useLayoutEffect(() => {
     if (isDragging) return
     const current = hostHitboxSizeRef.current
