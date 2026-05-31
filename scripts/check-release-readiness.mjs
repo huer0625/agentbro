@@ -156,6 +156,10 @@ if (strictRelease) {
       warnings.push('HOMEBREW_TAP_TOKEN is not set; stable DMG release will proceed without updating Homebrew.')
     }
 
+    if (!process.env.OSS_ACCESS_KEY_ID?.trim() || !process.env.OSS_ACCESS_KEY_SECRET?.trim()) {
+      warnings.push('OSS_ACCESS_KEY_ID/OSS_ACCESS_KEY_SECRET not set; stable release will skip the Aliyun OSS mirror and the Homebrew cask will point at GitHub.')
+    }
+
     const telemetryEnvNames = [
       'AGENTBRO_TELEMETRY_SLS_HOST',
       'AGENTBRO_TELEMETRY_SLS_PROJECT',
