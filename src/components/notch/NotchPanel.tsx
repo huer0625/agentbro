@@ -1005,8 +1005,7 @@ export function NotchPanel() {
         )
         const ignoreTransparentHost = !islandEnabled
           || (
-            interaction.isHidden
-            && !isDragging
+            !isDragging
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
@@ -1509,12 +1508,7 @@ export function NotchPanel() {
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
-  const hostUsesStableCanvas = !isPetMode && islandEnabled && (
-    effectivePanelState !== 'collapsed'
-    || preparingOpen
-    || isDragging
-    || layoutPreview != null
-  )
+  const hostUsesStableCanvas = !isPetMode && islandEnabled
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
   const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
@@ -1660,10 +1654,9 @@ export function NotchPanel() {
       })
   }, [])
 
-  // Keep the native transparent host stable while the island is open or
-  // opening. Once it is only the collapsed visible pill, shrink the NSWindow
-  // back to that pill so first clicks do not depend on cursor-passthrough
-  // polling.
+  // Keep the native transparent host at a stable max canvas. macOS can briefly
+  // flash the old WebView backing store when a transparent NSWindow is resized
+  // during hover/collapse; fixed host geometry avoids that repaint path.
   useLayoutEffect(() => {
     if (isDragging) return
     const current = hostHitboxSizeRef.current

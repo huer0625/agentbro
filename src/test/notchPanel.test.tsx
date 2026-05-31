@@ -237,7 +237,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('expands the native host canvas while opening from micro', () => {
+  it('keeps a stable native host canvas while opening from micro', () => {
     vi.useFakeTimers()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
@@ -257,14 +257,14 @@ describe('NotchPanel island shell', () => {
 
       render(<NotchPanel />)
 
-      expect(hostWidthVar()).toBe('140px')
+      expect(hostWidthVar()).toBe('754px')
       expect(hitboxWidthVar()).toBe('140px')
       expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
 
       fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
 
       expect(hostWidthVar()).toBe('754px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
 
       act(() => {
         vi.advanceTimersByTime(120)
@@ -272,13 +272,13 @@ describe('NotchPanel island shell', () => {
 
       expect(useSessionStore.getState().panelState).toBe('hover')
       expect(hostWidthVar()).toBe('754px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('shrinks the native host canvas after returning to micro', () => {
+  it('keeps a stable native host canvas while returning to micro', () => {
     vi.useFakeTimers()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
@@ -314,15 +314,15 @@ describe('NotchPanel island shell', () => {
         vi.advanceTimersByTime(520)
       })
 
-      expect(hostWidthVar()).toBe('140px')
+      expect(hostWidthVar()).toBe('754px')
       expect(hitboxWidthVar()).toBe('140px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('uses a pill-sized native host for visible collapsed hover', async () => {
+  it('keeps the visible collapsed pill inside a passthrough stable native host', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const currentSession = session({ phase: 'idle' })
     useSessionStore.setState({
@@ -341,15 +341,17 @@ describe('NotchPanel island shell', () => {
     render(<NotchPanel />)
 
     expect(hitboxWidthVar()).toBe('140px')
-    expect(hostWidthVar()).toBe('140px')
+    expect(hostWidthVar()).toBe('754px')
     await waitFor(() => {
       expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
     })
-    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
+    })
     expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
-  it('does not add a shell anchor offset when the collapsed host is pill-sized', async () => {
+  it('aligns native hover probing with the collapsed shell anchor offset', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 36 })
     useConfigStore.setState({ allowHorizontalDrag: true, panelHorizontalOffset: 480 })
@@ -373,7 +375,7 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.resizeNotch).toHaveBeenCalled()
     })
     await waitFor(() => {
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 36)
     })
   })
 
