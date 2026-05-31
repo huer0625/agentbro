@@ -77,6 +77,18 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | SSH Remote | Forward agent events from remote SSH machines back to your local island for remote development. |
 | Webhook notifications | Send notifications to DingTalk / Feishu webhooks. |
 
+## Pet Market
+
+Beyond the island, AgentBro can switch the floating window into a **pet status panel**: a desktop pet follows your active agent, and its vitals react in real time to context pressure and token usage — so you can tell at a glance whether a session is relaxed or under strain.
+
+The **Pet Market** lets you browse community-contributed pets and install them with one click, all driven by the [`abpets`](https://www.npmjs.com/package/abpets) CLI (Node.js v18+). Open it from **Island -> Pet Market** in settings, or preview every pet on the web:
+
+👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
+
+<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro pet mode" width="100%" />
+
+<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro Pet Market" width="100%" />
+
 ## Supported Agents
 
 AgentBro includes adapters and hook management for:
@@ -102,18 +114,6 @@ AgentBro includes adapters and hook management for:
 | Hermes | Supported |
 | Pi | Supported |
 | Kiro | Supported |
-
-## Pet Market
-
-Beyond the island, AgentBro can switch the floating window into a **pet status panel**: a desktop pet follows your active agent, and its vitals react in real time to context pressure and token usage — so you can tell at a glance whether a session is relaxed or under strain.
-
-The **Pet Market** lets you browse community-contributed pets and install them with one click, all driven by the [`abpets`](https://www.npmjs.com/package/abpets) CLI (Node.js v18+). Open it from **Island -> Pet Market** in settings, or preview every pet on the web:
-
-👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
-
-<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro pet mode" width="100%" />
-
-<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro Pet Market" width="100%" />
 
 ## Roadmap
 

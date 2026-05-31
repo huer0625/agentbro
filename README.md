@@ -77,6 +77,18 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | SSH Remote | 支持把远程 SSH 机器上的 Agent 事件转发回本机灵动岛，适合远程开发场景。 |
 | Webhook 通知 | 支持钉钉 / 飞书 Webhook 通知。 |
 
+## 宠物市场
+
+除了灵动岛,AgentBro 还可以把浮窗切换成 **宠物状态面板**:一只桌面宠物会跟随当前活跃的 Agent,它的活力会随上下文压力和 Token 用量实时变化,让你一眼看出会话是轻松还是吃紧。
+
+**宠物市场** 让你浏览社区贡献的宠物并一键安装,整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动(基于 Node.js v18+)。在设置面板的 **Island -> 宠物市场** 即可打开,也可以在网页上预览全部宠物:
+
+👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
+
+<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro 宠物模式" width="100%" />
+
+<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro 宠物市场" width="100%" />
+
 ## 支持的 Agent
 
 AgentBro 内置了以下 Agent 的适配器和 Hook 管理能力：
@@ -102,18 +114,6 @@ AgentBro 内置了以下 Agent 的适配器和 Hook 管理能力：
 | Hermes | 支持 |
 | Pi | 支持 |
 | Kiro | 支持 |
-
-## 宠物市场
-
-除了灵动岛,AgentBro 还可以把浮窗切换成 **宠物状态面板**:一只桌面宠物会跟随当前活跃的 Agent,它的活力会随上下文压力和 Token 用量实时变化,让你一眼看出会话是轻松还是吃紧。
-
-**宠物市场** 让你浏览社区贡献的宠物并一键安装,整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动(基于 Node.js v18+)。在设置面板的 **Island -> 宠物市场** 即可打开,也可以在网页上预览全部宠物:
-
-👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
-
-<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro 宠物模式" width="100%" />
-
-<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro 宠物市场" width="100%" />
 
 ## 路线图
 

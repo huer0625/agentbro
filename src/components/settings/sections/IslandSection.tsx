@@ -315,7 +315,7 @@ function hookInstallStatusLabel(t: (key: string, options?: Record<string, unknow
 }
 
 function hookDoctorSuggestion(t: (key: string, options?: Record<string, unknown>) => string, check: HookDoctorCheck): string | null {
-  if (check.status === 'ok') return null
+  if (check.status === 'ok' || check.status === 'info') return null
   if (check.id === 'bridge-binary') {
     return t('settings.hookDoctorSuggestionBridge', { defaultValue: 'Restart AgentBro. If it still fails, reinstall the app.' })
   }
