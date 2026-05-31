@@ -1079,6 +1079,18 @@ export async function openImage(src: string): Promise<void> {
   return invoke('open_image', { src })
 }
 
+export function isLocalImageSource(src: string): boolean {
+  const trimmed = src.trim()
+  return trimmed.startsWith('/')
+    || trimmed.startsWith('~/')
+    || trimmed.startsWith('file://')
+}
+
+export async function resolveImageSrc(src: string): Promise<string> {
+  if (!isTauri() || !isLocalImageSource(src)) return src
+  return invoke<string>('read_image_data_url', { src })
+}
+
 export async function openSystemPath(path: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] openSystemPath(${path})`)

@@ -166,8 +166,133 @@ async fn open_image(src: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn read_image_data_url(src: String) -> Result<String, String> {
+    if src.starts_with("data:") {
+        return Ok(src);
+    }
+    let path = image_source_path(&src)?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|e| format!("Failed to read image metadata: {}", e))?;
+    if !metadata.is_file() {
+        return Err("Image source is not a file".to_string());
+    }
+    const MAX_INLINE_IMAGE_BYTES: u64 = 30 * 1024 * 1024;
+    if metadata.len() > MAX_INLINE_IMAGE_BYTES {
+        return Err("Image is too large to preview inline".to_string());
+    }
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
+    let media_type = infer_image_media_type(&path, &bytes)
+        .ok_or_else(|| "Unsupported image format".to_string())?;
+    let encoded = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    };
+    Ok(format!("data:{};base64,{}", media_type, encoded))
+}
+
+#[tauri::command]
 async fn open_system_path(path: String) -> Result<(), String> {
     open_system_target(&path)
+}
+
+fn image_source_path(src: &str) -> Result<PathBuf, String> {
+    let trimmed = src.trim();
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        return Ok(PathBuf::from(percent_decode_path(rest)?));
+    }
+    if trimmed.starts_with('/') || trimmed.starts_with("~/") {
+        return Ok(PathBuf::from(expand_tilde_target(trimmed)));
+    }
+    Err("Image source is not a local file path".to_string())
+}
+
+fn percent_decode_path(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes
+                .get(i + 1)
+                .copied()
+                .and_then(hex_value)
+                .ok_or_else(|| "Invalid file URL escape".to_string())?;
+            let lo = bytes
+                .get(i + 2)
+                .copied()
+                .and_then(hex_value)
+                .ok_or_else(|| "Invalid file URL escape".to_string())?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "Invalid UTF-8 file URL".to_string())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn infer_image_media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => return Some("image/png"),
+        Some("jpg") | Some("jpeg") => return Some("image/jpeg"),
+        Some("gif") => return Some("image/gif"),
+        Some("webp") => return Some("image/webp"),
+        Some("bmp") => return Some("image/bmp"),
+        Some("svg") => return Some("image/svg+xml"),
+        Some("heic") | Some("heif") => return Some("image/heic"),
+        Some("avif") => return Some("image/avif"),
+        _ => {}
+    }
+
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod image_preview_tests {
+    use super::*;
+
+    #[test]
+    fn file_url_image_paths_are_decoded() {
+        let path = image_source_path("file:///tmp/agentbro%20preview/image.png").unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/agentbro preview/image.png"));
+    }
+
+    #[test]
+    fn image_media_type_uses_magic_bytes_without_extension() {
+        let bytes = b"\x89PNG\r\n\x1a\nrest";
+        assert_eq!(
+            infer_image_media_type(Path::new("/tmp/preview"), bytes),
+            Some("image/png")
+        );
+    }
 }
 
 fn persist_data_url_image(src: &str) -> Result<String, String> {
@@ -5080,6 +5205,7 @@ pub fn run() {
             restart_app,
             is_homebrew_install,
             open_image,
+            read_image_data_url,
             open_system_path,
             list_themes,
             get_active_theme_bundle,
