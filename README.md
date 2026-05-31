@@ -69,6 +69,8 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | 即时处理 | 在浮窗中处理权限请求、问题、计划审批、完成提醒和回复卡片。 |
 | 快速回复 | 不切回终端，也可以直接在弹窗里输入消息，继续和 Agent 对话。 |
 | 任务感知 | 展示工具调用、Subagent 活动、任务摘要，以及支持场景下的 Token / Rate Limit 信息。 |
+| 宠物模式 | 把灵动岛切换成宠物状态面板，宠物活力随上下文压力和 Token 用量变化。 |
+| 宠物市场 | 浏览社区宠物、一键安装，由 abpets CLI 驱动。详见 [www.agentbro.net/pets](https://www.agentbro.net/pets)。 |
 | Hook 集成 | 一键安装 Hook，内置 Hook Doctor 诊断，支持自定义 CLI Hook 模板。 |
 | 桌面体验 | 支持全局快捷键、声音、通知、主题、显示器位置和终端焦点智能降噪。 |
 | 本地优先 | Hook Server 默认运行在本机，支持 `/tmp/agentbro-<uid>.sock` 或 `127.0.0.1:17894`。 |
@@ -101,12 +103,25 @@ AgentBro 内置了以下 Agent 的适配器和 Hook 管理能力：
 | Pi | 支持 |
 | Kiro | 支持 |
 
+## 宠物市场
+
+除了灵动岛,AgentBro 还可以把浮窗切换成 **宠物状态面板**:一只桌面宠物会跟随当前活跃的 Agent,它的活力会随上下文压力和 Token 用量实时变化,让你一眼看出会话是轻松还是吃紧。
+
+**宠物市场** 让你浏览社区贡献的宠物并一键安装,整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动(基于 Node.js v18+)。在设置面板的 **Island -> 宠物市场** 即可打开,也可以在网页上预览全部宠物:
+
+👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
+
+<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro 宠物模式" width="100%" />
+
+<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro 宠物市场" width="100%" />
+
 ## 路线图
 
 AgentBro 会坚持本地优先：第一个公开版本先把灵动岛、Hook 集成、快速处理和 SSH Remote 做扎实。后续希望继续探索：
 
 - 远程同步：跨设备同步设置、Hook、主题、Prompt、Skills 和远程主机配置。
 - 技能社区：发现、安装、分享和更新面向不同 Agent 的 Skill Pack。
+- 宠物生态：上架更多社区宠物、丰富宠物市场,并开放自定义宠物的创作与分享流程。
 - 团队协作：共享配置、团队 Skill 包、权限控制和更清晰的协作视图。
 
 ## 加入交流群
