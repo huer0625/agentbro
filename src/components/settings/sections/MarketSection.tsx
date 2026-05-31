@@ -6,18 +6,20 @@ import { GlassButton, GlassCard, GlassInput } from '../../shared'
 import { usePetStore } from '../../../stores/petStore'
 import { useConfigStore } from '../../../stores/configStore'
 import {
+  findInstalledMarketPet,
   isMarketPetInstalled,
   useMarketStore,
+  type MarketJob,
   type MarketPet,
 } from '../../../stores/marketStore'
 import { isTauri, setIslandSurfaceOptions } from '../../../services/tauriApi'
-import { MarketInstallModal } from './MarketInstallModal'
 import './MarketSection.css'
 
 type SortMode = 'popular' | 'latest'
 
 const NODEJS_URL = 'https://nodejs.org/'
 const SITE_URL = 'https://www.agentbro.net/pets'
+const UPLOAD_PET_URL = SITE_URL
 
 function openExternal(url: string) {
   if (isTauri()) {
@@ -54,6 +56,7 @@ interface PetCardProps {
   pet: MarketPet
   installed: boolean
   busy: boolean
+  job: MarketJob | null
   onInstall: (pet: MarketPet) => void
   onUninstall: (pet: MarketPet) => void
   onUse: (pet: MarketPet) => void
@@ -61,7 +64,16 @@ interface PetCardProps {
   t: ReturnType<typeof useTranslation>['t']
 }
 
-function PetCard({ pet, installed, busy, onInstall, onUninstall, onUse, onOpenSite, t }: PetCardProps) {
+function PetCard({ pet, installed, busy, job, onInstall, onUninstall, onUse, onOpenSite, t }: PetCardProps) {
+  const operationLabel = job?.kind === 'uninstall'
+    ? t('settings.market.jobUninstallTitle', { name: pet.displayName })
+    : t('settings.market.jobInstallTitle', { name: pet.displayName })
+  const statusLabel = job?.status === 'success'
+    ? t('settings.market.jobSuccess')
+    : job?.status === 'failed'
+    ? t('settings.market.jobFailed')
+    : t('settings.market.jobRunning')
+
   return (
     <GlassCard className="market-card" hoverable={false}>
       <div className="market-card__top">
@@ -119,6 +131,24 @@ function PetCard({ pet, installed, busy, onInstall, onUninstall, onUse, onOpenSi
           {t('settings.market.viewOnSite')}
         </GlassButton>
       </div>
+      {job && (
+        <div
+          className={`market-card__job market-card__job--${job.status}`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="market-card__job-row">
+            <span className="market-card__job-label">{operationLabel}</span>
+            <span className="market-card__job-status">{statusLabel}</span>
+          </div>
+          <div className="market-card__progress" aria-hidden="true">
+            <span className="market-card__progress-bar" />
+          </div>
+          {job.status === 'failed' && job.error && (
+            <div className="market-card__job-error">{job.error}</div>
+          )}
+        </div>
+      )}
     </GlassCard>
   )
 }
@@ -132,24 +162,26 @@ export function MarketSection() {
     manifestError,
     abpetsStatus,
     jobs,
-    activeJobId,
     loadManifest,
     refreshAbpetsStatus,
     startInstall,
     startUninstall,
     startInstallAbpets,
-    closeActiveJob,
   } = useMarketStore()
   const registry = usePetStore((s) => s.registry)
-  const registryIds = useMemo(() => registry.map((p) => p.id), [registry])
   const surfaceMode = useConfigStore((s) => s.islandSurfaceMode)
   const islandPetScale = useConfigStore((s) => s.islandPetScale)
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const [query, setQuery] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('popular')
 
+  const handleRefresh = () => {
+    void loadManifest(true)
+    void usePetStore.getState().loadRegistry()
+  }
+
   const handleUse = async (pet: MarketPet) => {
-    const targetId = `agentbro:${pet.slug}`
+    const targetId = findInstalledMarketPet(pet, registry)?.id ?? `agentbro:${pet.slug}`
     if (surfaceMode !== 'pet') {
       let confirmed = false
       if (isTauri()) {
@@ -181,17 +213,28 @@ export function MarketSection() {
   useEffect(() => {
     loadManifest()
     refreshAbpetsStatus()
+    void usePetStore.getState().loadRegistry()
   }, [loadManifest, refreshAbpetsStatus])
+
+  const petJobs = useMemo(() => {
+    const latest = new Map<string, MarketJob>()
+    for (const job of Object.values(jobs)) {
+      if (!job.pet) continue
+      const existing = latest.get(job.pet.slug)
+      if (!existing || job.startedAt > existing.startedAt) {
+        latest.set(job.pet.slug, job)
+      }
+    }
+    return latest
+  }, [jobs])
 
   const busySlugs = useMemo(() => {
     const set = new Set<string>()
-    for (const job of Object.values(jobs)) {
-      if (job.status === 'running' && job.pet) {
-        set.add(job.pet.slug)
-      }
+    for (const [slug, job] of petJobs) {
+      if (job.status === 'running') set.add(slug)
     }
     return set
-  }, [jobs])
+  }, [petJobs])
 
   const filtered = useMemo(() => {
     const lowered = query.trim().toLowerCase()
@@ -213,16 +256,15 @@ export function MarketSection() {
     }
     const sorted = [...list]
     sorted.sort((a, b) => {
-      const aInstalled = isMarketPetInstalled(a.slug, registryIds)
-      const bInstalled = isMarketPetInstalled(b.slug, registryIds)
+      const aInstalled = isMarketPetInstalled(a, registry)
+      const bInstalled = isMarketPetInstalled(b, registry)
       if (aInstalled !== bInstalled) return aInstalled ? -1 : 1
       if (sortMode === 'popular') return b.downloadCount - a.downloadCount
       return (b.updatedAt || '').localeCompare(a.updatedAt || '')
     })
     return sorted
-  }, [manifest, query, registryIds, sortMode])
+  }, [manifest, query, registry, sortMode])
 
-  const activeJob = activeJobId ? jobs[activeJobId] : null
   const nodeMissing = abpetsStatus !== null && !abpetsStatus.nodeAvailable
   const abpetsMissing = abpetsStatus !== null && abpetsStatus.nodeAvailable && !abpetsStatus.abpetsCallable
   const installingAbpets = Object.values(jobs).some(
@@ -236,9 +278,14 @@ export function MarketSection() {
           <h2 className="market-section__title">{t('settings.market.title')}</h2>
           <p className="market-section__desc">{t('settings.market.desc')}</p>
         </div>
-        <GlassButton variant="ghost" onClick={() => loadManifest(true)} disabled={manifestLoading}>
-          {t('settings.market.refresh')}
-        </GlassButton>
+        <div className="market-section__header-actions">
+          <GlassButton variant="primary" onClick={() => openExternal(UPLOAD_PET_URL)}>
+            {t('settings.market.uploadPet')}
+          </GlassButton>
+          <GlassButton variant="ghost" onClick={handleRefresh} disabled={manifestLoading}>
+            {t('settings.market.refresh')}
+          </GlassButton>
+        </div>
       </header>
 
       {nodeMissing && (
@@ -290,7 +337,7 @@ export function MarketSection() {
       {manifestError && (
         <div className="market-section__state market-section__state--error">
           {t('settings.market.loadFailed', { message: manifestError })}
-          <GlassButton variant="secondary" onClick={() => loadManifest(true)}>
+          <GlassButton variant="secondary" onClick={handleRefresh}>
             {t('settings.market.retry')}
           </GlassButton>
         </div>
@@ -305,8 +352,9 @@ export function MarketSection() {
             <PetCard
               key={pet.fullSlug}
               pet={pet}
-              installed={isMarketPetInstalled(pet.slug, registryIds)}
+              installed={isMarketPetInstalled(pet, registry)}
               busy={busySlugs.has(pet.slug)}
+              job={petJobs.get(pet.slug) ?? null}
               onInstall={(p) => startInstall(p)}
               onUninstall={(p) => startUninstall(p)}
               onUse={handleUse}
@@ -318,8 +366,6 @@ export function MarketSection() {
           ))}
         </div>
       )}
-
-      {activeJob && <MarketInstallModal job={activeJob} onClose={closeActiveJob} />}
     </section>
   )
 }

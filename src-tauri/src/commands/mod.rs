@@ -2531,6 +2531,7 @@ fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) ->
             | ("cursor-cli", "com.todesktop.230313mzl4w4u92")
             | ("trae", "com.trae.app")
             | ("traecn", "com.trae.app")
+            | ("traecn", "cn.trae.solo.app")
             | ("trae-cli", "com.trae.app")
             | ("traecli", "com.trae.app")
             | ("qoder", "com.qoder.ide")
@@ -2561,6 +2562,7 @@ fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
         || lower.contains("android.studio")
         || lower.contains("antigravity")
         || lower == "com.trae.app"
+        || lower == "cn.trae.solo.app"
         || lower == "com.qoder.ide"
         || lower == "com.qoder.ide.helper"
         || lower == "com.factory.app"

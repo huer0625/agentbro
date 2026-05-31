@@ -10,7 +10,7 @@ import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionHasVisibleActivity, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
-import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
+import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
@@ -1362,10 +1362,17 @@ export function NotchPanel() {
   )
   const usesWideApprovalOverlay = hasBlockingOverlayContent
     && (activeOverlay?.type === 'permission' || activeOverlay?.type === 'plan' || activeOverlay?.type === 'question')
+  const usesCompactPermissionOverlay = hasBlockingOverlayContent
+    && activeOverlay?.type === 'permission'
+    && isCompactPermissionPrompt(activeOverlay.data)
   const expandedPanelContentWidth = isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50)
+  const compactPermissionPanelWidth = Math.min(600, expandedPanelContentWidth)
   const approvalPanelWidth = typeof window === 'undefined'
-    ? expandedPanelContentWidth
-    : Math.min(expandedPanelContentWidth, Math.max(360, window.innerWidth - 24))
+    ? (usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth)
+    : Math.min(
+        usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth,
+        Math.max(360, window.innerWidth - 24),
+      )
   const feedbackPresentationOpen = Boolean(
     !layoutPreview
     && activeOverlay

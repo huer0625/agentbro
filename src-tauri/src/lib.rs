@@ -1918,7 +1918,7 @@ fn focus_settings_window_native(_window: &tauri::WebviewWindow) {}
 
 const SETTINGS_MIN_WIDTH: f64 = 980.0;
 const SETTINGS_MIN_HEIGHT: f64 = 640.0;
-const SETTINGS_DEFAULT_WIDTH: f64 = 1280.0;
+const SETTINGS_DEFAULT_WIDTH: f64 = 1420.0;
 const SETTINGS_DEFAULT_HEIGHT: f64 = 840.0;
 
 fn normalize_settings_window_frame(window: &tauri::WebviewWindow) {

@@ -1076,8 +1076,8 @@ describe('NotchPanel island shell', () => {
     })
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'alert_permission')
-    expect(hostWidthVar()).toBe('754px')
-    expect(hitboxWidthVar()).toBe('686px')
+    expect(hostWidthVar()).toBe('724px')
+    expect(hitboxWidthVar()).toBe('656px')
     expect(document.querySelector('.notch-panel__alert-content')).toBeInTheDocument()
     expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
     expect(document.querySelector('.hover-list')).not.toBeInTheDocument()
@@ -1536,7 +1536,7 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__session')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
 
     cleanup()
     mountIsland({
@@ -1726,7 +1726,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('keeps feedback overlays visible when the feedback body jumps to the terminal', () => {
+  it('dismisses feedback overlays when the feedback body jumps to the terminal', () => {
     mountIsland({
       id: 'completion-s1',
       sessionId: 's1',
@@ -1738,8 +1738,8 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__detail')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
-    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.id)).toContain('completion-s1')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.id)).not.toContain('completion-s1')
   })
 
   it('keeps the feedback countdown running while hovered', () => {

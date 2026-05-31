@@ -16,10 +16,9 @@ interface ApprovalBarProps {
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
   onJumpToHostApp?: () => void
-  codexAppServerLive?: boolean
 }
 
-export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp, codexAppServerLive }: ApprovalBarProps) {
+export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -295,7 +294,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }
 
   // Default: text input
-  const capability = getComposerCapability(session, { codexAppServerLive })
+  const capability = getComposerCapability(session)
   if (capability.kind === 'locked') {
     return (
       <div className="approval-bar">

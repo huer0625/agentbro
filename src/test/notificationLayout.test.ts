@@ -44,7 +44,7 @@ describe('notificationLayout', () => {
     expect(getBlockingOverlayPanelHeight('permission', {
       toolName: 'Bash',
       toolInput: '{"command":"mkdir -p src/auth","description":"Create src/auth directory"}',
-    }, 600)).toBe(306)
+    }, 600)).toBe(270)
   })
 
   it('grows permission prompts when a diff is present', () => {

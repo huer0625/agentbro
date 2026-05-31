@@ -6,6 +6,7 @@ import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { sendMessage, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
+import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import { formatDurationShort } from '../../utils/time'
 import { MascotRouter } from '../notch/mascots/MascotRouter'
 import './OverlayFeedbackPanel.css'
@@ -75,6 +76,7 @@ export function OverlayFeedbackPanel({
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
   const agentName = getAgentDisplayName(session)
+  const capability = getComposerCapability(session)
 
   useEffect(() => {
     onDismissRef.current = onDismiss
@@ -347,43 +349,50 @@ export function OverlayFeedbackPanel({
         </div>
       </button>
 
-      <div className="overlay-feedback__reply" data-no-drag>
-        <input
-          ref={inputRef}
-          className="overlay-feedback__input"
-          data-has-draft={hasInputDraft ? 'true' : 'false'}
-          value={inputValue}
-          placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
-          disabled={sending}
-          onChange={(event) => setInputValue(event.target.value)}
-          onCompositionStart={handleCompositionStart}
-          onCompositionEnd={handleCompositionEnd}
-          onKeyDown={handleKeyDown}
-          onMouseDown={(event) => {
-            event.stopPropagation()
-            focusInput()
-          }}
-          onClick={(event) => event.stopPropagation()}
-          onFocus={focusInput}
-          onBlur={releaseInputFocus}
+      {capability.kind === 'locked' ? (
+        <OverlayComposerHint
+          reason={capability.reason}
+          onJumpToHostApp={handleJump}
         />
-        <button
-          type="button"
-          className="overlay-feedback__send"
-          disabled={!inputValue.trim() || sending}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            if (blurTimerRef.current) {
-              clearTimeout(blurTimerRef.current)
-              blurTimerRef.current = null
-            }
-            void handleSend()
-          }}
-        >
-          {sending ? '...' : t('notch.send', { defaultValue: 'Send' })}
-        </button>
-      </div>
+      ) : (
+        <div className="overlay-feedback__reply" data-no-drag>
+          <input
+            ref={inputRef}
+            className="overlay-feedback__input"
+            data-has-draft={hasInputDraft ? 'true' : 'false'}
+            value={inputValue}
+            placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
+            disabled={sending}
+            onChange={(event) => setInputValue(event.target.value)}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
+            onKeyDown={handleKeyDown}
+            onMouseDown={(event) => {
+              event.stopPropagation()
+              focusInput()
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onFocus={focusInput}
+            onBlur={releaseInputFocus}
+          />
+          <button
+            type="button"
+            className="overlay-feedback__send"
+            disabled={!inputValue.trim() || sending}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (blurTimerRef.current) {
+                clearTimeout(blurTimerRef.current)
+                blurTimerRef.current = null
+              }
+              void handleSend()
+            }}
+          >
+            {sending ? '...' : t('notch.send', { defaultValue: 'Send' })}
+          </button>
+        </div>
+      )}
 
       <div className="overlay-card__secondary" data-no-drag>
         {onShowSessions && sessionCount != null ? (
@@ -417,4 +426,55 @@ export function OverlayFeedbackPanel({
       </div>
     </div>
   )
+}
+
+function OverlayComposerHint({
+  reason,
+  onJumpToHostApp,
+}: {
+  reason: ComposerLockReason
+  onJumpToHostApp: () => void
+}) {
+  const { t } = useTranslation()
+  const messageKey = composerHintMessageKey(reason)
+  const ctaKey = composerHintCtaKey(reason)
+
+  return (
+    <div className="overlay-feedback__reply overlay-feedback__reply--hint" data-no-drag role="note">
+      <span className="overlay-feedback__hint-text">{t(messageKey)}</span>
+      {ctaKey && (
+        <button
+          type="button"
+          className="overlay-feedback__hint-cta"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onJumpToHostApp()
+          }}
+        >
+          {t(ctaKey)}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function composerHintMessageKey(reason: ComposerLockReason): string {
+  switch (reason) {
+    case 'codex-app': return 'notch.composerHintCodexApp'
+    case 'qoder-app': return 'notch.composerHintQoderApp'
+    case 'remote': return 'notch.composerHintRemote'
+    case 'no-terminal': return 'notch.composerHintNoTerminal'
+  }
+}
+
+function composerHintCtaKey(reason: ComposerLockReason): string | null {
+  switch (reason) {
+    case 'codex-app':
+    case 'qoder-app':
+      return 'notch.openHostApp'
+    case 'remote':
+    case 'no-terminal':
+      return null
+  }
 }

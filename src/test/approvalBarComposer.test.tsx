@@ -110,18 +110,4 @@ describe('ApprovalBar composer gating', () => {
     expect(screen.queryByText(/cannot receive/i)).not.toBeInTheDocument()
   })
 
-  it('unlocks the default input for Codex.app sessions when the bridge is live', () => {
-    renderBar(
-      session({
-        agentType: 'codex',
-        termBundleId: 'com.openai.codex',
-        terminal: 'Codex',
-        tty: undefined,
-        pid: undefined,
-      }),
-      { codexAppServerLive: true },
-    )
-    expect(screen.getByPlaceholderText('Type message')).toBeInTheDocument()
-    expect(screen.queryByText(/cannot receive/i)).not.toBeInTheDocument()
-  })
 })

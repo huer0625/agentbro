@@ -444,6 +444,39 @@
   padding: 9px 18px 10px;
 }
 
+.overlay-feedback__reply--hint {
+  justify-content: space-between;
+}
+
+.overlay-feedback__hint-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--island-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-feedback__hint-cta {
+  flex: 0 0 auto;
+  height: 26px;
+  border: 1px solid var(--island-border);
+  border-radius: 8px;
+  background: var(--island-card);
+  color: var(--overlay-feedback-accent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 0 12px;
+}
+
+.overlay-feedback__hint-cta:hover {
+  border-color: var(--overlay-feedback-accent-line);
+  background: var(--island-card-hover);
+}
+
 .overlay-feedback__input {
   min-width: 0;
   height: 32px;
