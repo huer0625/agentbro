@@ -46,6 +46,10 @@
     "compactingShort": "压缩中...",
     "waitingForInput": "等待输入",
     "settings": "设置",
+    "updateAvailable": "发现新版 v{{version}}，点击更新",
+    "updateBannerTitle": "发现新版 v{{version}}",
+    "updateNow": "立即更新",
+    "updateDismiss": "稍后",
     "needsApprovalTool": "需要审批：{{tool}}",
     "autoApprove": "自动批准",
     "you": "你",
@@ -781,6 +785,12 @@
     "restartHint": "更新已下载完成，重启应用即可生效。",
     "restartSoonHint": "更新已就绪，AgentBro 会在短暂空闲后自动重启安装。",
     "restartWhenIdleHint": "更新已就绪，AgentBro 会等当前活跃会话空闲后自动重启安装。",
-    "homebrewHint": "你通过 Homebrew 安装了 AgentBro，请在终端运行："
+    "homebrewHint": "你通过 Homebrew 安装了 AgentBro，请在终端运行：",
+    "downloadInBackground": "后台下载",
+    "miniDownloading": "下载中 {{percent}}%",
+    "miniReadyRestart": "更新已就绪，点击重启",
+    "closeWhileDownloading": "正在下载更新，关闭窗口会中断安装。确定要关闭吗?",
+    "closeAnyway": "仍要关闭",
+    "keepDownloading": "继续下载"
   }
 }

@@ -47,6 +47,10 @@
     "compactingShort": "圧縮中...",
     "waitingForInput": "入力待ち",
     "settings": "設定",
+    "updateAvailable": "新バージョン v{{version}} があります — クリックして更新",
+    "updateBannerTitle": "新バージョン v{{version}} があります",
+    "updateNow": "今すぐ更新",
+    "updateDismiss": "後で",
     "needsApprovalTool": "承認が必要: {{tool}}",
     "autoApprove": "自動承認",
     "you": "あなた",
@@ -730,6 +734,12 @@
     "restartHint": "アップデートのダウンロードが完了しました。アプリを再起動して適用してください。",
     "restartSoonHint": "アップデートの準備ができました。AgentBro は短いアイドル時間の後に自動で再起動します。",
     "restartWhenIdleHint": "アップデートの準備ができました。AgentBro はアクティブなセッションがアイドルになってから自動で再起動します。",
-    "homebrewHint": "AgentBro は Homebrew でインストールされています。ターミナルで次を実行してください:"
+    "homebrewHint": "AgentBro は Homebrew でインストールされています。ターミナルで次を実行してください:",
+    "downloadInBackground": "バックグラウンドでダウンロード",
+    "miniDownloading": "ダウンロード中 {{percent}}%",
+    "miniReadyRestart": "更新準備完了 — クリックして再起動",
+    "closeWhileDownloading": "アップデートをダウンロード中です。ウィンドウを閉じるとインストールが中断されます。閉じますか?",
+    "closeAnyway": "閉じる",
+    "keepDownloading": "ダウンロードを続ける"
   }
 }

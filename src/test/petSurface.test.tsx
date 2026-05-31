@@ -5,6 +5,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import { usePetStore } from '../stores/petStore'
 import { useConfigStore } from '../stores/configStore'
+import { useUpdateStore } from '../stores/updateStore'
 import type { SessionState } from '../types/agent'
 import type { PetOption } from '../types/pet'
 
@@ -103,6 +104,7 @@ describe('PetSurface (companion)', () => {
     useThemeStore.getState().setActiveTheme('default')
     usePetStore.setState({ registry: [], activePetId: null })
     useConfigStore.setState({ tipsEnabled: true })
+    useUpdateStore.setState({ availableVersion: null })
   })
 
   it('renders the pet button with sprite when an active pet is selected', () => {
@@ -114,6 +116,21 @@ describe('PetSurface (companion)', () => {
 
     expect(container.querySelector('.pet-surface__pet')).toBeInTheDocument()
     expect(container.querySelector('.pet-surface__pet .sprite-canvas')).toBeInTheDocument()
+  })
+
+  it('shows an update dot on the pet when a newer version is available', () => {
+    usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
+
+    const { container, rerender } = render(
+      <PetSurface hidden={false} scale={72} sessions={[session()]} />,
+    )
+    expect(container.querySelector('.pet-surface__update-dot')).toBeNull()
+
+    act(() => {
+      useUpdateStore.setState({ availableVersion: '0.3.0' })
+    })
+    rerender(<PetSurface hidden={false} scale={72} sessions={[session()]} />)
+    expect(container.querySelector('.pet-surface__update-dot')).toBeInTheDocument()
   })
 
   it('falls back to MascotRouter when no pet registry is loaded', () => {
@@ -220,6 +237,19 @@ describe('PetSurface (companion)', () => {
     // 100 / 100 = 1.0; clamp keeps it ≤ 1.2
     expect(root.style.getPropertyValue('--pet-scale')).toBe('1')
     expect(sprite.style.width).toBe('160px')
+  })
+
+  it('allows islandPetScale down to 10 percent', () => {
+    usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
+
+    const { container } = render(
+      <PetSurface hidden={false} scale={10} sessions={[session()]} />,
+    )
+    const root = container.querySelector('.pet-surface') as HTMLElement
+    const sprite = container.querySelector('.pet-surface__pet .sprite-canvas') as HTMLElement
+
+    expect(root.style.getPropertyValue('--pet-scale')).toBe('0.1')
+    expect(sprite.style.width).toBe('16px')
   })
 
   it('shows session badges and opens the side session drawer on pet click', () => {

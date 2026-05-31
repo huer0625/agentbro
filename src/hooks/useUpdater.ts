@@ -10,6 +10,7 @@ export type UpdateInstallChannel = 'direct' | 'homebrew'
 
 const RELEASE_API_URL = 'https://api.github.com/repos/shirenchuang/agentbro/releases/latest'
 const LATEST_DMG_URL = 'https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg'
+const UPDATE_CHECK_TIMEOUT_MS = 8_000
 const SETTINGS_AUTO_CHECK_DELAY_MS = 5_000
 const BACKGROUND_AUTO_CHECK_DELAY_MS = 60_000
 const BACKGROUND_AUTO_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
@@ -70,9 +71,16 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
     setState(prev => ({ ...prev, status: 'checking', error: null }))
 
     try {
-      const homebrewInstall = await isHomebrewInstall()
+      // Fire the install-channel probe and the network check concurrently so the
+      // homebrew round-trip doesn't add latency before the GitHub request starts.
+      const homebrewPromise = isHomebrewInstall()
+      const homebrewReleasePromise = homebrewPromise.then((isHomebrew) =>
+        isHomebrew ? checkGitHubLatestRelease() : null,
+      )
+
+      const homebrewInstall = await homebrewPromise
       if (homebrewInstall) {
-        const fallback = await checkGitHubLatestRelease()
+        const fallback = (await homebrewReleasePromise)!
         updateRef.current = null
         manualDownloadUrlRef.current = null
         installChannelRef.current = 'homebrew'
@@ -101,6 +109,7 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
       installChannelRef.current = 'direct'
       const { check } = await import('@tauri-apps/plugin-updater')
       const update = await check({
+        timeout: UPDATE_CHECK_TIMEOUT_MS,
         headers: { 'X-Update-Channel': 'stable' },
       })
 
@@ -278,11 +287,11 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
   useEffect(() => {
     if (!isTauri()) return
     if (!autoCheckUpdate) return
-    if (background && !autoInstallUpdate) return
 
     const runCheck = () => {
       if (background && isUpdateFlowActive(statusRef.current)) return
-      if (background && hasBlockingUpdateActivityRef.current) return
+      // The read-only check runs even while sessions are busy so a new version
+      // surfaces promptly. Auto-download/install stays gated on idle separately.
       checkForUpdate()
     }
 
@@ -300,7 +309,7 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
       clearTimeout(timer)
       if (interval) clearInterval(interval)
     }
-  }, [autoCheckUpdate, autoInstallUpdate, background, checkForUpdate])
+  }, [autoCheckUpdate, background, checkForUpdate])
 
   useEffect(() => {
     if (state.status !== 'available') return
@@ -378,11 +387,19 @@ async function checkGitHubLatestRelease(): Promise<{
   date: string | null
   downloadUrl: string | null
 }> {
-  const response = await fetch(RELEASE_API_URL, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-    },
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(RELEASE_API_URL, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+      },
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   if (!response.ok) {
     throw new Error(`GitHub release API returned ${response.status}`)

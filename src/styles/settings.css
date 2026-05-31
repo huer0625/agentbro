@@ -2881,6 +2881,61 @@
   opacity: 0.72;
 }
 
+.update-mini {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 260;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 240px;
+  padding: 12px 14px;
+  border: 1px solid rgba(30, 41, 59, 0.12);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 251, 255, 0.96));
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.2), 0 1px 0 rgba(255, 255, 255, 0.95) inset;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.update-mini:hover {
+  border-color: var(--settings-accent);
+}
+
+.update-mini__label {
+  color: var(--settings-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.update-mini__track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.12);
+}
+
+.update-mini__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--settings-accent-gradient);
+  transition: width 0.18s ease;
+}
+
+.update-mini__bar--indeterminate {
+  width: 36%;
+  animation: update-mini-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes update-mini-indeterminate {
+  0% { margin-left: -36%; }
+  100% { margin-left: 100%; }
+}
+
 .settings-app .glass-input {
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(40, 51, 77, 0.12);

@@ -20,6 +20,9 @@ interface UpdateDialogProps {
   restartPending?: boolean
   restartBlockedByActivity?: boolean
   blockingSessionCount?: number
+  minimized?: boolean
+  onMinimize: () => void
+  onExpand: () => void
   onInstall: () => void
   onDismiss: () => void
 }
@@ -35,6 +38,9 @@ export function UpdateDialog({
   restartPending = false,
   restartBlockedByActivity = false,
   blockingSessionCount = 0,
+  minimized = false,
+  onMinimize,
+  onExpand,
   onInstall,
   onDismiss,
 }: UpdateDialogProps) {
@@ -50,8 +56,38 @@ export function UpdateDialog({
     [i18n.language, notes],
   )
 
+  // When minimized during an in-flight download (or once it's ready) we collapse
+  // the modal into a small floating bar so the user can keep using Settings.
+  if (minimized && (isDownloading || isReady)) {
+    return (
+      <button
+        type="button"
+        className="update-mini"
+        onClick={isReady ? onInstall : onExpand}
+        title={isReady ? t('update.miniReadyRestart') : t('update.miniDownloading', { percent: progressPercent ?? 0 })}
+      >
+        <span className="update-mini__label">
+          {isReady
+            ? t('update.miniReadyRestart')
+            : progressPercent === null
+              ? t('update.downloading')
+              : t('update.miniDownloading', { percent: progressPercent })}
+        </span>
+        <span className="update-mini__track">
+          <span
+            className={`update-mini__bar${progressPercent === null ? ' update-mini__bar--indeterminate' : ''}`}
+            style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
+          />
+        </span>
+      </button>
+    )
+  }
+
+  const handleCloseClick = isDownloading ? onMinimize : onDismiss
+  const handleSecondaryClick = isDownloading ? onMinimize : onDismiss
+
   return (
-    <div className="update-dialog-overlay" onClick={onDismiss}>
+    <div className="update-dialog-overlay" onClick={handleCloseClick}>
       <div className="update-dialog" onClick={e => e.stopPropagation()}>
         <div className="update-dialog__header">
           <div>
@@ -60,7 +96,11 @@ export function UpdateDialog({
               {isReady ? t('update.readyTitle') : t('update.availableTitle')}
             </div>
           </div>
-          <button className="update-dialog__close" onClick={onDismiss} disabled={isDownloading} aria-label={t('update.later')}>
+          <button
+            className="update-dialog__close"
+            onClick={handleCloseClick}
+            aria-label={isDownloading ? t('update.downloadInBackground') : t('update.later')}
+          >
             ×
           </button>
         </div>
@@ -118,8 +158,8 @@ export function UpdateDialog({
         </div>
 
         <div className="update-dialog__footer">
-          <button className="update-dialog__button" onClick={onDismiss} disabled={isDownloading}>
-            {t('update.later')}
+          <button className="update-dialog__button" onClick={handleSecondaryClick}>
+            {isDownloading ? t('update.downloadInBackground') : t('update.later')}
           </button>
           <button
             className="update-dialog__button update-dialog__button--primary"

@@ -3405,7 +3405,7 @@ pub fn sync_pet_window_visibility(app: &tauri::AppHandle, config: &config::AppCo
     let is_pet_mode = config.island_surface_mode == "pet";
     let saved_origin = config.island_pet_window_origin.clone();
     let saved_anchor = config.island_pet_window_anchor.clone();
-    let pet_scale = config.island_pet_scale.clamp(50, 120) as f64;
+    let pet_scale = config.island_pet_scale.clamp(10, 120) as f64;
 
     let _ = app.run_on_main_thread(move || {
         sync_pet_window_visibility_inner(
@@ -3588,7 +3588,7 @@ fn current_pet_scale_percent(app: &tauri::AppHandle) -> f64 {
         .config_store
         .get()
         .island_pet_scale
-        .clamp(50, 120) as f64
+        .clamp(10, 120) as f64
 }
 
 /// Move the pet window onto the monitor the cursor is currently on, keeping
@@ -3641,9 +3641,16 @@ fn follow_pet_window_to_cursor_monitor(app: &tauri::AppHandle) {
     let current_x = current_pos.x as f64;
     let current_y = current_pos.y as f64;
 
-    let current_monitor =
-        monitor_for_pet_origin(app, width, height, window_scale, pet_scale, current_x, current_y)
-            .or_else(|| window.current_monitor().ok().flatten());
+    let current_monitor = monitor_for_pet_origin(
+        app,
+        width,
+        height,
+        window_scale,
+        pet_scale,
+        current_x,
+        current_y,
+    )
+    .or_else(|| window.current_monitor().ok().flatten());
 
     let target_id = target_monitor
         .name()
@@ -3754,7 +3761,7 @@ fn pet_rect_in_window(
     anchor: PetStageAnchor,
 ) -> (f64, f64, f64) {
     let scale = window_scale.max(1.0);
-    let display_scale = (pet_scale_percent / 100.0).clamp(0.5, 1.2);
+    let display_scale = (pet_scale_percent / 100.0).clamp(0.1, 1.2);
     let pet_size = PET_SLOT_SIZE_LOGICAL * display_scale * scale;
     let pet_left = if anchor.left {
         PET_ANCHOR_RIGHT_LOGICAL * scale
@@ -3874,7 +3881,11 @@ fn monitor_for_pet_origin_with_anchor(
         pet_scale_percent,
         anchor,
     );
-    monitor_containing_point(app, x + pet_left + pet_size / 2.0, y + pet_top + pet_size / 2.0)
+    monitor_containing_point(
+        app,
+        x + pet_left + pet_size / 2.0,
+        y + pet_top + pet_size / 2.0,
+    )
 }
 
 fn clamp_pet_window_origin(
@@ -4080,8 +4091,8 @@ async fn start_notch_drag(
                 }
                 break;
             }
-            let keep_dragging = drain_pool(|| update_notch_drag_position(&app_handle))
-                .unwrap_or(false);
+            let keep_dragging =
+                drain_pool(|| update_notch_drag_position(&app_handle)).unwrap_or(false);
             if !keep_dragging {
                 break;
             }
@@ -4237,8 +4248,8 @@ async fn start_pet_drag(
                 }
                 break;
             }
-            let keep_dragging = drain_pool(|| update_pet_drag_position(&app_handle))
-                .unwrap_or(false);
+            let keep_dragging =
+                drain_pool(|| update_pet_drag_position(&app_handle)).unwrap_or(false);
             if !keep_dragging {
                 break;
             }
@@ -4335,9 +4346,7 @@ struct PetDragResult {
 }
 
 #[tauri::command]
-async fn end_pet_drag(
-    app: tauri::AppHandle,
-) -> Result<Option<PetDragResult>, String> {
+async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, String> {
     let drag_snapshot = {
         let mut drag = pet_drag_state()
             .lock()
@@ -4388,7 +4397,13 @@ async fn end_pet_drag(
                 }
                 result_anchor = new_anchor;
                 origin = clamp_pet_window_origin_with_anchor(
-                    &monitor, w, h, window_scale, pet_scale, origin.x, origin.y,
+                    &monitor,
+                    w,
+                    h,
+                    window_scale,
+                    pet_scale,
+                    origin.x,
+                    origin.y,
                     Some(new_anchor),
                 );
                 let _ = window.set_position(tauri::Position::Physical(

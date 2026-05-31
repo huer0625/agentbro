@@ -47,6 +47,10 @@
     "compactingShort": "압축 중...",
     "waitingForInput": "입력 대기",
     "settings": "설정",
+    "updateAvailable": "새 버전 v{{version}} 사용 가능 — 클릭하여 업데이트",
+    "updateBannerTitle": "새 버전 v{{version}} 사용 가능",
+    "updateNow": "지금 업데이트",
+    "updateDismiss": "나중에",
     "needsApprovalTool": "승인 필요: {{tool}}",
     "autoApprove": "자동 승인",
     "you": "나",
@@ -730,6 +734,12 @@
     "restartHint": "업데이트가 다운로드되었습니다. 앱을 재시작하여 적용하세요.",
     "restartSoonHint": "업데이트 준비 완료. AgentBro가 짧은 유휴 시간 후 자동으로 다시 시작됩니다.",
     "restartWhenIdleHint": "업데이트 준비 완료. 활성 세션이 유휴 상태가 된 후 AgentBro가 자동으로 다시 시작됩니다.",
-    "homebrewHint": "AgentBro가 Homebrew로 설치되었습니다. 터미널에서 다음을 실행하세요:"
+    "homebrewHint": "AgentBro가 Homebrew로 설치되었습니다. 터미널에서 다음을 실행하세요:",
+    "downloadInBackground": "백그라운드로 다운로드",
+    "miniDownloading": "다운로드 중 {{percent}}%",
+    "miniReadyRestart": "업데이트 준비 완료 — 클릭하여 재시작",
+    "closeWhileDownloading": "업데이트를 다운로드하는 중입니다. 창을 닫으면 설치가 중단됩니다. 그래도 닫으시겠습니까?",
+    "closeAnyway": "그래도 닫기",
+    "keepDownloading": "계속 다운로드"
   }
 }

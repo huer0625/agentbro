@@ -104,6 +104,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   width: 26px;
   height: 26px;
   border: none;
@@ -119,6 +120,18 @@
 .collapsed-bar__icon-btn:hover {
   color: var(--island-text);
   background: rgba(255, 255, 255, 0.1);
+}
+
+.collapsed-bar__update-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--island-danger-bg);
+  border: 1.5px solid var(--island-bg);
+  pointer-events: none;
 }
 
 /* Separator below status row — AgentBro dashed style */

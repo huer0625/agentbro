@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
+import { useUpdateStore } from '../../stores/updateStore'
 import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
@@ -14,6 +15,7 @@ import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
+import { UpdateBanner } from './UpdateBanner'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
 import { PermissionCard } from '../overlay/PermissionCard'
@@ -272,6 +274,9 @@ export function NotchPanel() {
   const usageSnapshots = useSessionStore(selectUsageSnapshots)
   const activeOverlay = useSessionStore(selectActiveOverlay)
   const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
+  const updateAvailableVersion = useUpdateStore((s) => s.availableVersion)
+  const updateDismissedVersion = useUpdateStore((s) => s.dismissedVersion)
+  const showUpdateBanner = Boolean(updateAvailableVersion) && updateAvailableVersion !== updateDismissedVersion
   const dwellDuration = useConfigStore((s) => s.dwellDuration)
   const notchStyle = useConfigStore((s) => s.notchStyle)
   const maxPanelHeight = useConfigStore((s) => s.maxPanelHeight)
@@ -608,6 +613,23 @@ export function NotchPanel() {
       if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
     }
   }, [activeOverlay, blockingAttentionCount, panelState, setPanelState])
+
+  // Auto-expand the notch once per version when a new update is detected, so the
+  // banner is seen without the user opening anything. Yields to blocking
+  // overlays (approvals/questions) and never re-pops the same version this run.
+  const autoExpandedUpdateVersionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!showUpdateBanner || !updateAvailableVersion) return
+    if (autoExpandedUpdateVersionRef.current === updateAvailableVersion) return
+    const blockingActive = Boolean(activeOverlay && isBlockingOverlay(activeOverlay))
+    if (blockingActive) return
+    autoExpandedUpdateVersionRef.current = updateAvailableVersion
+    if (panelState === 'collapsed') {
+      interactionLockUntilRef.current = Math.max(interactionLockUntilRef.current, Date.now() + 1200)
+      setNotchOpacity(1).catch(() => {})
+      setPanelState('hover')
+    }
+  }, [showUpdateBanner, updateAvailableVersion, activeOverlay, panelState, setPanelState])
 
   // Persistent mode hides only after the configured no-active-session delay.
   useEffect(() => {
@@ -1898,6 +1920,10 @@ export function NotchPanel() {
                   isMicro={isMicro}
                   focusFilteredEmpty={focusFilteredEmpty}
                 />
+              )}
+
+              {showUpdateBanner && updateAvailableVersion && !preparingOpen && !hasBlockingOverlayContent && !feedbackPresentationOpen && effectivePanelState !== 'collapsed' && (
+                <UpdateBanner version={updateAvailableVersion} />
               )}
 
               <AnimatePresence mode="wait">
