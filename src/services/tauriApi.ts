@@ -338,6 +338,7 @@ export interface BackendConfig {
   petVitalsDebugOpen?: boolean
   islandPetScale: number
   islandPetWindowOrigin: { x: number; y: number } | null
+  islandPetWindowAnchor?: { left: boolean; top: boolean } | null
   islandActivePetId: string | null
   islandAgentPetMap: Record<string, string>
   followFocus: boolean
@@ -576,6 +577,7 @@ export async function getConfig(): Promise<BackendConfig> {
       petVitalsDebugOpen: false,
       islandPetScale: 72,
       islandPetWindowOrigin: null,
+      islandPetWindowAnchor: null,
       islandActivePetId: null,
       islandAgentPetMap: {},
       followFocus: false,
@@ -1209,9 +1211,14 @@ export async function endNotchDrag(): Promise<number | null> {
   return invoke<number | null>('end_notch_drag')
 }
 
-export async function startPetDrag(cursorX?: number, cursorY?: number): Promise<boolean> {
+export async function startPetDrag(
+  cursorX?: number,
+  cursorY?: number,
+  anchorLeft?: boolean,
+  anchorTop?: boolean,
+): Promise<boolean> {
   if (!isTauri()) return false
-  return invoke<boolean>('start_pet_drag', { cursorX, cursorY })
+  return invoke<boolean>('start_pet_drag', { cursorX, cursorY, anchorLeft, anchorTop })
 }
 
 export interface PetDragResult {

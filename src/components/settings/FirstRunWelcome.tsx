@@ -29,6 +29,7 @@ export function FirstRunWelcome() {
     setError(null)
     updateConfig('islandSurfaceMode', surfaceMode)
     updateConfig('islandPetWindowOrigin', null)
+    updateConfig('islandPetWindowAnchor', null)
     updateConfig('analyticsEnabled', analyticsEnabled)
     updateConfig('analyticsConsentPromptCompleted', true)
 
@@ -41,6 +42,7 @@ export function FirstRunWelcome() {
     } catch (err) {
       updateConfig('islandSurfaceMode', previous.islandSurfaceMode)
       updateConfig('islandPetWindowOrigin', previous.islandPetWindowOrigin)
+      updateConfig('islandPetWindowAnchor', previous.islandPetWindowAnchor)
       updateConfig('analyticsEnabled', previous.analyticsEnabled)
       updateConfig('analyticsConsentPromptCompleted', previous.analyticsConsentPromptCompleted)
       setError(err instanceof Error ? err.message : String(err))

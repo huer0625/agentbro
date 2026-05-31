@@ -890,6 +890,7 @@ function DisplayTab() {
             onChange={(mode) => {
               config.updateConfig('islandSurfaceMode', mode)
               config.updateConfig('islandPetWindowOrigin', null)
+              config.updateConfig('islandPetWindowAnchor', null)
               persistIslandSurfaceOptions({ islandSurfaceMode: mode })
               previewLayout(mode === 'pet' ? 'expanded' : 'compact')
             }}

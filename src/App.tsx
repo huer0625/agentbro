@@ -31,7 +31,7 @@ const BACKEND_MANAGED_CONFIG_KEYS = new Set<keyof ReturnType<typeof useConfigSto
   'excludedHookCwdSubstrings', 'sessionSilenceRules',
   'tipsEnabled', 'pixelCursorEnabled', 'confettiEnabled',
   'analyticsEnabled', 'analyticsConsentPromptCompleted',
-  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandActivePetId', 'islandAgentPetMap',
+  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandPetWindowAnchor', 'islandActivePetId', 'islandAgentPetMap',
   'followFocus', 'quietHours', 'idleTimeoutMinutes',
   'idleInteractionRoutingEnabled', 'idleInteractionRoutingMinutes',
 ])

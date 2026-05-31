@@ -42,6 +42,13 @@ pub struct WindowOrigin {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PetWindowAnchor {
+    pub left: bool,
+    pub top: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomHookInstall {
     pub id: String,
     pub profile_id: String,
@@ -195,6 +202,9 @@ pub struct AppConfig {
     /// Pet window origin
     #[serde(default)]
     pub island_pet_window_origin: Option<WindowOrigin>,
+    /// Pet sprite anchor inside the transparent pet window.
+    #[serde(default)]
+    pub island_pet_window_anchor: Option<PetWindowAnchor>,
     /// Active pet identifier (e.g. "codex:dewey", "user:my-cat"). `None` = auto-follow active session's agent.
     #[serde(default)]
     pub island_active_pet_id: Option<String>,
@@ -344,6 +354,7 @@ impl Default for AppConfig {
             pet_vitals_debug_open: false,
             island_pet_scale: default_island_pet_scale(),
             island_pet_window_origin: None,
+            island_pet_window_anchor: None,
             island_active_pet_id: None,
             island_agent_pet_map: std::collections::HashMap::new(),
             global_shortcut: "CommandOrControl+Shift+I".to_string(),
