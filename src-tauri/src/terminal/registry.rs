@@ -10,6 +10,9 @@ const TERMINAL_APP_NAMES: &[&str] = &[
     "kitty",
     "Hyper",
     "Warp",
+    "Wave",
+    "Wave Terminal",
+    "waveterm",
     "WezTerm",
     "Tabby",
     "Rio",
@@ -40,6 +43,7 @@ const TERMINAL_BUNDLE_IDS: &[&str] = &[
     "net.kovidgoyal.kitty",
     "co.zeit.hyper",
     "dev.warp.Warp-Stable",
+    "dev.commandline.waveterm",
     "com.github.wez.wezterm",
     "com.microsoft.VSCode",
     "com.microsoft.VSCodeInsiders",
@@ -75,7 +79,9 @@ pub fn is_terminal_bundle(bundle_id: &str) -> bool {
 pub fn applescript_app_name(command: &str) -> Option<&'static str> {
     let lower = command.to_lowercase();
 
-    if lower.contains("iterm") {
+    if lower.contains("wave") {
+        None
+    } else if lower.contains("iterm") {
         Some("iTerm2")
     } else if lower.contains("terminal") && !lower.contains("ghostty") {
         Some("Terminal")
@@ -118,6 +124,7 @@ mod tests {
         assert!(is_terminal(
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
         ));
+        assert!(is_terminal("/Applications/Wave.app/Contents/MacOS/Wave"));
         assert!(is_terminal("iTerm·tmux"));
         assert!(is_terminal("Apple_Terminal"));
     }

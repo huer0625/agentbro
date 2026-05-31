@@ -1271,6 +1271,8 @@ fn terminal_app_from_bundle_id(bundle_id: &str) -> Option<&'static str> {
         Some("cmux")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("waveterm") || lower.contains("commandline.wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") || lower.contains("microsoft.vscode") {
@@ -1300,6 +1302,8 @@ fn terminal_app_from_term_program(term_program: &str) -> Option<&'static str> {
         Some("kitty")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") {
@@ -1328,6 +1332,8 @@ fn normalized_app_name(name: &str) -> &str {
         "cmux"
     } else if lower.contains("warp") {
         "Warp"
+    } else if lower.contains("wave") {
+        "Wave"
     } else if lower.contains("alacritty") {
         "Alacritty"
     } else if lower.contains("terminal") && !lower.contains("ghostty") {
@@ -1573,7 +1579,12 @@ mod tests {
             terminal_app_from_bundle_id("com.googlecode.iterm2"),
             Some("iTerm2")
         );
+        assert_eq!(
+            terminal_app_from_bundle_id("dev.commandline.waveterm"),
+            Some("Wave")
+        );
         assert_eq!(terminal_app_from_term_program("iTerm.app"), Some("iTerm2"));
+        assert_eq!(terminal_app_from_term_program("Wave"), Some("Wave"));
         assert_eq!(terminal_app_from_bundle_id("com.anthropic.claude"), None);
     }
 

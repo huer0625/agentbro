@@ -440,6 +440,18 @@ describe('HoverList interactions', () => {
     expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
   })
 
+  it('labels Wave sessions from the bundle id', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '/dev/ttys001', termBundleId: 'dev.commandline.waveterm' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Wave')).toHaveClass('hover-list__terminal-badge')
+    expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
+  })
+
   it('falls back to TERM_PROGRAM when bundle id is missing', () => {
     render(
       <HoverList
