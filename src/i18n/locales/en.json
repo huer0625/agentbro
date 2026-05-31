@@ -46,6 +46,10 @@
     "compactingShort": "Compacting...",
     "waitingForInput": "Waiting for input",
     "settings": "Settings",
+    "updateAvailable": "Update available v{{version}} — click to update",
+    "updateBannerTitle": "New version v{{version}} available",
+    "updateNow": "Update Now",
+    "updateDismiss": "Dismiss",
     "needsApprovalTool": "Needs approval: {{tool}}",
     "autoApprove": "Auto-approve",
     "you": "You",
@@ -729,6 +733,12 @@
     "restartHint": "The update has been downloaded. Restart the app to apply.",
     "restartSoonHint": "The update is ready. AgentBro will restart automatically after a short idle window.",
     "restartWhenIdleHint": "The update is ready. AgentBro will restart automatically after active sessions become idle.",
-    "homebrewHint": "AgentBro was installed with Homebrew. Run this in Terminal:"
+    "homebrewHint": "AgentBro was installed with Homebrew. Run this in Terminal:",
+    "downloadInBackground": "Download in Background",
+    "miniDownloading": "Downloading {{percent}}%",
+    "miniReadyRestart": "Update ready — click to restart",
+    "closeWhileDownloading": "An update is downloading. Closing this window will interrupt the install. Close anyway?",
+    "closeAnyway": "Close Anyway",
+    "keepDownloading": "Keep Downloading"
   }
 }

@@ -44,6 +44,10 @@
     "compactingShort": "Sıkıştırılıyor...",
     "waitingForInput": "Girdi bekleniyor",
     "settings": "Ayarlar",
+    "updateAvailable": "Yeni sürüm v{{version}} mevcut — güncellemek için tıklayın",
+    "updateBannerTitle": "Yeni sürüm v{{version}} mevcut",
+    "updateNow": "Şimdi Güncelle",
+    "updateDismiss": "Sonra",
     "needsApprovalTool": "Onay gerekli: {{tool}}",
     "autoApprove": "Otomatik onayla",
     "you": "Sen",
@@ -544,6 +548,12 @@
     "restartHint": "Güncelleme indirildi. Uygulamak için uygulamayı yeniden başlatın.",
     "restartSoonHint": "Güncelleme hazır. AgentBro kısa bir boşta kalma süresinden sonra otomatik olarak yeniden başlatılacak.",
     "restartWhenIdleHint": "Güncelleme hazır. AgentBro etkin oturumlar boşta kalınca otomatik olarak yeniden başlatılacak.",
-    "homebrewHint": "AgentBro Homebrew ile yüklendi. Terminal'de şunu çalıştırın:"
+    "homebrewHint": "AgentBro Homebrew ile yüklendi. Terminal'de şunu çalıştırın:",
+    "downloadInBackground": "Arka Planda İndir",
+    "miniDownloading": "İndiriliyor %{{percent}}",
+    "miniReadyRestart": "Güncelleme hazır — yeniden başlatmak için tıklayın",
+    "closeWhileDownloading": "Bir güncelleme indiriliyor. Bu pencereyi kapatmak kurulumu yarıda keser. Yine de kapatılsın mı?",
+    "closeAnyway": "Yine de Kapat",
+    "keepDownloading": "İndirmeye Devam Et"
   }
 }

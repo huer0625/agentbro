@@ -16,6 +16,9 @@ jobs:
     timeout-minutes: 360
     env:
       HAS_APPLE_SECRETS: ${{ secrets.APPLE_ID != '' && '1' || '0' }}
+      HAS_OSS_SECRETS: ${{ secrets.OSS_ACCESS_KEY_ID != '' && secrets.OSS_ACCESS_KEY_SECRET != '' && '1' || '0' }}
+      OSS_BUCKET: agentbro
+      OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
 
     steps:
       - name: Checkout
@@ -163,6 +166,31 @@ jobs:
           body: ${{ env.RELEASE_NOTES }}
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+      - name: Mirror release to Aliyun OSS
+        if: ${{ !contains(github.ref_name, '-') && env.HAS_OSS_SECRETS == '1' }}
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | bash
+          OSSUTIL="$(command -v ossutil || echo /usr/local/bin/ossutil)"
+
+          GH_PREFIX="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
+          OSS_HTTP_PREFIX="https://${OSS_BUCKET}.${OSS_ENDPOINT}"
+          # latest.json on OSS must point updater archives at OSS, not GitHub.
+          sed "s#${GH_PREFIX}#${OSS_HTTP_PREFIX}#g" dist/latest.json > dist/latest.oss.json
+
+          oss_cp() {
+            "$OSSUTIL" cp -f -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" "$1" "$2"
+          }
+          base="oss://${OSS_BUCKET}"
+          oss_cp "dist/${DMG_NAME}"                      "${base}/releases/v${VERSION}/${DMG_NAME}"
+          oss_cp "dist/AgentBro_latest_universal.dmg"    "${base}/AgentBro_latest_universal.dmg"
+          oss_cp "dist/AgentBro.app.tar.gz"              "${base}/AgentBro.app.tar.gz"
+          oss_cp "dist/AgentBro.app.tar.gz.sig"          "${base}/AgentBro.app.tar.gz.sig"
+          oss_cp "dist/latest.oss.json"                  "${base}/latest.json"
+
   update-homebrew:
     name: Update Homebrew Cask
     runs-on: ubuntu-latest
@@ -170,6 +198,9 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
     env:
       HAS_HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && '1' || '0' }}
+      HAS_OSS_SECRETS: ${{ secrets.OSS_ACCESS_KEY_ID != '' && secrets.OSS_ACCESS_KEY_SECRET != '' && '1' || '0' }}
+      OSS_BUCKET: agentbro
+      OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
 
     steps:
       - name: Skip Homebrew update
@@ -204,18 +235,23 @@ jobs:
         if: env.HAS_HOMEBREW_TAP_TOKEN == '1'
         run: |
           mkdir -p homebrew-tap/Casks
+          if [ "$HAS_OSS_SECRETS" = "1" ]; then
+            CASK_URL="https://${OSS_BUCKET}.${OSS_ENDPOINT}/releases/v#{version}/AgentBro_#{version}_universal.dmg"
+          else
+            CASK_URL="https://github.com/${{ github.repository }}/releases/download/v#{version}/AgentBro_#{version}_universal.dmg"
+          fi
           cat > homebrew-tap/Casks/agentbro.rb <<CASK_EOF
           cask "agentbro" do
             version "${VERSION}"
             sha256 "${SHA256}"
 
-            url "https://github.com/${{ github.repository }}/releases/download/v#{version}/AgentBro_#{version}_universal.dmg"
+            url "${CASK_URL}"
             name "AgentBro"
             desc "Menu bar companion for Claude Code, Codex, Gemini CLI and more"
             homepage "https://www.agentbro.net"
 
             livecheck do
-              url :url
+              url "https://github.com/${{ github.repository }}/releases/latest"
               strategy :github_latest
             end
 

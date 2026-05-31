@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ask } from '@tauri-apps/plugin-dialog'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SettingsSidebar } from './SettingsSidebar'
 import { UpdateDialog } from './UpdateDialog'
@@ -13,6 +14,7 @@ import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
 import { useUpdater } from '../../hooks/useUpdater'
 import { useConfigStore } from '../../stores/configStore'
+import { isTauri } from '../../services/tauriApi'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
@@ -35,12 +37,51 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const [activeMonitorView, setActiveMonitorView] = useState<MonitorSettingsView>('overview')
   const [customAgentDialogOpen, setCustomAgentDialogOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [updateMinimized, setUpdateMinimized] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const openCustomAgentDialog = () => {
     setActiveSection('agents')
     setActiveCapabilityView('agent')
     setCustomAgentDialogOpen(true)
   }
+
+  // Closing the settings window destroys it, which kills an in-flight update
+  // download. Guard both the in-app close button and the macOS traffic-light.
+  const downloadingRef = useRef(false)
+  useEffect(() => {
+    downloadingRef.current = updater.status === 'downloading'
+  }, [updater.status])
+
+  const confirmCloseWhileDownloading = async (): Promise<boolean> => {
+    if (!downloadingRef.current) return true
+    return ask(t('update.closeWhileDownloading'), {
+      title: t('update.availableTitle'),
+      kind: 'warning',
+      okLabel: t('update.closeAnyway'),
+      cancelLabel: t('update.keepDownloading'),
+    })
+  }
+
+  const handleCloseRequest = async () => {
+    if (await confirmCloseWhileDownloading()) onClose()
+  }
+
+  useEffect(() => {
+    if (!isTauri()) return
+    const unlistenPromise = (async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      return getCurrentWindow().onCloseRequested(async (event) => {
+        if (!downloadingRef.current) return
+        event.preventDefault()
+        if (await confirmCloseWhileDownloading()) onClose()
+      })
+    })()
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten())
+    }
+    // onClose is stable for the window's lifetime; t is read at call time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="settings-app">
@@ -69,7 +110,7 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         </div>
         <button
           className="settings-close-btn"
-          onClick={onClose}
+          onClick={handleCloseRequest}
         >
           {t('settings.close')}
         </button>
@@ -136,8 +177,14 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
           restartPending={updater.restartPending}
           restartBlockedByActivity={updater.restartBlockedByActivity}
           blockingSessionCount={updater.blockingSessionCount}
+          minimized={updateMinimized}
+          onMinimize={() => setUpdateMinimized(true)}
+          onExpand={() => setUpdateMinimized(false)}
           onInstall={updater.installUpdate}
-          onDismiss={updater.dismissUpdate}
+          onDismiss={() => {
+            setUpdateMinimized(false)
+            updater.dismissUpdate()
+          }}
         />
       )}
       {!analyticsConsentPromptCompleted && <FirstRunWelcome />}

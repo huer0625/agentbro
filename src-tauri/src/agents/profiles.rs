@@ -1214,7 +1214,13 @@ fn shell_token_value(token: &str) -> &str {
 }
 
 fn bridge_health() -> Option<HookInstallHealth> {
-    (!hook_manager::bridge_binary_is_current()).then_some(HookInstallHealth::NeedsReinstall)
+    if hook_manager::bridge_binary_is_current() {
+        return None;
+    }
+    if hook_manager::ensure_bridge_binary().is_ok() && hook_manager::bridge_binary_is_current() {
+        return None;
+    }
+    Some(HookInstallHealth::NeedsReinstall)
 }
 
 fn read_json_health(path: &Path) -> Result<Value, HookInstallHealth> {

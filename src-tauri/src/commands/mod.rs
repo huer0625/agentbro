@@ -34,13 +34,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command as TokioCommand};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
-use futures_util::{SinkExt, StreamExt};
-use futures_util::stream::{SplitSink, SplitStream};
-use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -86,6 +86,12 @@ pub fn register_codex_app_server_bridge(bridge: Arc<CodexAppServerBridge>) {
 
 fn global_codex_app_server_bridge() -> Option<Arc<CodexAppServerBridge>> {
     CODEX_APP_SERVER_BRIDGE_HANDLE.get().cloned()
+}
+
+impl Default for CodexAppServerBridge {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CodexAppServerBridge {
@@ -909,11 +915,12 @@ async fn read_ws_until_id(
     expected_id: i64,
 ) -> Result<serde_json::Value, String> {
     while let Some(message) = stream.next().await {
-        let message = message
-            .map_err(|err| format!("codex app-server WebSocket error: {err}"))?;
+        let message = message.map_err(|err| format!("codex app-server WebSocket error: {err}"))?;
         let text = match message {
             Message::Text(text) => text,
-            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                continue
+            }
             Message::Close(_) => {
                 return Err("codex app-server closed the WebSocket".to_string());
             }
@@ -935,7 +942,10 @@ async fn read_ws_until_id(
     Err("codex app-server closed before responding".to_string())
 }
 
-async fn initialize_codex_app_server_ws(sink: &mut CodexWsSink, stream: &mut CodexWsSource) -> Result<(), String> {
+async fn initialize_codex_app_server_ws(
+    sink: &mut CodexWsSink,
+    stream: &mut CodexWsSource,
+) -> Result<(), String> {
     write_ws_json(
         sink,
         serde_json::json!({
@@ -1430,7 +1440,10 @@ async fn handle_codex_app_server_command(
             .await;
             match write_result {
                 Ok(()) => {
-                    outgoing.insert(request_id, CodexAppServerOutgoingRequest::RateLimits { reply });
+                    outgoing.insert(
+                        request_id,
+                        CodexAppServerOutgoingRequest::RateLimits { reply },
+                    );
                 }
                 Err(err) => {
                     let _ = reply.send(Err(err));
@@ -1447,8 +1460,10 @@ async fn handle_codex_app_server_command(
             let payload = codex_turn_steer_payload(request_id, &thread_id, &text);
             match write_ws_json(sink, payload).await {
                 Ok(()) => {
-                    outgoing
-                        .insert(request_id, CodexAppServerOutgoingRequest::SendUserTurn { reply });
+                    outgoing.insert(
+                        request_id,
+                        CodexAppServerOutgoingRequest::SendUserTurn { reply },
+                    );
                 }
                 Err(err) => {
                     let _ = reply.send(Err(err));
@@ -1489,12 +1504,11 @@ fn upsert_codex_app_server_pending_permission(
     store.update_session(thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some("Codex App".to_string());
-        session.project = session
-            .project
-            .trim()
-            .is_empty()
-            .then(|| "Codex".to_string())
-            .unwrap_or_else(|| session.project.clone());
+        session.project = if session.project.trim().is_empty() {
+            "Codex".to_string()
+        } else {
+            session.project.clone()
+        };
         session.cwd = cwd.to_string();
         session.terminal = "Codex".to_string();
         session.term_bundle_id = Some("com.openai.codex".to_string());
@@ -1881,9 +1895,9 @@ fn codex_phase_from_status(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            if flags.iter().any(|flag| *flag == "waitingOnApproval") {
+            if flags.contains(&"waitingOnApproval") {
                 SessionPhase::WaitingApproval
-            } else if flags.iter().any(|flag| *flag == "waitingOnUserInput") {
+            } else if flags.contains(&"waitingOnUserInput") {
                 SessionPhase::WaitingInput
             } else {
                 SessionPhase::Processing
@@ -2395,7 +2409,11 @@ pub async fn send_message(
         // user turn straight through JSON-RPC, no clipboard/AppleScript
         // round-trip, no app activation. Falls back to AppleScript when
         // the bridge isn't attached or rejects the turn.
-        match state.codex_app_server.send_user_turn(&session_id, &message).await {
+        match state
+            .codex_app_server
+            .send_user_turn(&session_id, &message)
+            .await
+        {
             Ok(true) => return Ok(()),
             Ok(false) => {
                 log::debug!(
@@ -4614,7 +4632,7 @@ pub async fn set_island_surface_options(
         config.island_pet_window_anchor = None;
     }
     config.island_surface_mode = island_surface_mode;
-    config.island_pet_scale = island_pet_scale.clamp(50, 120);
+    config.island_pet_scale = island_pet_scale.clamp(10, 120);
     state.config_store.update(config.clone())?;
 
     if mode_changed {
@@ -4622,7 +4640,7 @@ pub async fn set_island_surface_options(
         let saved_origin = config.island_pet_window_origin.clone();
         let saved_anchor = config.island_pet_window_anchor.clone();
         let is_pet_mode = config.island_surface_mode == "pet";
-        let pet_scale = config.island_pet_scale.clamp(50, 120) as f64;
+        let pet_scale = config.island_pet_scale.clamp(10, 120) as f64;
         app.run_on_main_thread(move || {
             crate::sync_pet_window_visibility_inner(
                 &handle,
@@ -4685,6 +4703,13 @@ pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<
         ));
     }
     adapter.install_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_enabled(&agent) {
+        log::warn!(
+            "Failed to persist enabled-agent intent for {}: {}",
+            agent,
+            e
+        );
+    }
     let config = state.config_store.get();
     state.telemetry.record_hook_install(&config, &agent).await;
     Ok(())
@@ -4699,6 +4724,9 @@ pub async fn remove_hooks(state: State<'_, AppState>, agent: String) -> Result<(
         .find(|a| a.name() == agent)
         .ok_or_else(|| format!("Unknown agent: {}", agent))?;
     adapter.remove_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_disabled(&agent) {
+        log::warn!("Failed to clear enabled-agent intent for {}: {}", agent, e);
+    }
     let config = state.config_store.get();
     state.telemetry.record_hook_uninstall(&config, &agent).await;
     Ok(())

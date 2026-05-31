@@ -232,6 +232,13 @@ pub struct AppConfig {
     pub shortcut_skip_enabled: bool,
     #[serde(default)]
     pub permission_shortcut_defaults_migrated: bool,
+    /// Agents (adapter names) whose AgentBro hooks the user has enabled. This is
+    /// the persisted *intent* that survives external tools (e.g. cc-switch)
+    /// overwriting the agent's settings file: hook recovery re-installs hooks for
+    /// these agents even when the on-disk config no longer contains any trace of
+    /// them, so a wiped hook is restored without a manual reinstall or restart.
+    #[serde(default)]
+    pub enabled_agents: Vec<String>,
 }
 
 fn default_display_id() -> String {
@@ -365,6 +372,7 @@ impl Default for AppConfig {
             shortcut_skip: default_shortcut_skip(),
             shortcut_skip_enabled: false,
             permission_shortcut_defaults_migrated: true,
+            enabled_agents: Vec::new(),
         }
     }
 }
@@ -526,6 +534,32 @@ impl ConfigStore {
         log::info!("Config updated and saved");
         Ok(())
     }
+
+    /// Record that the user has enabled AgentBro hooks for `agent`. Returns
+    /// `Ok(true)` when the intent set changed (and was persisted). No-op when the
+    /// agent is already present, to avoid needless writes / config-changed churn.
+    pub fn mark_agent_enabled(&self, agent: &str) -> Result<bool, String> {
+        let mut config = self.get();
+        if config.enabled_agents.iter().any(|a| a == agent) {
+            return Ok(false);
+        }
+        config.enabled_agents.push(agent.to_string());
+        self.update(config)?;
+        Ok(true)
+    }
+
+    /// Drop `agent` from the enabled-hooks intent set. Returns `Ok(true)` when the
+    /// set changed.
+    pub fn mark_agent_disabled(&self, agent: &str) -> Result<bool, String> {
+        let mut config = self.get();
+        let before = config.enabled_agents.len();
+        config.enabled_agents.retain(|a| a != agent);
+        if config.enabled_agents.len() == before {
+            return Ok(false);
+        }
+        self.update(config)?;
+        Ok(true)
+    }
 }
 
 impl Default for ConfigStore {
@@ -552,6 +586,38 @@ mod tests {
         assert!(config.boot_sound_default_migrated);
         assert!(!config.analytics_enabled);
         assert!(!config.analytics_consent_prompt_completed);
+    }
+
+    #[test]
+    fn enabled_agents_defaults_to_empty_when_field_is_missing() {
+        let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+        value
+            .as_object_mut()
+            .expect("config object")
+            .remove("enabledAgents");
+
+        let config: AppConfig = serde_json::from_value(value).expect("deserialize legacy config");
+
+        assert!(config.enabled_agents.is_empty());
+    }
+
+    #[test]
+    fn enabled_agents_roundtrips_through_serde() {
+        let config = AppConfig {
+            enabled_agents: vec!["claude-code".to_string(), "codex".to_string()],
+            ..AppConfig::default()
+        };
+        let value = serde_json::to_value(&config).expect("serialize config");
+        assert_eq!(
+            value
+                .get("enabledAgents")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let restored: AppConfig = serde_json::from_value(value).expect("deserialize config");
+        assert_eq!(restored.enabled_agents, vec!["claude-code", "codex"]);
     }
 
     #[test]
@@ -583,10 +649,10 @@ mod tests {
         // Users who explicitly turned the feature off (back when default was
         // false) must keep their choice after we flip the default to true.
         let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("codexAppServerSyncEnabled".into(), serde_json::Value::Bool(false));
+        value.as_object_mut().unwrap().insert(
+            "codexAppServerSyncEnabled".into(),
+            serde_json::Value::Bool(false),
+        );
 
         let config: AppConfig = serde_json::from_value(value).expect("deserialize stored config");
 

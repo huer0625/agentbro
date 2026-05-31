@@ -1,0 +1,75 @@
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 10px 8px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--island-border);
+  border-radius: 12px;
+  background: var(--island-info-bg, rgba(10, 132, 255, 0.12));
+  color: var(--island-text);
+}
+
+.update-banner__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--island-info, #0a84ff);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.update-banner__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-banner__action {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--island-info, #0a84ff);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.update-banner__action:hover {
+  filter: brightness(1.08);
+}
+
+.update-banner__close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--island-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.update-banner__close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--island-text);
+}

@@ -69,18 +69,14 @@ pub fn get_theme_bundle(name: &str) -> Option<serde_json::Value> {
                 // across the registry — never again.
                 let full_path = dir.join(sprite_path);
                 if full_path.exists() {
-                    if let Some(char_obj) =
-                        obj.get_mut("character").and_then(|c| c.as_object_mut())
+                    if let Some(char_obj) = obj.get_mut("character").and_then(|c| c.as_object_mut())
                     {
                         let path_str = full_path.to_string_lossy().to_string();
                         char_obj.insert(
                             "spriteSheet".to_string(),
                             serde_json::json!(path_str.clone()),
                         );
-                        char_obj.insert(
-                            "spriteSheetUrl".to_string(),
-                            serde_json::json!(path_str),
-                        );
+                        char_obj.insert("spriteSheetUrl".to_string(), serde_json::json!(path_str));
                     }
                 }
             }
@@ -473,7 +469,10 @@ mod tests {
         // wraps it in convertFileSrc() to obtain an asset:// URL. We refuse
         // to emit base64 data URLs here — see the file-level comment.
         let sprite = theme["character"]["spriteSheet"].as_str().unwrap();
-        assert!(!sprite.starts_with("data:"), "spriteSheet must be a path, got {sprite}");
+        assert!(
+            !sprite.starts_with("data:"),
+            "spriteSheet must be a path, got {sprite}"
+        );
         assert!(sprite.ends_with("spritesheet.webp"));
         let sprite_url = theme["character"]["spriteSheetUrl"].as_str().unwrap();
         assert_eq!(sprite, sprite_url);

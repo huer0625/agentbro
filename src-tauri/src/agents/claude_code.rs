@@ -78,19 +78,11 @@ impl ClaudeCodeAdapter {
 
     /// Build the hook command string and stamp instance metadata into the bridge env.
     fn hook_command(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let bridge_path = hook_manager::ensure_bridge_binary()?;
-        let mut parts = vec!["/usr/bin/env".to_string()];
-        parts.extend(hook_manager::endpoint_env_assignments());
-        parts.push(format!(
-            "AGENTBRO_ENGINE_LABEL={}",
-            shell_quote(&self.label)
-        ));
-        parts.push(format!(
-            "AGENTBRO_CONFIG_ROOT={}",
-            shell_quote(&self.config_root.display().to_string())
-        ));
-        parts.push(shell_quote(&bridge_path.display().to_string()));
-        Ok(parts.join(" "))
+        profiles::managed_bridge_command_labeled(
+            &profiles::claude_code_profile(),
+            Some(&self.label),
+            Some(&self.config_root.display().to_string()),
+        )
     }
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)
@@ -745,10 +737,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.settings_path()]
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn percentage_value(value: &serde_json::Value) -> f64 {

@@ -48,11 +48,10 @@ pub async fn spawn_and_connect_app_server(
     let port = tokio::time::timeout(startup_timeout, parse_listen_port(stderr))
         .await
         .map_err(|_| "Timed out waiting for codex app-server to listen".to_string())?
-        .map_err(|err| {
+        .inspect_err(|_| {
             // Kill the child so it doesn't outlive a failed startup.
             // start_kill is best-effort; ignore its error.
             let _ = child.start_kill();
-            err
         })?;
 
     let url = format!("ws://127.0.0.1:{port}");
@@ -100,7 +99,9 @@ async fn parse_listen_port(stderr: tokio::process::ChildStderr) -> Result<u16, S
 pub fn parse_listen_port_line(line: &str) -> Option<u16> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("listening on:")?.trim_start();
-    let after_scheme = rest.strip_prefix("ws://").or_else(|| rest.strip_prefix("wss://"))?;
+    let after_scheme = rest
+        .strip_prefix("ws://")
+        .or_else(|| rest.strip_prefix("wss://"))?;
     let (_host, port_str) = after_scheme.rsplit_once(':')?;
     let port_str = port_str.split('/').next().unwrap_or(port_str);
     port_str.parse::<u16>().ok()
@@ -115,10 +116,7 @@ pub fn next_backoff(previous: Duration) -> Duration {
     if previous < FLOOR {
         return FLOOR;
     }
-    let doubled = previous
-        .checked_mul(2)
-        .unwrap_or(CEILING)
-        .min(CEILING);
+    let doubled = previous.checked_mul(2).unwrap_or(CEILING).min(CEILING);
     doubled.max(FLOOR)
 }
 
@@ -151,22 +149,43 @@ mod tests {
 
     #[test]
     fn rejects_other_lines() {
-        assert_eq!(parse_listen_port_line("codex app-server (WebSockets)"), None);
-        assert_eq!(parse_listen_port_line("  readyz: http://127.0.0.1:59158/readyz"), None);
+        assert_eq!(
+            parse_listen_port_line("codex app-server (WebSockets)"),
+            None
+        );
+        assert_eq!(
+            parse_listen_port_line("  readyz: http://127.0.0.1:59158/readyz"),
+            None
+        );
         assert_eq!(parse_listen_port_line(""), None);
     }
 
     #[test]
     fn backoff_floor_and_doubling() {
         assert_eq!(next_backoff(Duration::ZERO), Duration::from_secs(5));
-        assert_eq!(next_backoff(Duration::from_secs(5)), Duration::from_secs(10));
-        assert_eq!(next_backoff(Duration::from_secs(10)), Duration::from_secs(20));
+        assert_eq!(
+            next_backoff(Duration::from_secs(5)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(10)),
+            Duration::from_secs(20)
+        );
     }
 
     #[test]
     fn backoff_caps_at_120s() {
-        assert_eq!(next_backoff(Duration::from_secs(60)), Duration::from_secs(120));
-        assert_eq!(next_backoff(Duration::from_secs(120)), Duration::from_secs(120));
-        assert_eq!(next_backoff(Duration::from_secs(3_600)), Duration::from_secs(120));
+        assert_eq!(
+            next_backoff(Duration::from_secs(60)),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(120)),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(3_600)),
+            Duration::from_secs(120)
+        );
     }
 }

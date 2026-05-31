@@ -170,7 +170,8 @@ brew install --cask agentbro
 
 ### Download a Release
 
-You can also download the latest DMG from [GitHub Releases](https://github.com/shirenchuang/agentbro/releases).
+- 🌍 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) (all versions)
+- 🇨🇳 Mainland China mirror (faster): [latest DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
 
 ## Local Development
 
@@ -245,6 +246,7 @@ Please target the `dev` branch. Run `pnpm lint && pnpm test:run && pnpm build &&
 Release notes and signing requirements live in [`docs/release.md`](docs/release.md).
 
 - Website: [www.agentbro.net](https://www.agentbro.net)
+- China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 - GitHub releases: `https://github.com/shirenchuang/agentbro/releases`
 
 ## License

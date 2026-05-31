@@ -27,6 +27,7 @@ import {
 } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
 import { selectActivePet, usePetStore } from '../../stores/petStore'
+import { useUpdateStore } from '../../stores/updateStore'
 import { usePetVitalsDebug } from '../../stores/petVitalsDebugStore'
 import { getSessionTitle } from '../../utils/sessionDisplay'
 import { isBlockingOverlay, isNonBlockingOverlay } from '../../utils/islandInteraction'
@@ -134,6 +135,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const messageDismissPendingRef = useRef<string | null>(null)
 
   const updateConfig = useConfigStore((s) => s.updateConfig)
+  const updateAvailable = useUpdateStore((s) => s.availableVersion)
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const petVitalsEnabled = useConfigStore((s) => s.petVitalsEnabled)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
@@ -171,7 +173,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     [petRegistry, activePetId, sessions, agentPetMap],
   )
   const visibleActiveOverlay = activeOverlay && activeOverlay.id !== suppressedOverlayId ? activeOverlay : null
-  const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
+  const displayScale = Math.min(1.2, Math.max(0.1, scale / 100))
   const savedStageAnchor = useMemo(() => configAnchorToStage(savedPetWindowAnchor), [savedPetWindowAnchor])
   const [stageAnchor, setStageAnchor] = usePetStageAnchor(
     !hidden,
@@ -775,6 +777,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
               />
             )}
             <PetStatusBadges actionCount={actionCount} sessionCount={activeSessionCount} />
+            {updateAvailable && <span className="pet-surface__update-dot" aria-hidden="true" />}
           </span>
         </button>
 

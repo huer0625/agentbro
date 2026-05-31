@@ -7,9 +7,9 @@ import { SettingsApp } from './components/settings'
 import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
 import { usePetStore } from './stores/petStore'
+import { BackgroundUpdater } from './components/BackgroundUpdater'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
-import { useUpdater } from './hooks/useUpdater'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
 import './styles/globals.css'
 
@@ -264,18 +264,6 @@ function App() {
 
   // Notch window (default)
   return notchWindow
-}
-
-function BackgroundUpdater() {
-  const autoCheckUpdate = useConfigStore((s) => s.autoCheckUpdate)
-  const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
-  if (!autoCheckUpdate || !autoInstallUpdate) return null
-  return <BackgroundUpdaterLoop />
-}
-
-function BackgroundUpdaterLoop() {
-  useUpdater({ background: true })
-  return null
 }
 
 export default App

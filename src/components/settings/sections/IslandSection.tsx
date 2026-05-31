@@ -922,7 +922,7 @@ function DisplayTab() {
             <SettingRow label={t('settings.islandPetScale', { defaultValue: '宠物大小' })} description={`${config.islandPetScale}%`}>
               <Slider
                 value={config.islandPetScale}
-                min={50}
+                min={10}
                 max={120}
                 step={5}
                 onChange={(v) => {

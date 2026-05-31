@@ -2,14 +2,14 @@
 
 ## English
 
-AgentBro is a native macOS desktop tool for AI coding agents. This release puts the spotlight on the **Pet Market** and ships reliability fixes for hook installation and multi-agent session display.
+AgentBro is a native macOS desktop tool for AI coding agents. This release adds in-app update notifications, a faster China download mirror, and self-healing hook installation.
 
 ### Highlights
 
-- **Pet Market** — Browse community-contributed pets and install them in one click, powered by the [`abpets`](https://www.npmjs.com/package/abpets) CLI (Node.js v18+). Open it from **Settings → Island → Pet Market**, or preview the full catalog at [www.agentbro.net/pets](https://www.agentbro.net/pets). Each agent can be assigned its own default pet.
-- **Codex multi-agent sessions** — The subagent list now anchors on the active spawn wave, so completed subagents from earlier turns no longer linger in the hover list.
-- **Hook installation reliability** — Fixed agentbro command detection so profiles with top-level event arrays are no longer wrongly reported as needing reinstall.
-- **Less warning fatigue** — Hook Doctor no longer raises noisy warnings for optional terminal multiplexers, and reports an `info` status where appropriate.
+- **In-app update notifications** — AgentBro now checks for new versions in the background and surfaces an update banner right in the island, with a dot on the collapsed bar and a richer update dialog. No more manually checking GitHub for releases.
+- **China download mirror** — Releases are now mirrored to an Aliyun OSS bucket, so users in mainland China get fast, reliable downloads and auto-updates without GitHub timeouts. The updater tries the China mirror first and falls back to GitHub automatically.
+- **Self-healing hooks** — If an external tool overwrites your agent settings and wipes AgentBro's hooks, they are now automatically restored, so the island keeps working without a manual reinstall.
+- **Pet tuning** — The pet scale slider now goes down to 10%, for an even more compact desktop pet.
 
 ### Install And Update
 
@@ -22,6 +22,7 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release puts 
 - Recommended download: `AgentBro_latest_universal.dmg`
 - Versioned archive: `AgentBro_{{VERSION}}_universal.dmg`
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
+- 🇨🇳 Mainland China mirror (faster): `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### Notes
 
@@ -30,14 +31,14 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release puts 
 
 ## 中文
 
-AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次发布重点介绍 **宠物市场**,并带来 Hook 安装与多 Agent 会话显示的稳定性修复。
+AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次发布带来应用内更新提示、更快的国内下载镜像,以及可自愈的 Hook 安装。
 
 ### 主要更新
 
-- **宠物市场** —— 浏览社区贡献的宠物并一键安装,整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动(需 Node.js v18+)。在 **设置 → Island → 宠物市场** 即可打开,也可在网页预览全部宠物:[www.agentbro.net/pets](https://www.agentbro.net/pets)。每个 Agent 都可以单独设置默认宠物。
-- **Codex 多 Agent 会话** —— 子 Agent 列表现在以当前活跃的 spawn 波次为锚点,早先轮次里已完成的子 Agent 不再残留在悬停列表中。
-- **Hook 安装稳定性** —— 修复 agentbro 命令检测:顶层事件为数组的 profile 不再被误判为需要重新安装。
-- **减少告警疲劳** —— Hook Doctor 不再为可选的终端复用器(terminal multiplexer)弹出嘈杂告警,并在合适处改为 `info` 状态提示。
+- **应用内更新提示** —— AgentBro 现在会在后台检查新版本,并直接在灵动岛里弹出更新横幅:折叠条上有小红点,更新弹窗也更完善。不用再手动去 GitHub 看有没有新版了。
+- **国内下载镜像** —— 发布产物现在会镜像到阿里云 OSS,国内用户无需再忍受 GitHub 超时,下载和自动更新又快又稳。更新器会优先走国内镜像,异常时自动回落到 GitHub。
+- **Hook 自愈** —— 如果外部工具覆盖了你的 Agent 配置、把 AgentBro 的 Hook 抹掉了,现在会自动恢复,灵动岛无需手动重装即可继续工作。
+- **宠物微调** —— 宠物大小滑块下限降到 10%,桌面宠物可以更小巧。
 
 ### 安装与更新
 
@@ -50,6 +51,7 @@ AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次�
 - 推荐下载:`AgentBro_latest_universal.dmg`
 - 版本归档:`AgentBro_{{VERSION}}_universal.dmg`
 - 自动更新文件:`AgentBro.app.tar.gz` 与 `latest.json`
+- 🇨🇳 国内直链(速度更快):`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### 说明
 

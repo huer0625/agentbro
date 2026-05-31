@@ -170,7 +170,8 @@ brew install --cask agentbro
 
 ### 下载发行版
 
-也可以从 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) 下载最新 DMG。
+- 🇨🇳 国内直链（推荐，速度快）：[下载最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
+- 🌍 海外 / 全部版本：[GitHub Releases](https://github.com/shirenchuang/agentbro/releases)
 
 ## 本地开发
 
@@ -245,6 +246,7 @@ PR 请提到 `dev` 分支，提交前跑一遍 `pnpm lint && pnpm test:run && pn
 发布说明和签名要求见 [`docs/release.md`](docs/release.md)。
 
 - 官网：[www.agentbro.net](https://www.agentbro.net)
+- 国内直链：`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 - GitHub Releases：`https://github.com/shirenchuang/agentbro/releases`
 
 ## 开源协议
