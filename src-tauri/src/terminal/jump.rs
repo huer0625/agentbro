@@ -29,6 +29,10 @@ pub struct JumpContext {
     pub kitty_window_id: Option<String>,
     /// WEZTERM_PANE env var
     pub wezterm_pane: Option<String>,
+    /// Wave Terminal block routing metadata for native RPC focus.
+    pub waveterm_block_id: Option<String>,
+    pub waveterm_tab_id: Option<String>,
+    pub waveterm_jwt: Option<String>,
     /// Zellij pane/session identifiers
     pub zellij_pane_id: Option<String>,
     pub zellij_session_name: Option<String>,
@@ -210,6 +214,15 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
             ctx.wezterm_pane.as_deref(),
             ctx.tty_path.as_deref(),
             ctx.cwd.as_deref(),
+        );
+    }
+
+    // ── Wave: focus the owning block through Wave's native RPC ───────────────
+    if lower.contains("wave") {
+        return jump_wave(
+            ctx.waveterm_block_id.as_deref(),
+            ctx.waveterm_tab_id.as_deref(),
+            ctx.waveterm_jwt.as_deref(),
         );
     }
 
@@ -767,6 +780,26 @@ fn jump_wezterm(pane_id: Option<&str>, tty: Option<&str>, cwd: Option<&str>) -> 
     }
 
     JumpResult::Success
+}
+
+// ─── Wave ───────────────────────────────────────────────────────────────────
+
+fn jump_wave(block_id: Option<&str>, tab_id: Option<&str>, jwt: Option<&str>) -> JumpResult {
+    let _ = activate_app("Wave").or_else(|_| activate_bundle("dev.commandline.waveterm"));
+
+    let Some(block_id) = block_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(tab_id) = tab_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(jwt) = jwt.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    match crate::terminal::wave::focus_block(block_id, tab_id, jwt) {
+        Ok(()) => JumpResult::Success,
+        Err(err) => JumpResult::Failed(err),
+    }
 }
 
 // ─── Zellij ──────────────────────────────────────────────────────────────────

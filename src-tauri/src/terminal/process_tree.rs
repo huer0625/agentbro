@@ -22,6 +22,9 @@ pub struct TerminalEnv {
     pub kitty_window_id: Option<String>,
     pub cf_bundle_identifier: Option<String>,
     pub wezterm_pane: Option<String>,
+    pub waveterm_block_id: Option<String>,
+    pub waveterm_tab_id: Option<String>,
+    pub waveterm_jwt: Option<String>,
     pub zellij_pane_id: Option<String>,
     pub zellij_session_name: Option<String>,
     pub cmux_surface_id: Option<String>,
@@ -37,6 +40,9 @@ pub enum TerminalType {
     Ghostty,
     TerminalApp,
     WezTerm,
+    Wave {
+        block_id: Option<String>,
+    },
     Zellij {
         pane_id: Option<String>,
         session_name: Option<String>,
@@ -63,6 +69,7 @@ impl TerminalType {
             TerminalType::Ghostty => "Ghostty",
             TerminalType::TerminalApp => "Terminal",
             TerminalType::WezTerm => "WezTerm",
+            TerminalType::Wave { .. } => "Wave",
             TerminalType::Zellij { .. } => "Zellij",
             TerminalType::Cmux { .. } => "cmux",
             TerminalType::Kaku => "Kaku",
@@ -177,6 +184,11 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
         if lower.contains("wezterm") {
             return TerminalType::WezTerm;
         }
+        if lower.contains("waveterm") || lower.contains("commandline.wave") {
+            return TerminalType::Wave {
+                block_id: env.waveterm_block_id,
+            };
+        }
         if lower.contains("kitty") {
             return TerminalType::Kitty {
                 window_id: env.kitty_window_id,
@@ -200,6 +212,11 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
         }
         if lower.contains("wezterm") {
             return TerminalType::WezTerm;
+        }
+        if lower.contains("wave") {
+            return TerminalType::Wave {
+                block_id: env.waveterm_block_id,
+            };
         }
         if lower.contains("kitty") {
             return TerminalType::Kitty {
@@ -239,6 +256,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
         }
         if lower.contains("wezterm") {
             return TerminalType::WezTerm;
+        }
+        if lower.contains("wave") {
+            return TerminalType::Wave { block_id: None };
         }
         if lower == "kaku" {
             return TerminalType::Kaku;
@@ -381,6 +401,21 @@ fn merge_terminal_env(text: &str, env: &mut TerminalEnv) {
         if env.wezterm_pane.is_none() {
             if let Some(v) = line.strip_prefix("WEZTERM_PANE=") {
                 env.wezterm_pane = Some(v.to_string());
+            }
+        }
+        if env.waveterm_block_id.is_none() {
+            if let Some(v) = line.strip_prefix("WAVETERM_BLOCKID=") {
+                env.waveterm_block_id = Some(v.to_string());
+            }
+        }
+        if env.waveterm_tab_id.is_none() {
+            if let Some(v) = line.strip_prefix("WAVETERM_TABID=") {
+                env.waveterm_tab_id = Some(v.to_string());
+            }
+        }
+        if env.waveterm_jwt.is_none() {
+            if let Some(v) = line.strip_prefix("WAVETERM_JWT=") {
+                env.waveterm_jwt = Some(v.to_string());
             }
         }
         if env.zellij_pane_id.is_none() {

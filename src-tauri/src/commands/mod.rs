@@ -3981,6 +3981,9 @@ pub async fn jump_to_terminal(
         iterm_session_id: terminal_env.iterm_session_id,
         kitty_window_id: terminal_env.kitty_window_id,
         wezterm_pane: session.wezterm_pane.clone().or(terminal_env.wezterm_pane),
+        waveterm_block_id: terminal_env.waveterm_block_id,
+        waveterm_tab_id: terminal_env.waveterm_tab_id,
+        waveterm_jwt: terminal_env.waveterm_jwt,
         zellij_pane_id: session
             .zellij_pane_id
             .clone()
