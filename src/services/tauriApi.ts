@@ -631,7 +631,7 @@ export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
 export interface HookDoctorCheck {
   id: string
   label: string
-  status: 'ok' | 'warn' | 'error'
+  status: 'ok' | 'warn' | 'error' | 'info'
   detail: string
 }
 
