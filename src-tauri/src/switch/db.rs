@@ -34,7 +34,7 @@ impl SwitchDatabase {
             conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         }
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-        schema::init_tables(&conn)?;
+        schema::init_tables(conn)?;
         Ok(())
     }
 

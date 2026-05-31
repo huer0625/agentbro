@@ -307,6 +307,13 @@ async fn install_agent_hook(
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     ensure_installable(adapter.as_ref())?;
     adapter.install_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_enabled(adapter.name()) {
+        log::warn!(
+            "Failed to persist enabled-agent intent for {}: {}",
+            adapter.name(),
+            e
+        );
+    }
     let config = state.config_store.get();
     state
         .telemetry
@@ -436,6 +443,13 @@ async fn uninstall_agent_hook(
         .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.remove_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_disabled(adapter.name()) {
+        log::warn!(
+            "Failed to clear enabled-agent intent for {}: {}",
+            adapter.name(),
+            e
+        );
+    }
     let config = state.config_store.get();
     state
         .telemetry
@@ -482,7 +496,15 @@ async fn configure_agent_hook_events(
         .ok_or_else(|| format!("Unknown hook profile: {}", adapter.name()))?;
     agents::profiles::save_event_selection(&profile, &enabled_events).map_err(|e| e.to_string())?;
     ensure_installable(adapter.as_ref())?;
-    adapter.install_hooks().map_err(|e| e.to_string())
+    adapter.install_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_enabled(adapter.name()) {
+        log::warn!(
+            "Failed to persist enabled-agent intent for {}: {}",
+            adapter.name(),
+            e
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -683,6 +705,13 @@ async fn uninstall_all_hooks(
         if let Err(e) = result {
             errors.push(format!("{}: {}", adapter.display_name(), e));
         } else {
+            if let Err(e) = state.config_store.mark_agent_disabled(adapter.name()) {
+                log::warn!(
+                    "Failed to clear enabled-agent intent for {}: {}",
+                    adapter.name(),
+                    e
+                );
+            }
             let config = state.config_store.get();
             state
                 .telemetry
@@ -3476,6 +3505,7 @@ fn build_pet_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, Stri
         .map_err(|e| format!("pet window: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn position_pet_window(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
@@ -3826,6 +3856,7 @@ fn monitor_for_pet_origin(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn monitor_for_pet_origin_with_anchor(
     app: &tauri::AppHandle,
     window_width: f64,
@@ -3867,6 +3898,7 @@ fn clamp_pet_window_origin(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn clamp_pet_window_origin_with_anchor(
     monitor: &tauri::Monitor,
     window_width: f64,
@@ -4636,8 +4668,18 @@ pub fn run() {
 
             // Auto-install Claude hooks on startup; other tools are controlled
             // explicitly from the Integration tab.
+            //
+            // Beyond Claude Code, we also re-assert hooks for any agent the user
+            // previously enabled (persisted intent in `enabled_agents`). This is
+            // the startup safety net for the case where an external tool — e.g.
+            // cc-switch swapping providers — overwrote the agent's settings file
+            // while AgentBro was not running and wiped our hooks. The live
+            // recovery watcher handles the same case while running.
+            let enabled_intent = config_store.get().enabled_agents;
             for adapter in adapters.iter() {
-                if adapter.name() != "claude-code" {
+                let name = adapter.name();
+                let is_claude = name == "claude-code";
+                if !is_claude && !enabled_intent.iter().any(|a| a == name) {
                     continue;
                 }
                 if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
@@ -4656,6 +4698,12 @@ pub fn run() {
                     );
                 } else {
                     log::info!("Hooks installed for {}", adapter.display_name());
+                    // Migrate existing Claude Code users: record the intent so the
+                    // recovery watcher will self-heal a wiped hook without a manual
+                    // reinstall. No-op once already recorded.
+                    if let Err(e) = config_store.mark_agent_enabled(name) {
+                        log::warn!("Failed to persist enabled-agent intent for {}: {}", name, e);
+                    }
                 }
             }
 
@@ -4676,7 +4724,11 @@ pub fn run() {
             });
 
             // Start hook auto-recovery watcher
-            hooks::recovery::start_hook_recovery(adapters.clone(), app.handle().clone());
+            hooks::recovery::start_hook_recovery(
+                adapters.clone(),
+                app.handle().clone(),
+                config_store.clone(),
+            );
 
             // Initialize sound engine and share with HookServer
             let sound_engine: Option<Arc<SoundEngine>> = SoundEngine::new().map(Arc::new);

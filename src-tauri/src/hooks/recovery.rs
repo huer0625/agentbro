@@ -8,11 +8,25 @@ use tokio::sync::Mutex;
 
 use crate::agents::profiles::{self, InstallationKind};
 use crate::agents::AgentAdapter;
+use crate::config::ConfigStore;
 
 const MAX_RESTORES_PER_MINUTE: u32 = 3;
 const SELF_WRITE_SUPPRESSION_WINDOW: Duration = Duration::from_secs(6);
 
-fn adapter_needs_restore(adapter: &dyn AgentAdapter) -> bool {
+/// Decide whether an adapter's hooks should be re-installed in response to a
+/// settings-file change.
+///
+/// Two cases trigger a restore:
+/// 1. `NeedsReinstall` — our hook is present but stale (e.g. an outdated bridge
+///    path or socket endpoint).
+/// 2. `NotInstalled` *and* the user previously enabled this agent (persisted in
+///    `enabled_agents`). This covers an external tool — notably cc-switch
+///    swapping providers — overwriting the settings file with a snapshot that
+///    contains no AgentBro hook at all. Without the persisted intent we cannot
+///    tell a user-requested removal apart from an external wipe, so we only
+///    self-heal agents the user explicitly opted into. The CLI-availability
+///    check happens later (we skip restores for tools that aren't installed).
+fn adapter_needs_restore(adapter: &dyn AgentAdapter, enabled_agents: &[String]) -> bool {
     let Some(profile) = crate::agents::profiles::profile_for_agent(adapter.name()) else {
         return adapter.hook_config_paths().iter().any(|p| {
             std::fs::read_to_string(p)
@@ -24,11 +38,14 @@ fn adapter_needs_restore(adapter: &dyn AgentAdapter) -> bool {
         });
     };
 
+    let is_enabled = enabled_agents.iter().any(|a| a == adapter.name());
+
     adapter.hook_config_paths().iter().any(|p| {
-        matches!(
-            crate::agents::profiles::install_health(&profile, p),
-            crate::agents::profiles::HookInstallHealth::NeedsReinstall
-        )
+        match crate::agents::profiles::install_health(&profile, p) {
+            crate::agents::profiles::HookInstallHealth::NeedsReinstall => true,
+            crate::agents::profiles::HookInstallHealth::NotInstalled => is_enabled,
+            _ => false,
+        }
     })
 }
 
@@ -139,6 +156,7 @@ impl Default for HookRecovery {
 pub fn start_hook_recovery(
     adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
     app_handle: tauri::AppHandle,
+    config_store: ConfigStore,
 ) {
     // Collect all settings paths from all adapters. Prefer watching the file
     // itself: watching the config root directory for AntCC/CodeFuse opens a
@@ -235,9 +253,13 @@ pub fn start_hook_recovery(
                 // Check which existing AgentBro hooks need a managed refresh.
                 // Missing configs are normal for tools the user has not installed;
                 // auto-recovery should not turn those into repeated bulk installs.
+                // The persisted `enabled_agents` intent lets us also restore a
+                // hook that was wiped entirely (e.g. by cc-switch) for an agent
+                // the user explicitly opted into.
+                let enabled_agents = config_store.get().enabled_agents;
                 let adapters_to_restore: Vec<Arc<dyn AgentAdapter>> = adapters_inner
                     .iter()
-                    .filter(|adapter| adapter_needs_restore(adapter.as_ref()))
+                    .filter(|adapter| adapter_needs_restore(adapter.as_ref(), &enabled_agents))
                     .cloned()
                     .collect();
 
@@ -321,6 +343,85 @@ mod tests {
         assert!(!event_touches_watched_path(
             &[PathBuf::from("/tmp/example-other/plugin")],
             &watched
+        ));
+    }
+
+    /// Minimal adapter whose `claude-code` profile resolves through the real
+    /// `profiles` registry but whose settings file we control on disk.
+    struct StubAdapter {
+        path: PathBuf,
+    }
+
+    impl AgentAdapter for StubAdapter {
+        fn name(&self) -> &str {
+            "claude-code"
+        }
+        fn display_name(&self) -> &str {
+            "Claude Code"
+        }
+        fn icon(&self) -> &str {
+            ""
+        }
+        fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
+            Ok(())
+        }
+        fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
+            Ok(())
+        }
+        fn status(&self) -> crate::agents::AdapterStatus {
+            crate::agents::AdapterStatus::Available
+        }
+        fn parse_event(
+            &self,
+            _raw: &serde_json::Value,
+        ) -> Result<crate::agents::AgentEvent, Box<dyn std::error::Error>> {
+            Err("not used in test".into())
+        }
+        fn hook_config_paths(&self) -> Vec<PathBuf> {
+            vec![self.path.clone()]
+        }
+    }
+
+    fn unique_temp_path(tag: &str) -> PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("agentbro-recovery-test-{tag}-{pid}-{nanos}.json"))
+    }
+
+    // A settings file with no AgentBro hook at all simulates a cc-switch wipe:
+    // it must only trigger a restore when the agent is in the enabled intent.
+    #[test]
+    fn wiped_hook_restores_only_when_agent_is_enabled() {
+        let path = unique_temp_path("wiped");
+        std::fs::write(&path, r#"{"hooks":{}}"#).expect("write settings");
+        let adapter = StubAdapter { path: path.clone() };
+
+        assert!(
+            !adapter_needs_restore(&adapter, &[]),
+            "wiped hook with empty intent must NOT auto-restore"
+        );
+        assert!(
+            adapter_needs_restore(&adapter, &["claude-code".to_string()]),
+            "wiped hook for an enabled agent MUST restore"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // A missing settings file is `NotInstalled` too; same intent gate applies.
+    #[test]
+    fn missing_settings_restores_only_when_agent_is_enabled() {
+        let path = unique_temp_path("missing");
+        let _ = std::fs::remove_file(&path);
+        let adapter = StubAdapter { path };
+
+        assert!(!adapter_needs_restore(&adapter, &[]));
+        assert!(adapter_needs_restore(
+            &adapter,
+            &["claude-code".to_string()]
         ));
     }
 }

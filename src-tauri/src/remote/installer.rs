@@ -1635,13 +1635,12 @@ fn build_probe_checks(
     values: &BTreeMap<String, String>,
     installed_agents: &[String],
 ) -> Vec<RemoteProbeCheck> {
-    let mut checks = Vec::new();
-    checks.push(RemoteProbeCheck {
+    let mut checks = vec![RemoteProbeCheck {
         id: "ssh".to_string(),
         label: "SSH".to_string(),
         status: "ok".to_string(),
         detail: "Connected".to_string(),
-    });
+    }];
     checks.push(required_value_check(values, "os", "Operating system"));
     checks.push(required_value_check(values, "arch", "Architecture"));
     checks.push(required_value_check(values, "home", "Home directory"));
@@ -1723,14 +1722,7 @@ fn build_probe_checks(
     checks.push(RemoteProbeCheck {
         id: "remote_agent".to_string(),
         label: "Remote agent".to_string(),
-        status: if agent_ready {
-            "ok"
-        } else if agent_script == "missing" {
-            "warn"
-        } else {
-            "warn"
-        }
-        .to_string(),
+        status: if agent_ready { "ok" } else { "warn" }.to_string(),
         detail: if agent_ready {
             "Attach daemon is running".to_string()
         } else {

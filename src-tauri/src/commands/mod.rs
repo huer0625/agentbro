@@ -88,6 +88,12 @@ fn global_codex_app_server_bridge() -> Option<Arc<CodexAppServerBridge>> {
     CODEX_APP_SERVER_BRIDGE_HANDLE.get().cloned()
 }
 
+impl Default for CodexAppServerBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodexAppServerBridge {
     pub fn new() -> Self {
         Self {
@@ -1489,12 +1495,11 @@ fn upsert_codex_app_server_pending_permission(
     store.update_session(thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some("Codex App".to_string());
-        session.project = session
-            .project
-            .trim()
-            .is_empty()
-            .then(|| "Codex".to_string())
-            .unwrap_or_else(|| session.project.clone());
+        session.project = if session.project.trim().is_empty() {
+            "Codex".to_string()
+        } else {
+            session.project.clone()
+        };
         session.cwd = cwd.to_string();
         session.terminal = "Codex".to_string();
         session.term_bundle_id = Some("com.openai.codex".to_string());
@@ -1881,9 +1886,9 @@ fn codex_phase_from_status(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            if flags.iter().any(|flag| *flag == "waitingOnApproval") {
+            if flags.contains(&"waitingOnApproval") {
                 SessionPhase::WaitingApproval
-            } else if flags.iter().any(|flag| *flag == "waitingOnUserInput") {
+            } else if flags.contains(&"waitingOnUserInput") {
                 SessionPhase::WaitingInput
             } else {
                 SessionPhase::Processing
@@ -4704,6 +4709,13 @@ pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<
         ));
     }
     adapter.install_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_enabled(&agent) {
+        log::warn!(
+            "Failed to persist enabled-agent intent for {}: {}",
+            agent,
+            e
+        );
+    }
     let config = state.config_store.get();
     state.telemetry.record_hook_install(&config, &agent).await;
     Ok(())
@@ -4718,6 +4730,9 @@ pub async fn remove_hooks(state: State<'_, AppState>, agent: String) -> Result<(
         .find(|a| a.name() == agent)
         .ok_or_else(|| format!("Unknown agent: {}", agent))?;
     adapter.remove_hooks().map_err(|e| e.to_string())?;
+    if let Err(e) = state.config_store.mark_agent_disabled(&agent) {
+        log::warn!("Failed to clear enabled-agent intent for {}: {}", agent, e);
+    }
     let config = state.config_store.get();
     state.telemetry.record_hook_uninstall(&config, &agent).await;
     Ok(())
