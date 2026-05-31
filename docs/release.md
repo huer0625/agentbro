@@ -105,6 +105,16 @@ brew tap-new shirenchuang/tap
 gh repo create shirenchuang/homebrew-tap --public --source "$(brew --repository shirenchuang/tap)" --push
 ```
 
+The tap repository must have an initial commit (a `main` branch) before the first release runs. The `update-homebrew` job clones the tap and runs a bare `git push`, which fails against a completely empty repository (no default branch). If the repo is empty, seed it once:
+
+```bash
+gh api --method PUT /repos/shirenchuang/homebrew-tap/contents/README.md \
+  -f message="chore: initialize tap" \
+  -f content="$(printf '# homebrew-tap\n' | base64)"
+```
+
+Symptom of a missing seed or missing token: the `update-homebrew` job finishes in ~3s and logs `HOMEBREW_TAP_TOKEN is not set; skipping` (token missing) or fails at the push step (empty repo). The DMG release still ships in both cases, so the failure is silent until someone tries `brew install --cask agentbro`. After fixing, re-run just that job with `gh run rerun <run-id> --job <job-id>` to publish the cask without cutting a new release.
+
 ## Website Download
 
 Use `https://www.agentbro.net` as the public homepage and download entry.
