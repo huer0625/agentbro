@@ -1295,6 +1295,12 @@ fn json_event_has_current_profile_command(
 }
 
 fn collect_json_agentbro_commands(value: &Value, commands: &mut Vec<String>) {
+    if let Some(entries) = value.as_array() {
+        for entry in entries {
+            collect_json_agentbro_commands(entry, commands);
+        }
+        return;
+    }
     if let Some(command) = value.get("command").and_then(Value::as_str) {
         if is_agentbro_command(command) {
             commands.push(command.to_string());
@@ -2805,6 +2811,31 @@ name = "also keep"
         assert!(!commands
             .iter()
             .any(|command| command.contains("agentbro-bridge")));
+    }
+
+    #[test]
+    fn collect_commands_handles_top_level_event_array() {
+        // Regression: json_event_has_current_profile_command passes the event's
+        // array (hooks["SessionStart"]) straight in. collect must recurse into a
+        // top-level array, not just objects, or every per-event check sees zero
+        // commands and the profile is wrongly reported as needing reinstall.
+        let entries = serde_json::json!([
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source claude-code"
+                    }
+                ]
+            }
+        ]);
+
+        let mut commands = Vec::new();
+        collect_json_agentbro_commands(&entries, &mut commands);
+
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].contains("agentbro-bridge"));
     }
 
     #[test]
