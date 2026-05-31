@@ -22,7 +22,7 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release puts 
 - Recommended download: `AgentBro_latest_universal.dmg`
 - Versioned archive: `AgentBro_{{VERSION}}_universal.dmg`
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
-- 🇨🇳 Mainland China mirror (faster): `https://agenbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
+- 🇨🇳 Mainland China mirror (faster): `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### Notes
 
@@ -51,7 +51,7 @@ AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次�
 - 推荐下载:`AgentBro_latest_universal.dmg`
 - 版本归档:`AgentBro_{{VERSION}}_universal.dmg`
 - 自动更新文件:`AgentBro.app.tar.gz` 与 `latest.json`
-- 🇨🇳 国内直链(速度更快):`https://agenbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
+- 🇨🇳 国内直链(速度更快):`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### 说明
 

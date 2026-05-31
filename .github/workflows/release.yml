@@ -17,7 +17,7 @@ jobs:
     env:
       HAS_APPLE_SECRETS: ${{ secrets.APPLE_ID != '' && '1' || '0' }}
       HAS_OSS_SECRETS: ${{ secrets.OSS_ACCESS_KEY_ID != '' && secrets.OSS_ACCESS_KEY_SECRET != '' && '1' || '0' }}
-      OSS_BUCKET: agenbro
+      OSS_BUCKET: agentbro
       OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
 
     steps:
@@ -199,7 +199,7 @@ jobs:
     env:
       HAS_HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && '1' || '0' }}
       HAS_OSS_SECRETS: ${{ secrets.OSS_ACCESS_KEY_ID != '' && secrets.OSS_ACCESS_KEY_SECRET != '' && '1' || '0' }}
-      OSS_BUCKET: agenbro
+      OSS_BUCKET: agentbro
       OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
 
     steps:

@@ -121,7 +121,7 @@ Symptom of a missing seed or missing token: the `update-homebrew` job finishes i
 GitHub Releases are slow/unreliable from mainland China, so stable releases are mirrored to an Aliyun OSS bucket served over its default domain (no ICP filing needed, no custom domain, no CDN). Object layout under the bucket:
 
 ```
-agenbro/                                               # OSS bucket "agenbro", region oss-cn-hangzhou
+agentbro/                                               # OSS bucket "agentbro", region oss-cn-hangzhou
   latest.json                                          # overwritten; archive URLs point at OSS
   AgentBro.app.tar.gz                                  # overwritten; updater archive
   AgentBro.app.tar.gz.sig                              # overwritten; archive signature
@@ -136,7 +136,7 @@ How it works:
 - `src-tauri/tauri.conf.json` lists two updater endpoints, OSS first then GitHub, so China hits OSS and falls back to GitHub.
 - The Homebrew cask `url` points at the OSS versioned path when OSS secrets are present, otherwise at GitHub.
 
-Required GitHub secrets: `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`. Bucket/region are non-secret and set as job env in `release.yml` (`OSS_BUCKET=agenbro`, `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com`). The bucket is dedicated to AgentBro, so artifacts live at the bucket root (no extra prefix).
+Required GitHub secrets: `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`. Bucket/region are non-secret and set as job env in `release.yml` (`OSS_BUCKET=agentbro`, `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com`). The bucket is dedicated to AgentBro, so artifacts live at the bucket root (no extra prefix).
 
 Create a RAM sub-account with least privilege — a custom policy allowing only object writes to this bucket:
 
@@ -147,7 +147,7 @@ Create a RAM sub-account with least privilege — a custom policy allowing only 
     {
       "Effect": "Allow",
       "Action": ["oss:PutObject"],
-      "Resource": ["acs:oss:*:*:agenbro/*"]
+      "Resource": ["acs:oss:*:*:agentbro/*"]
     }
   ]
 }
@@ -156,8 +156,8 @@ Create a RAM sub-account with least privilege — a custom policy allowing only 
 The bucket must be publicly readable. Before the first stable release with OSS enabled, confirm both secrets are set; otherwise the mirror is skipped and the cask falls back to GitHub (a `release:check` warning flags this). After fixing, re-run the `build-universal` job to publish the mirror without cutting a new release, then verify:
 
 ```bash
-curl -I https://agenbro.oss-cn-hangzhou.aliyuncs.com/latest.json
-curl -I https://agenbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg
+curl -I https://agentbro.oss-cn-hangzhou.aliyuncs.com/latest.json
+curl -I https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg
 ```
 
 ## Website Download

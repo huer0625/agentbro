@@ -49,7 +49,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://agenbro.oss-cn-hangzhou.aliyuncs.com/latest.json",
+        "https://agentbro.oss-cn-hangzhou.aliyuncs.com/latest.json",
         "https://github.com/shirenchuang/agentbro/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2QjhGMjZCNDJFNzZGMQpSV1R4ZGk2MEpvOXJDUWVCSkhuMXZGV0VNNzlmL1dSa1JyUHlhZzF1djVFdzFPY0JLb21xVTlPTAo="
