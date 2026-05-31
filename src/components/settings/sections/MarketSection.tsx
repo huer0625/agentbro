@@ -212,13 +212,15 @@ export function MarketSection() {
       })
     }
     const sorted = [...list]
-    if (sortMode === 'popular') {
-      sorted.sort((a, b) => b.downloadCount - a.downloadCount)
-    } else {
-      sorted.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
-    }
+    sorted.sort((a, b) => {
+      const aInstalled = isMarketPetInstalled(a.slug, registryIds)
+      const bInstalled = isMarketPetInstalled(b.slug, registryIds)
+      if (aInstalled !== bInstalled) return aInstalled ? -1 : 1
+      if (sortMode === 'popular') return b.downloadCount - a.downloadCount
+      return (b.updatedAt || '').localeCompare(a.updatedAt || '')
+    })
     return sorted
-  }, [manifest, query, sortMode])
+  }, [manifest, query, registryIds, sortMode])
 
   const activeJob = activeJobId ? jobs[activeJobId] : null
   const nodeMissing = abpetsStatus !== null && !abpetsStatus.nodeAvailable
