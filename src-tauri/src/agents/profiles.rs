@@ -2557,7 +2557,7 @@ const detectedTTY = detectTTY();
 const sessions = new Map();
 const messageRoles = new Map();
 function getSession(sessionID) {{
-  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined, parentID: undefined }});
+  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined, parentID: undefined, _started: false }});
   return sessions.get(sessionID);
 }}
 
@@ -2586,14 +2586,15 @@ function mapEvent(event) {{
   }}
   if (type === "session.updated" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
-    const isNew = !sessions.has(rawSessionID);
     const session = getSession(rawSessionID);
+    const isNew = !session._started;
     const cwd = stableString(properties.info.directory) ?? session.cwd;
     if (cwd) session.cwd = cwd;
     const title = stableString(properties.info.title);
     if (title && !title.startsWith("New session")) session.pendingTitle = title;
     if (properties.info.time?.archived && !session.parentID) return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd", cwd }});
     if (isNew) {{
+      session._started = true;
       const parentID = stableString(properties.info.parentID);
       session.parentID = parentID;
       if (parentID) {{
