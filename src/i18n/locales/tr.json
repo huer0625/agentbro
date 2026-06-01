@@ -45,6 +45,7 @@
     "compactingShort": "Sıkıştırılıyor...",
     "waitingForInput": "Girdi bekleniyor",
     "settings": "Ayarlar",
+    "quit": "AgentBro'dan Çık",
     "updateAvailable": "Yeni sürüm v{{version}} mevcut — güncellemek için tıklayın",
     "updateBadgeLabel": "Güncelleme var",
     "updateBannerTitle": "Yeni sürüm v{{version}} mevcut",

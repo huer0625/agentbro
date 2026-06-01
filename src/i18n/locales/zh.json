@@ -47,6 +47,7 @@
     "compactingShort": "压缩中...",
     "waitingForInput": "等待输入",
     "settings": "设置",
+    "quit": "退出 AgentBro",
     "updateAvailable": "发现新版 v{{version}}，点击更新",
     "updateBadgeLabel": "有更新",
     "updateBannerTitle": "发现新版 v{{version}}",

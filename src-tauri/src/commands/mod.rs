@@ -5303,6 +5303,18 @@ fn redact_remote_urls(text: &str) -> String {
 
 fn redact_sensitive_hook_config(text: &str) -> String {
     let text = redact_remote_urls(&redact_paths(text));
+    // The privacy notice promises env var *values* are never included. A
+    // line-by-line keyword blocklist can't guarantee that (a custom secret in
+    // an env var with an innocuous name would slip through), so when the file
+    // parses as JSON we structurally strip every value under an `env` object,
+    // keeping the key names for diagnostic value.
+    let text = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(mut value) => {
+            redact_env_values(&mut value);
+            serde_json::to_string_pretty(&value).unwrap_or(text)
+        }
+        Err(_) => text,
+    };
     text.lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
@@ -5330,6 +5342,35 @@ fn redact_sensitive_hook_config(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Recursively replace every string value inside any `env` object with
+/// `[REDACTED]`, leaving the variable names intact. Numeric/bool env values are
+/// also redacted since the notice promises no env *values* are included.
+fn redact_env_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key.eq_ignore_ascii_case("env") {
+                    if let serde_json::Value::Object(env_map) = child {
+                        for env_val in env_map.values_mut() {
+                            if !env_val.is_null() {
+                                *env_val = serde_json::Value::String("[REDACTED]".to_string());
+                            }
+                        }
+                        continue;
+                    }
+                }
+                redact_env_values(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_env_values(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Generate or retrieve an anonymous install ID stored in the config directory.
@@ -6247,6 +6288,28 @@ mod tests {
         assert!(!redacted.contains("example.com"));
         assert!(redacted.contains("[REDACTED_URL]"));
         assert!(redacted.contains("http://localhost:17894"));
+    }
+
+    #[test]
+    fn diagnostics_hook_config_redacts_all_env_values() {
+        let redacted = redact_sensitive_hook_config(
+            r#"{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:20128/v1",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "h-combo",
+    "CUSTOM_CREDENTIAL": "super-sensitive-value"
+  }
+}"#,
+        );
+
+        // Key names stay (useful for diagnostics), every value is gone — even
+        // ones with innocuous names that the keyword blocklist would miss.
+        assert!(redacted.contains("ANTHROPIC_BASE_URL"));
+        assert!(redacted.contains("CUSTOM_CREDENTIAL"));
+        assert!(!redacted.contains("super-sensitive-value"));
+        assert!(!redacted.contains("h-combo"));
+        assert!(!redacted.contains("20128"));
+        assert!(redacted.contains("[REDACTED]"));
     }
 
     #[test]

@@ -48,6 +48,7 @@
     "compactingShort": "圧縮中...",
     "waitingForInput": "入力待ち",
     "settings": "設定",
+    "quit": "AgentBroを終了",
     "updateAvailable": "新バージョン v{{version}} があります — クリックして更新",
     "updateBadgeLabel": "更新あり",
     "updateBannerTitle": "新バージョン v{{version}} があります",

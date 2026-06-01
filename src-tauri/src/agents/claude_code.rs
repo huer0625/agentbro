@@ -6,17 +6,76 @@ use super::{
 };
 use std::path::PathBuf;
 
+/// Resolve Claude Code's config root, honoring the `CLAUDE_CONFIG_DIR` override
+/// that Claude Code itself respects. Falls back to `~/.claude`.
+///
+/// GUI apps don't inherit the user's interactive shell env, so an absolute
+/// `CLAUDE_CONFIG_DIR` set in `.zshrc` is also picked up via the login shell.
+pub fn default_config_root() -> PathBuf {
+    if let Some(dir) = config_dir_from_env(|key| std::env::var(key).ok()) {
+        return dir;
+    }
+    if let Some(dir) = config_dir_from_login_shell() {
+        return dir;
+    }
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    home.join(".claude")
+}
+
+/// Extract a usable config root from a `CLAUDE_CONFIG_DIR` value, if any.
+/// Only a single absolute path is accepted; Claude Code also allows a
+/// comma-separated list, but a multi-dir setting has no single root we can
+/// install hooks into, so we leave those to the default.
+fn config_dir_from_env(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let raw = get("CLAUDE_CONFIG_DIR")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains(',') {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn config_dir_from_login_shell() -> Option<PathBuf> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    let output = std::process::Command::new(shell)
+        .args(["-lc", "printf '%s' \"${CLAUDE_CONFIG_DIR:-}\""])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    config_dir_from_env(|_| Some(value.clone()))
+}
+
 /// Claude Code adapter implementation
 pub struct ClaudeCodeAdapter {
     config_root: PathBuf,
     label: String,
     status: AdapterStatus,
+    /// True for the default `~/.claude` instance. The primary instance omits the
+    /// `AGENTBRO_ENGINE_LABEL` / `AGENTBRO_CONFIG_ROOT` env assignments from its
+    /// hook command so the command contains no whitespace — some Claude Code
+    /// builds tokenize the hook command by naive whitespace split rather than
+    /// full shell parsing, which breaks `LABEL='Claude Code'` and silently
+    /// prevents the hook from running. The server derives the "Claude Code"
+    /// display name from `--source claude-code` anyway.
+    primary: bool,
 }
 
 impl ClaudeCodeAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let config_root = home.join(".claude");
+        let config_root = default_config_root();
         let status = if Self::is_claude_code_installed() {
             AdapterStatus::Available
         } else {
@@ -27,6 +86,7 @@ impl ClaudeCodeAdapter {
             config_root,
             label: "Claude Code".into(),
             status,
+            primary: true,
         }
     }
 
@@ -42,6 +102,7 @@ impl ClaudeCodeAdapter {
             config_root,
             label,
             status,
+            primary: false,
         }
     }
 
@@ -78,11 +139,18 @@ impl ClaudeCodeAdapter {
 
     /// Build the hook command string and stamp instance metadata into the bridge env.
     fn hook_command(&self) -> Result<String, Box<dyn std::error::Error>> {
-        profiles::managed_bridge_command_labeled(
-            &profiles::claude_code_profile(),
-            Some(&self.label),
-            Some(&self.config_root.display().to_string()),
-        )
+        // The primary instance omits label/config_root to keep the command
+        // whitespace-free (see `primary` field docs). Custom engine instances
+        // need them to distinguish themselves and locate their config root.
+        if self.primary {
+            profiles::managed_bridge_command_labeled(&profiles::claude_code_profile(), None, None)
+        } else {
+            profiles::managed_bridge_command_labeled(
+                &profiles::claude_code_profile(),
+                Some(&self.label),
+                Some(&self.config_root.display().to_string()),
+            )
+        }
     }
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)
@@ -1184,6 +1252,61 @@ fn apple_script_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_dir_env_accepts_absolute_path() {
+        let dir = config_dir_from_env(|key| {
+            if key == "CLAUDE_CONFIG_DIR" {
+                Some("/custom/claude".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(dir, Some(PathBuf::from("/custom/claude")));
+    }
+
+    #[test]
+    fn config_dir_env_rejects_empty_relative_and_multi() {
+        // Unset / empty falls through to the default resolver.
+        assert_eq!(config_dir_from_env(|_| None), None);
+        assert_eq!(config_dir_from_env(|_| Some("  ".to_string())), None);
+        // Relative paths are ambiguous from a GUI cwd — ignore them.
+        assert_eq!(config_dir_from_env(|_| Some(".claude".to_string())), None);
+        // Comma-separated multi-dir has no single root to install into.
+        assert_eq!(
+            config_dir_from_env(|_| Some("/a/.claude,/b/.claude".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn primary_hook_command_has_no_whitespace_tokens() {
+        // The default instance's hook command must not contain a quoted token
+        // with a space (e.g. AGENTBRO_ENGINE_LABEL='Claude Code'). Some Claude
+        // Code builds tokenize the command by naive whitespace split, which
+        // breaks such a token and silently prevents the hook from firing.
+        let adapter = ClaudeCodeAdapter::new();
+        let command = adapter.hook_command().expect("hook command builds");
+        assert!(
+            !command.contains("AGENTBRO_ENGINE_LABEL"),
+            "primary command should omit the engine label: {command}"
+        );
+        assert!(
+            !command.contains('\''),
+            "primary command should contain no quoted (space-bearing) token: {command}"
+        );
+    }
+
+    #[test]
+    fn custom_instance_hook_command_keeps_label() {
+        let adapter = ClaudeCodeAdapter::with_config_root(
+            PathBuf::from("/tmp/custom-claude"),
+            "My Engine".into(),
+        );
+        let command = adapter.hook_command().expect("hook command builds");
+        assert!(command.contains("AGENTBRO_ENGINE_LABEL"));
+        assert!(command.contains("AGENTBRO_CONFIG_ROOT"));
+    }
 
     #[test]
     fn parses_stop_as_assistant_response_complete() {

@@ -47,6 +47,7 @@
     "compactingShort": "Compacting...",
     "waitingForInput": "Waiting for input",
     "settings": "Settings",
+    "quit": "Quit AgentBro",
     "updateAvailable": "Update available v{{version}} — click to update",
     "updateBadgeLabel": "Update",
     "updateBannerTitle": "New version v{{version}} available",

@@ -48,6 +48,7 @@
     "compactingShort": "압축 중...",
     "waitingForInput": "입력 대기",
     "settings": "설정",
+    "quit": "AgentBro 종료",
     "updateAvailable": "새 버전 v{{version}} 사용 가능 — 클릭하여 업데이트",
     "updateBadgeLabel": "업데이트 있음",
     "updateBannerTitle": "새 버전 v{{version}} 사용 가능",
