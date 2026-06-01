@@ -4634,10 +4634,6 @@ pub async fn set_island_surface_options(
     }
     let mut config = state.config_store.get();
     let mode_changed = config.island_surface_mode != island_surface_mode;
-    if mode_changed {
-        config.island_pet_window_origin = None;
-        config.island_pet_window_anchor = None;
-    }
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(10, 120);
     state.config_store.update(config.clone())?;
@@ -4645,17 +4641,9 @@ pub async fn set_island_surface_options(
     if mode_changed {
         let handle = app.clone();
         let saved_origin = config.island_pet_window_origin.clone();
-        let saved_anchor = config.island_pet_window_anchor.clone();
         let is_pet_mode = config.island_surface_mode == "pet";
-        let pet_scale = config.island_pet_scale.clamp(10, 120) as f64;
         app.run_on_main_thread(move || {
-            crate::sync_pet_window_visibility_inner(
-                &handle,
-                is_pet_mode,
-                saved_origin.as_ref(),
-                saved_anchor.as_ref(),
-                pet_scale,
-            );
+            crate::sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
         })
         .map_err(|e| e.to_string())?;
     }

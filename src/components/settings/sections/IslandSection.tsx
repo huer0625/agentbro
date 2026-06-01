@@ -889,8 +889,6 @@ function DisplayTab() {
             value={config.islandSurfaceMode}
             onChange={(mode) => {
               config.updateConfig('islandSurfaceMode', mode)
-              config.updateConfig('islandPetWindowOrigin', null)
-              config.updateConfig('islandPetWindowAnchor', null)
               persistIslandSurfaceOptions({ islandSurfaceMode: mode })
               previewLayout(mode === 'pet' ? 'expanded' : 'compact')
             }}
@@ -1006,27 +1004,29 @@ function DisplayTab() {
         </div>
       </SettingGroup>
 
-      <SettingGroup label={t('settings.island.section.displayPlacement', { defaultValue: '显示器位置' })}>
-        <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
-          <Dropdown value={displayMonitorValue} options={monitorOptions}
-            onChange={(v) => {
-              config.updateConfig('displayMonitor', v)
-              setDisplayId(v)
-                .then(() => repositionNotch(v))
-                .catch((e) => console.error('Failed to set display:', e))
-            }} minWidth={180} />
-        </SettingRow>
-        <SettingRow label={t('settings.allowHorizontalDrag')} description={t('settings.allowHorizontalDragDesc')}>
-          <Toggle checked={config.allowHorizontalDrag} onChange={(v) => config.updateConfig('allowHorizontalDrag', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.resetIslandPosition', { defaultValue: 'Reset Island Position' })} description={islandPositionLabel}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button className="settings-mini-button" type="button" onClick={() => config.updateConfig('panelHorizontalOffset', 0)}>
-              {t('settings.resetCenter', { defaultValue: 'Reset to Center' })}
-            </button>
-          </div>
-        </SettingRow>
-      </SettingGroup>
+      {config.islandSurfaceMode !== 'pet' && (
+        <SettingGroup label={t('settings.island.section.displayPlacement', { defaultValue: '显示器位置' })}>
+          <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
+            <Dropdown value={displayMonitorValue} options={monitorOptions}
+              onChange={(v) => {
+                config.updateConfig('displayMonitor', v)
+                setDisplayId(v)
+                  .then(() => repositionNotch(v))
+                  .catch((e) => console.error('Failed to set display:', e))
+              }} minWidth={180} />
+          </SettingRow>
+          <SettingRow label={t('settings.allowHorizontalDrag')} description={t('settings.allowHorizontalDragDesc')}>
+            <Toggle checked={config.allowHorizontalDrag} onChange={(v) => config.updateConfig('allowHorizontalDrag', v)} />
+          </SettingRow>
+          <SettingRow label={t('settings.resetIslandPosition', { defaultValue: 'Reset Island Position' })} description={islandPositionLabel}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button className="settings-mini-button" type="button" onClick={() => config.updateConfig('panelHorizontalOffset', 0)}>
+                {t('settings.resetCenter', { defaultValue: 'Reset to Center' })}
+              </button>
+            </div>
+          </SettingRow>
+        </SettingGroup>
+      )}
 
       <SettingGroup label={t('settings.panelSize')}>
         <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
