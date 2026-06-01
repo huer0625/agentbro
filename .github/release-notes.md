@@ -8,7 +8,6 @@ This is a hotfix release for macOS install and launch reliability.
 
 - **Fix "damaged app" after update or DMG install** — The release pipeline now notarizes and staples the `AgentBro.app` bundle before creating both the auto-update archive and the DMG. This keeps Gatekeeper validation working even when macOS cannot reach Apple's online notarization service.
 - **Reduce WebKit launch crash risk** — The notch focus handoff now avoids a forceful native order-front path that could trigger a WebKit crash on some macOS versions.
-- **Keep pet mode stable on external displays** — Pet windows re-apply their fullscreen Space layer only on display changes instead of on a timer, avoiding forced fronting while dragging or placing pets on an extended display.
 
 ### Install And Update
 
@@ -36,7 +35,6 @@ This is a hotfix release for macOS install and launch reliability.
 
 - **修复更新后或 DMG 安装后提示应用已损坏** —— 发布流程现在会先对 `AgentBro.app` 本体完成公证并 staple，再生成自动更新包和 DMG。即使 macOS 无法访问 Apple 在线公证服务，Gatekeeper 也能离线验证应用。
 - **降低 WebKit 启动崩溃风险** —— 灵动岛焦点切换不再使用过强的原生置前路径，避免在部分 macOS 版本上触发 WebKit 崩溃。
-- **稳定扩展屏宠物模式** —— 宠物窗口只在显示器变化等离散时机重新应用全屏 Space 层级，不再用定时器反复置前，避免拖拽或放到扩展屏时被强行抢回前台。
 
 ### 安装与更新
 

@@ -3190,7 +3190,6 @@ unsafe extern "C" fn display_reconfig_callback(
             let h = handle.clone();
             let _ = handle.run_on_main_thread(move || {
                 let _ = reposition_notch_to_display(&h, None, None);
-                refresh_pet_window_for_spaces(&h);
             });
         });
     }
@@ -3294,30 +3293,6 @@ fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("notch") {
             apply_notch_window_for_spaces(&window);
-        }
-    });
-}
-
-fn refresh_pet_window_for_spaces(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<AppState>() else {
-        return;
-    };
-    if state.config_store.get().island_surface_mode != "pet" {
-        return;
-    }
-    if pet_drag_state()
-        .lock()
-        .map(|guard| guard.is_some())
-        .unwrap_or(false)
-    {
-        return;
-    }
-
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(window) = handle.get_webview_window("pet") {
-            apply_pet_window_for_spaces(&window);
-            let _ = window.show();
         }
     });
 }
@@ -4719,7 +4694,6 @@ pub fn run() {
             // Centralizing this avoids per-window polling loops.
             platform::monitor_tracker::subscribe(|app, _change| {
                 follow_pet_window_to_cursor_monitor(app);
-                refresh_pet_window_for_spaces(app);
             });
             platform::monitor_tracker::start(app.handle().clone());
 
