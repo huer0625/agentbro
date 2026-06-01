@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
 import { save } from '@tauri-apps/plugin-dialog'
-import { quitApp, exportDiagnostics, getCurrentAppVersion, setAnalyticsEnabled } from '../../../services/tauriApi'
+import { exportDiagnostics, getCurrentAppVersion, setAnalyticsEnabled } from '../../../services/tauriApi'
 import { HOMEBREW_UPDATE_COMMAND } from '../../../hooks/useUpdater'
 import type { UpdateInstallChannel, UpdateStatus } from '../../../hooks/useUpdater'
 import { useConfigStore } from '../../../stores/configStore'
@@ -368,13 +368,6 @@ export function AboutSection({
         </div>
       </SettingGroup>
 
-      <SettingGroup>
-        <div style={{ padding: 'var(--space-sm) 0' }}>
-          <GlassButton variant="danger" onClick={() => quitApp()}>
-            {t('settings.quitApp')}
-          </GlassButton>
-        </div>
-      </SettingGroup>
     </SettingSection>
   )
 }
