@@ -1,8 +1,6 @@
 // Cursor-monitor tracker: a single background poller that watches which
 // monitor the cursor currently lives on, and notifies subscribers only when
-// the answer changes. The notch window listens via the Tauri event bus, and
-// the pet window uses an in-process callback so we don't pay one extra IPC
-// hop per move.
+// the answer changes. The notch window listens via the Tauri event bus.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;

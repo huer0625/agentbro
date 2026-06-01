@@ -47,7 +47,6 @@ import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { usePetSummon } from './usePetSummon'
 import { buildTips, shuffleTips } from './tips'
 import {
-  petStageAnchorFromWindow,
   DEFAULT_PET_STAGE_ANCHOR,
   PET_STAGE_WIDTH,
   PET_STAGE_HEIGHT,
@@ -179,7 +178,6 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const savedStageAnchor = useMemo(() => configAnchorToStage(savedPetWindowAnchor), [savedPetWindowAnchor])
   const [stageAnchor, setStageAnchor] = usePetStageAnchor(
     !hidden,
-    displayScale,
     dragging,
     savedStageAnchor,
   )
@@ -584,10 +582,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     } else {
       updateDragDirection(signedDx, setDragDirection)
     }
-    const dpr = window.devicePixelRatio || 1
     startPetDrag(
-      event.screenX * dpr,
-      event.screenY * dpr,
       stageAnchor.x === 'left',
       stageAnchor.y === 'top',
     )
@@ -1283,63 +1278,25 @@ function sessionIsQuiet(session: SessionState): boolean {
 
 function usePetStageAnchor(
   active: boolean,
-  scale: number,
   frozen: boolean,
   savedAnchor: PetStageAnchor | null,
 ): [PetStageAnchor, (a: PetStageAnchor) => void] {
   const [anchor, setAnchor] = useState<PetStageAnchor>(savedAnchor ?? DEFAULT_PET_STAGE_ANCHOR)
-  const anchorRef = useRef(anchor)
 
   useEffect(() => {
-    anchorRef.current = anchor
-  }, [anchor])
-
-  useEffect(() => {
-    if (!active || frozen || !savedAnchor) return
-    setAnchor((current) => (
-      current.x === savedAnchor.x && current.y === savedAnchor.y ? current : savedAnchor
-    ))
+    if (!active) {
+      const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
+      return () => window.clearTimeout(timer)
+    }
+    if (frozen || !savedAnchor) return
+    const timer = window.setTimeout(() => {
+      setAnchor((current) => {
+        if (current.x === savedAnchor.x && current.y === savedAnchor.y) return current
+        return savedAnchor
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [active, frozen, savedAnchor])
-
-  useEffect(() => {
-    if (!active || !isTauri() || frozen) {
-      if (!active || !isTauri()) {
-        const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
-        return () => window.clearTimeout(timer)
-      }
-      return
-    }
-
-    let cancelled = false
-    let inFlight = false
-    const update = async () => {
-      if (cancelled || inFlight) return
-      inFlight = true
-      try {
-        const { getCurrentWindow, currentMonitor } = await import('@tauri-apps/api/window')
-        const [position, monitor] = await Promise.all([
-          getCurrentWindow().outerPosition(),
-          currentMonitor(),
-        ])
-        if (!monitor || cancelled) return
-        const next = petStageAnchorFromWindow(position.x, position.y, monitor, scale, anchorRef.current)
-        setAnchor((current) => (
-          current.x === next.x && current.y === next.y ? current : next
-        ))
-      } catch {
-        if (!cancelled) setAnchor(DEFAULT_PET_STAGE_ANCHOR)
-      } finally {
-        inFlight = false
-      }
-    }
-
-    void update()
-    const timer = window.setInterval(update, 250)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [active, scale, frozen])
 
   return [anchor, setAnchor]
 }
