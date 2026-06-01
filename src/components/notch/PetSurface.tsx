@@ -164,7 +164,6 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     () => [...sessions].sort((a, b) => computePriority(b) - computePriority(a)),
     [sessions],
   )
-  const visibleSessions = useMemo(() => sortedSessions.slice(0, 4), [sortedSessions])
   const selectedSession = useMemo(
     () => sortedSessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sortedSessions],
@@ -209,17 +208,17 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const sessionPanelPlacement = useMemo(() => getPetPanelPlacement(
     selectedSession
       ? getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor)
-      : visibleSessions.length > 0
+      : sortedSessions.length > 0
         ? getPetSidePanelWidth(displayScale, PET_SESSION_LIST_WIDTH, stageAnchor)
         : PET_EMPTY_PANEL_WIDTH,
     selectedSession
       ? PET_DETAIL_PANEL_HEIGHT
-      : visibleSessions.length > 0
+      : sortedSessions.length > 0
         ? PET_SESSION_LIST_HEIGHT
         : PET_EMPTY_PANEL_HEIGHT,
     displayScale,
     stageAnchor,
-  ), [displayScale, selectedSession, stageAnchor, visibleSessions.length])
+  ), [displayScale, selectedSession, sortedSessions.length, stageAnchor])
   const blockingOverlayPlacement = useMemo(
     () => getPetPanelPlacement(getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor), PET_DETAIL_PANEL_HEIGHT, displayScale, stageAnchor),
     [displayScale, stageAnchor],
@@ -658,7 +657,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       <div className="pet-surface__stage">
         {showHud && (
           <PetSessionPanel
-            sessions={visibleSessions}
+            sessions={sortedSessions}
             selectedSession={selectedSession}
             placement={sessionPanelPlacement}
             onBack={() => {
