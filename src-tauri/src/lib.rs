@@ -3305,6 +3305,13 @@ fn refresh_pet_window_for_spaces(app: &tauri::AppHandle) {
     if state.config_store.get().island_surface_mode != "pet" {
         return;
     }
+    if pet_drag_state()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+    {
+        return;
+    }
 
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -3312,13 +3319,6 @@ fn refresh_pet_window_for_spaces(app: &tauri::AppHandle) {
             apply_pet_window_for_spaces(&window);
             let _ = window.show();
         }
-    });
-}
-
-fn start_pet_window_level_guard(app: tauri::AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        refresh_pet_window_for_spaces(&app);
     });
 }
 
@@ -4719,6 +4719,7 @@ pub fn run() {
             // Centralizing this avoids per-window polling loops.
             platform::monitor_tracker::subscribe(|app, _change| {
                 follow_pet_window_to_cursor_monitor(app);
+                refresh_pet_window_for_spaces(app);
             });
             platform::monitor_tracker::start(app.handle().clone());
 
@@ -5070,7 +5071,6 @@ pub fn run() {
                 app_state.session_store.clone(),
             );
             app.manage(app_state);
-            start_pet_window_level_guard(app.handle().clone());
 
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
                 log::warn!("Failed to register island global shortcuts: {}", err);
