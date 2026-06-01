@@ -61,7 +61,6 @@ function groupMessages(messages: ChatMessage[]): MessageGroup[] {
 
 function remoteDisplayMessages(session: SessionState): ChatMessage[] {
   const messages = [...session.chatHistory]
-  if (!session.remoteHostId && !session.remoteHostName) return messages
 
   if (!messages.some((message) => message.role === 'user')) {
     const text = session.lastUserMessage?.trim()

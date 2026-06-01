@@ -2263,23 +2263,38 @@ function mapEvent(event) {{
   if (type === "session.created" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
     const cwd = stableString(properties.info.directory);
+    const parentID = stableString(properties.info.parentID);
     getSession(rawSessionID).cwd = cwd;
-    getSession(rawSessionID).parentID = stableString(properties.info.parentID);
+    getSession(rawSessionID).parentID = parentID;
+    if (parentID) {{
+      return makeBasePayload(`opencode-${{parentID}}`, {{ hook_event_name: "SubagentStart", agent_name: `subagent-${{rawSessionID}}`, description: "Subagent started" }});
+    }}
     return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionStart", cwd }});
   }}
   if (type === "session.deleted" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
+    const hadParent = !!sessions.get(rawSessionID)?.parentID;
     sessions.delete(rawSessionID);
+    if (hadParent) return undefined;
     return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd" }});
   }}
   if (type === "session.updated" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
+    const isNew = !sessions.has(rawSessionID);
     const session = getSession(rawSessionID);
     const cwd = stableString(properties.info.directory) ?? session.cwd;
     if (cwd) session.cwd = cwd;
     const title = stableString(properties.info.title);
     if (title && !title.startsWith("New session")) session.pendingTitle = title;
-    if (properties.info.time?.archived) return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd", cwd }});
+    if (properties.info.time?.archived && !session.parentID) return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd", cwd }});
+    if (isNew) {{
+      const parentID = stableString(properties.info.parentID);
+      session.parentID = parentID;
+      if (parentID) {{
+        return makeBasePayload(`opencode-${{parentID}}`, {{ hook_event_name: "SubagentStart", agent_name: `subagent-${{rawSessionID}}`, description: "Subagent started" }});
+      }}
+      return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionStart", cwd }});
+    }}
     return undefined;
   }}
   if (type === "session.status" && stableString(properties.sessionID)) {{
@@ -2287,7 +2302,9 @@ function mapEvent(event) {{
     if (properties.status?.type === "idle") {{
       const session = getSession(rawSessionID);
       if (session.parentID) {{
-        return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SubagentStop", cwd: session.cwd, agent_name: `subagent-${{rawSessionID}}`, description: "Subagent completed" }});
+        const parentSessionId = `opencode-${{session.parentID}}`;
+        sessions.delete(rawSessionID);
+        return makeBasePayload(parentSessionId, {{ hook_event_name: "SubagentStop", cwd: session.cwd, agent_name: `subagent-${{rawSessionID}}`, description: "Subagent completed" }});
       }}
       return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Stop", cwd: session.cwd, last_assistant_message: session.lastAssistantText || undefined, session_title: session.pendingTitle || undefined }});
     }}
@@ -2334,10 +2351,7 @@ function mapEvent(event) {{
     const rawSessionID = stableString(properties.sessionID);
     return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: "Context compacted" }});
   }}
-  if (type === "session.next.agent.switched" && stableString(properties.sessionID) && stableString(properties.agent)) {{
-    const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SubagentStart", cwd: getSession(rawSessionID).cwd, agent_name: stableString(properties.agent), description: `Subagent: ${{properties.agent}}` }});
-  }}
+
   if (type === "session.next.step.ended" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
     const tokens = isObject(properties.tokens) ? properties.tokens : {{}};

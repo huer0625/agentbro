@@ -231,10 +231,11 @@ impl AgentAdapter for OpenCodeAdapter {
 
             "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
 
-            "Stop" => Ok(AgentEvent::AssistantResponseComplete {
+            "Stop" => Ok(AgentEvent::TaskComplete {
                 session_id,
-                text: raw
-                    .get("last_assistant_message")
+                summary: raw
+                    .get("summary")
+                    .or_else(|| raw.get("last_assistant_message"))
                     .and_then(|v| v.as_str())
                     .filter(|t| !t.is_empty())
                     .unwrap_or("Task completed")
@@ -626,7 +627,7 @@ mod tests {
     // ——— P0-2: Stop → AssistantResponseComplete ———
 
     #[test]
-    fn stop_maps_to_assistant_response_complete() {
+    fn stop_maps_to_task_complete() {
         let raw = json!({
             "hook_event_name": "Stop",
             "session_id": "abc",
@@ -636,11 +637,11 @@ mod tests {
         });
         let evt = adapter().parse_event(&raw).expect("parse");
         match evt {
-            AgentEvent::AssistantResponseComplete { session_id, text } => {
+            AgentEvent::TaskComplete { session_id, summary } => {
                 assert_eq!(session_id, "abc");
-                assert_eq!(text, "I have completed the task successfully.");
+                assert_eq!(summary, "I have completed the task successfully.");
             }
-            other => panic!("Expected AssistantResponseComplete, got {:?}", other),
+            other => panic!("Expected TaskComplete, got {:?}", other),
         }
     }
 
@@ -653,11 +654,11 @@ mod tests {
         });
         let evt = adapter().parse_event(&raw).expect("parse");
         match evt {
-            AgentEvent::AssistantResponseComplete { session_id, text } => {
+            AgentEvent::TaskComplete { session_id, summary } => {
                 assert_eq!(session_id, "abc");
-                assert_eq!(text, "Task completed");
+                assert_eq!(summary, "Task completed");
             }
-            other => panic!("Expected AssistantResponseComplete, got {:?}", other),
+            other => panic!("Expected TaskComplete, got {:?}", other),
         }
     }
 
