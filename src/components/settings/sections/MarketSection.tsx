@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { ask as askDialog } from '@tauri-apps/plugin-dialog'
@@ -16,6 +16,7 @@ import { isTauri, setIslandSurfaceOptions } from '../../../services/tauriApi'
 import './MarketSection.css'
 
 type SortMode = 'popular' | 'latest'
+type RefreshState = 'idle' | 'refreshing' | 'success' | 'failed'
 
 const NODEJS_URL = 'https://nodejs.org/'
 const SITE_URL = 'https://www.agentbro.net/pets'
@@ -174,10 +175,34 @@ export function MarketSection() {
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const [query, setQuery] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('popular')
+  const [refreshState, setRefreshState] = useState<RefreshState>('idle')
+  const refreshResetTimer = useRef<number | null>(null)
 
-  const handleRefresh = () => {
-    void loadManifest(true)
-    void usePetStore.getState().loadRegistry()
+  const clearRefreshResetTimer = useCallback(() => {
+    if (refreshResetTimer.current === null) return
+    window.clearTimeout(refreshResetTimer.current)
+    refreshResetTimer.current = null
+  }, [])
+
+  const finishRefresh = (state: Extract<RefreshState, 'success' | 'failed'>) => {
+    clearRefreshResetTimer()
+    setRefreshState(state)
+    refreshResetTimer.current = window.setTimeout(() => {
+      setRefreshState('idle')
+      refreshResetTimer.current = null
+    }, 3000)
+  }
+
+  const handleRefresh = async () => {
+    if (manifestLoading) return
+    clearRefreshResetTimer()
+    setRefreshState('refreshing')
+    await Promise.all([
+      loadManifest(true),
+      usePetStore.getState().loadRegistry(),
+    ])
+    const nextManifestError = useMarketStore.getState().manifestError
+    finishRefresh(nextManifestError ? 'failed' : 'success')
   }
 
   const handleUse = async (pet: MarketPet) => {
@@ -215,6 +240,8 @@ export function MarketSection() {
     refreshAbpetsStatus()
     void usePetStore.getState().loadRegistry()
   }, [loadManifest, refreshAbpetsStatus])
+
+  useEffect(() => () => clearRefreshResetTimer(), [clearRefreshResetTimer])
 
   const petJobs = useMemo(() => {
     const latest = new Map<string, MarketJob>()
@@ -270,6 +297,14 @@ export function MarketSection() {
   const installingAbpets = Object.values(jobs).some(
     (j) => j.kind === 'install-abpets' && j.status === 'running',
   )
+  const refreshActive = refreshState === 'refreshing'
+  const refreshLabel = refreshActive
+    ? t('settings.market.refreshing')
+    : refreshState === 'success'
+    ? t('settings.market.refreshed')
+    : refreshState === 'failed'
+    ? t('settings.market.refreshFailed')
+    : t('settings.market.refresh')
 
   return (
     <section className="market-section">
@@ -282,8 +317,15 @@ export function MarketSection() {
           <GlassButton variant="primary" onClick={() => openExternal(UPLOAD_PET_URL)}>
             {t('settings.market.uploadPet')}
           </GlassButton>
-          <GlassButton variant="ghost" onClick={handleRefresh} disabled={manifestLoading}>
-            {t('settings.market.refresh')}
+          <GlassButton
+            variant="ghost"
+            className={`market-section__refresh-btn market-section__refresh-btn--${refreshState}`}
+            onClick={handleRefresh}
+            disabled={manifestLoading}
+            aria-busy={refreshActive}
+          >
+            {refreshActive && <span className="market-section__refresh-spinner" aria-hidden="true" />}
+            <span>{refreshLabel}</span>
           </GlassButton>
         </div>
       </header>

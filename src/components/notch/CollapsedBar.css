@@ -122,6 +122,11 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
+.collapsed-bar__icon-btn--quit:hover {
+  color: #ff5f57;
+  background: rgba(255, 95, 87, 0.14);
+}
+
 .collapsed-bar__update-dot {
   position: absolute;
   top: 2px;

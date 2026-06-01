@@ -1961,8 +1961,7 @@ pub fn extract_cache_ttl_info(file_path: &Path) -> Option<CacheTtlInfo> {
 
 /// Get the default Claude projects directory (~/.claude/projects).
 pub fn claude_projects_dir() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let dir = home.join(".claude").join("projects");
+    let dir = crate::agents::claude_code::default_config_root().join("projects");
     if dir.is_dir() {
         Some(dir)
     } else {
