@@ -49,6 +49,7 @@
     "waitingForInput": "入力待ち",
     "settings": "設定",
     "updateAvailable": "新バージョン v{{version}} があります — クリックして更新",
+    "updateBadgeLabel": "更新あり",
     "updateBannerTitle": "新バージョン v{{version}} があります",
     "updateNow": "今すぐ更新",
     "updateDismiss": "後で",

@@ -48,6 +48,7 @@
     "waitingForInput": "Waiting for input",
     "settings": "Settings",
     "updateAvailable": "Update available v{{version}} — click to update",
+    "updateBadgeLabel": "Update",
     "updateBannerTitle": "New version v{{version}} available",
     "updateNow": "Update Now",
     "updateDismiss": "Dismiss",

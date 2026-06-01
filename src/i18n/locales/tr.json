@@ -46,6 +46,7 @@
     "waitingForInput": "Girdi bekleniyor",
     "settings": "Ayarlar",
     "updateAvailable": "Yeni sürüm v{{version}} mevcut — güncellemek için tıklayın",
+    "updateBadgeLabel": "Güncelleme var",
     "updateBannerTitle": "Yeni sürüm v{{version}} mevcut",
     "updateNow": "Şimdi Güncelle",
     "updateDismiss": "Sonra",

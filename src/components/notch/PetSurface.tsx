@@ -8,6 +8,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { PRIORITY, computePriority, type Priority } from '../../types/priority'
 import { useSessionStore, selectActiveOverlay } from '../../stores/sessionStore'
@@ -115,6 +116,7 @@ function clearPermissionAfter(sessionId: string, work: Promise<void>) {
  * around it for sessions, blocking actions, and lightweight completion notices.
  */
 export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
+  const { t } = useTranslation()
   const [dragging, setDragging] = useState(false)
   const [dragDirection, setDragDirection] = useState<DragDirection>(null)
   const [hudOpen, setHudOpen] = useState(false)
@@ -136,6 +138,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
 
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const updateAvailable = useUpdateStore((s) => s.availableVersion)
+  const updateBadgeLabel = t('notch.updateBadgeLabel', { defaultValue: 'Update' })
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const petVitalsEnabled = useConfigStore((s) => s.petVitalsEnabled)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
@@ -777,7 +780,12 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
               />
             )}
             <PetStatusBadges actionCount={actionCount} sessionCount={activeSessionCount} />
-            {updateAvailable && <span className="pet-surface__update-dot" aria-hidden="true" />}
+            {updateAvailable && (
+              <span className="pet-surface__update-badge" aria-label={updateBadgeLabel}>
+                <span className="pet-surface__update-dot" aria-hidden="true" />
+                <span className="pet-surface__update-label">{updateBadgeLabel}</span>
+              </span>
+            )}
           </span>
         </button>
 

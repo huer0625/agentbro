@@ -118,7 +118,7 @@ describe('PetSurface (companion)', () => {
     expect(container.querySelector('.pet-surface__pet .sprite-canvas')).toBeInTheDocument()
   })
 
-  it('shows an update dot on the pet when a newer version is available', () => {
+  it('shows an update badge on the pet when a newer version is available', () => {
     usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
 
     const { container, rerender } = render(
@@ -131,6 +131,7 @@ describe('PetSurface (companion)', () => {
     })
     rerender(<PetSurface hidden={false} scale={72} sessions={[session()]} />)
     expect(container.querySelector('.pet-surface__update-dot')).toBeInTheDocument()
+    expect(container.querySelector('.pet-surface__update-label')).toBeInTheDocument()
   })
 
   it('falls back to MascotRouter when no pet registry is loaded', () => {
