@@ -18,7 +18,7 @@ usage() {
     cat <<'EOF'
 Usage: ./build.sh [--notarize] [--help]
 
-  --notarize    Sign and notarize the app bundle
+  --notarize    Sign and notarize the app bundle and DMG
   --help        Show this help
 
 Environment variables:
@@ -51,7 +51,7 @@ done
 
 check_deps() {
     local missing=()
-    for cmd in cargo pnpm node tar shasum create-dmg lipo; do
+    for cmd in cargo pnpm node tar shasum create-dmg lipo ditto; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing+=("$cmd")
         fi
@@ -206,31 +206,8 @@ sign_dmg() {
     codesign --force --sign "$identity" "$DIST_DIR/$DMG_NAME"
 }
 
-notarize_app() {
-    if [ "$SKIP_NOTARIZE" = "1" ] || [ "$NOTARIZE" = "false" ]; then
-        echo "==> Skipping notarization"
-        return
-    fi
-
-    local apple_id="${APPLE_ID:-}"
-    local apple_password="${APPLE_PASSWORD:-}"
-    local team_id="${APPLE_TEAM_ID:-}"
-
-    if [ -z "$apple_id" ] || [ -z "$apple_password" ] || [ -z "$team_id" ]; then
-        echo "==> Notarization credentials not set, skipping"
-        return
-    fi
-
-    local dmg_path="$DIST_DIR/$DMG_NAME"
-    local timeout_seconds="${NOTARY_TIMEOUT_SECONDS:-5400}"
-    local poll_seconds="${NOTARY_POLL_SECONDS:-60}"
-    local submitted_at
-    local submission_output
-    local submission_id
-    submitted_at="$(date +%s)"
-
-    json_field() {
-        node -e '
+json_field() {
+    node -e '
 const field = process.argv[1];
 let input = "";
 process.stdin.on("data", chunk => input += chunk);
@@ -240,7 +217,25 @@ process.stdin.on("end", () => {
   if (value !== undefined && value !== null) process.stdout.write(String(value));
 });
 ' "$1"
-    }
+}
+
+notary_submit_and_wait() {
+    local target_path="$1"
+    local apple_id="${APPLE_ID:-}"
+    local apple_password="${APPLE_PASSWORD:-}"
+    local team_id="${APPLE_TEAM_ID:-}"
+
+    if [ -z "$apple_id" ] || [ -z "$apple_password" ] || [ -z "$team_id" ]; then
+        echo "==> Notarization credentials not set, skipping"
+        return 1
+    fi
+
+    local timeout_seconds="${NOTARY_TIMEOUT_SECONDS:-5400}"
+    local poll_seconds="${NOTARY_POLL_SECONDS:-60}"
+    local submitted_at
+    local submission_output
+    local submission_id
+    submitted_at="$(date +%s)"
 
     print_notary_log() {
         local id="$1"
@@ -251,8 +246,8 @@ process.stdin.on("end", () => {
             --team-id "$team_id" || true
     }
 
-    echo "==> Submitting DMG for notarization..."
-    submission_output="$(xcrun notarytool submit "$dmg_path" \
+    echo "==> Submitting for notarization: $target_path"
+    submission_output="$(xcrun notarytool submit "$target_path" \
         --apple-id "$apple_id" \
         --password "$apple_password" \
         --team-id "$team_id" \
@@ -298,9 +293,49 @@ process.stdin.on("end", () => {
                 ;;
         esac
     done
+}
+
+notarize_app_bundle() {
+    if [ "$SKIP_NOTARIZE" = "1" ] || [ "$NOTARIZE" = "false" ]; then
+        echo "==> Skipping notarization"
+        return
+    fi
+
+    local app_path="$DIST_DIR/$APP_NAME.app"
+    local zip_path="$DIST_DIR/$APP_NAME.app.zip"
+    if [ ! -d "$app_path" ]; then
+        echo "App bundle not found: $app_path" >&2
+        exit 1
+    fi
+
+    echo "==> Creating app notarization archive..."
+    rm -f "$zip_path"
+    ditto -c -k --keepParent "$app_path" "$zip_path"
+    if ! notary_submit_and_wait "$zip_path"; then
+        rm -f "$zip_path"
+        return
+    fi
+    rm -f "$zip_path"
+
+    echo "==> Stapling notarization ticket to app..."
+    xcrun stapler staple "$app_path"
+    xcrun stapler validate "$app_path"
+}
+
+notarize_dmg() {
+    if [ "$SKIP_NOTARIZE" = "1" ] || [ "$NOTARIZE" = "false" ]; then
+        echo "==> Skipping notarization"
+        return
+    fi
+
+    local dmg_path="$DIST_DIR/$DMG_NAME"
+    if ! notary_submit_and_wait "$dmg_path"; then
+        return
+    fi
 
     echo "==> Stapling notarization ticket..."
     xcrun stapler staple "$dmg_path"
+    xcrun stapler validate "$dmg_path"
 }
 
 create_checksums() {
@@ -316,10 +351,11 @@ main() {
     check_deps
     build_app_bundle
     sign_app
+    notarize_app_bundle
     create_updater_archive
     create_dmg
     sign_dmg
-    notarize_app
+    notarize_dmg
     create_checksums
     echo "==> Build complete: $DIST_DIR/$DMG_NAME"
 }

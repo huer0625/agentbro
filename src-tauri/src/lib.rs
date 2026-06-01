@@ -123,8 +123,7 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
                         if focusable {
                             let _ = window.set_ignore_cursor_events(false);
                             activate_agentbro_app();
-                            let _ = window.set_focus();
-                            (*ns_window).makeKeyAndOrderFront(None);
+                            (*ns_window).makeKeyWindow();
                         } else {
                             (*ns_window).resignKeyWindow();
                         }
@@ -3191,6 +3190,7 @@ unsafe extern "C" fn display_reconfig_callback(
             let h = handle.clone();
             let _ = handle.run_on_main_thread(move || {
                 let _ = reposition_notch_to_display(&h, None, None);
+                refresh_pet_window_for_spaces(&h);
             });
         });
     }
@@ -3295,6 +3295,30 @@ fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
         if let Some(window) = handle.get_webview_window("notch") {
             apply_notch_window_for_spaces(&window);
         }
+    });
+}
+
+fn refresh_pet_window_for_spaces(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if state.config_store.get().island_surface_mode != "pet" {
+        return;
+    }
+
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("pet") {
+            apply_pet_window_for_spaces(&window);
+            let _ = window.show();
+        }
+    });
+}
+
+fn start_pet_window_level_guard(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        refresh_pet_window_for_spaces(&app);
     });
 }
 
@@ -5046,6 +5070,7 @@ pub fn run() {
                 app_state.session_store.clone(),
             );
             app.manage(app_state);
+            start_pet_window_level_guard(app.handle().clone());
 
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
                 log::warn!("Failed to register island global shortcuts: {}", err);
