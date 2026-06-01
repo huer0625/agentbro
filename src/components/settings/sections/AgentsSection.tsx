@@ -32,8 +32,18 @@ import './AgentsSection.css'
 
 type AgentTab = 'skills' | 'plugins' | 'mcps' | 'hooks' | 'config'
 
+function readableError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message)
+  }
+  return String(error)
+}
+
 const agentVisuals: Record<string, { accent: string; icon: string; emoji: string }> = {
   'claude-code': { accent: '#5856d6', icon: '⚡', emoji: '⚡' },
+  cline: { accent: '#00b87a', icon: 'Cl', emoji: '' },
   codex: { accent: '#34c759', icon: '✦', emoji: '🔮' },
   gemini: { accent: '#ff9500', icon: '◆', emoji: '💎' },
   'gemini-cli': { accent: '#ff9500', icon: '◆', emoji: '💎' },
@@ -213,7 +223,7 @@ export function AgentsSection({
     try {
       setHookStatuses(await getAllHookStatus())
     } catch (error) {
-      setNotice(String(error))
+      setNotice(readableError(error))
     } finally {
       setHooksLoading(false)
     }
@@ -243,7 +253,7 @@ export function AgentsSection({
       await loadHookStatuses()
       await refreshAgents()
     } catch (error) {
-      setNotice(String(error))
+      setNotice(readableError(error))
     } finally {
       setHookAction(toolId, null)
     }
@@ -260,7 +270,7 @@ export function AgentsSection({
       setConfiguringHook(null)
       setNotice('Hook 配置已保存。请重启对应 CLI 会话以加载最新配置。')
     } catch (error) {
-      setNotice(String(error))
+      setNotice(readableError(error))
     } finally {
       setHookAction(toolId, null)
     }
@@ -276,7 +286,7 @@ export function AgentsSection({
       await loadHookStatuses()
       await refreshAgents()
     } catch (error) {
-      setNotice(String(error))
+      setNotice(readableError(error))
     } finally {
       setHooksLoading(false)
     }
@@ -312,7 +322,7 @@ export function AgentsSection({
     try {
       await agentApi.openPath(path)
     } catch (error) {
-      setNotice(String(error))
+      setNotice(readableError(error))
     }
   }, [])
 

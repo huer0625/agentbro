@@ -17,7 +17,7 @@ use super::session_store::{
     SessionPhase, SessionStore, SubagentInfo, SubagentStopUpdate,
 };
 use crate::agents::{AgentAdapter, AgentEvent};
-use crate::config::ConfigStore;
+use crate::config::{AppConfig, ConfigStore};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
@@ -48,6 +48,18 @@ pub struct RawHookEvent {
     pub agent: Option<String>,
     pub event_name: String,
     pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawHookEventSummary {
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub session_id: String,
+    pub agent: Option<String>,
+    pub event_name: String,
+    pub cwd: Option<String>,
+    pub payload_keys: Vec<String>,
 }
 
 struct SubagentToolMetadata {
@@ -88,6 +100,43 @@ impl RawHookEventStore {
             .get(session_id)
             .map(|events| events.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    fn recent_summaries(&self, limit: usize) -> Vec<RawHookEventSummary> {
+        let mut events = self
+            .by_session
+            .values()
+            .flat_map(|events| events.iter())
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| event.seq);
+        let start = events.len().saturating_sub(limit);
+        events[start..]
+            .iter()
+            .map(|event| RawHookEventSummary::from_event(event))
+            .collect()
+    }
+}
+
+impl RawHookEventSummary {
+    fn from_event(event: &RawHookEvent) -> Self {
+        let payload_keys = event
+            .raw
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
+        Self {
+            seq: event.seq,
+            timestamp_ms: event.timestamp_ms,
+            session_id: event.session_id.clone(),
+            agent: event.agent.clone(),
+            event_name: event.event_name.clone(),
+            cwd: event
+                .raw
+                .get("cwd")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            payload_keys,
+        }
     }
 }
 
@@ -703,7 +752,7 @@ impl HookServer {
             "health-check",
             "health_check",
             "probe",
-            "ping",
+            "heartbeat",
             "healthcheck",
         ]
         .iter()
@@ -850,6 +899,16 @@ impl HookServer {
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
+        if Self::should_silence_event(&config_store, &raw, event.as_ref()) {
+            log::debug!(
+                "Silenced hook event {} for cwd {}",
+                Self::raw_event_name(&raw),
+                raw.get("cwd")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+            );
+            return Ok(());
+        }
         Self::record_raw_event(&raw_events, &raw, event.as_ref());
         if let Some(ref agent_event) = event {
             Self::ensure_session_for_event(&store, agent_event, &raw);
@@ -863,6 +922,16 @@ impl HookServer {
                 ref diff,
                 ref options,
             }) => {
+                if Self::route_interaction_to_terminal_if_idle(
+                    &config_store,
+                    &store,
+                    &raw,
+                    session_id,
+                    "permission",
+                ) {
+                    return Ok(());
+                }
+
                 // Check smart suppression: is the agent's terminal focused?
                 let is_suppressed = Self::check_suppression(&store, session_id);
 
@@ -993,6 +1062,16 @@ impl HookServer {
                 multi_select,
                 ref questions,
             }) => {
+                if Self::route_interaction_to_terminal_if_idle(
+                    &config_store,
+                    &store,
+                    &raw,
+                    session_id,
+                    "question",
+                ) {
+                    return Ok(());
+                }
+
                 // Check smart suppression: is the agent's terminal focused?
                 let is_suppressed = Self::check_suppression(&store, session_id);
 
@@ -1093,6 +1172,16 @@ impl HookServer {
                 ref content,
                 ref permissions,
             }) => {
+                if Self::route_interaction_to_terminal_if_idle(
+                    &config_store,
+                    &store,
+                    &raw,
+                    session_id,
+                    "plan approval",
+                ) {
+                    return Ok(());
+                }
+
                 let is_suppressed = Self::check_suppression(&store, session_id);
 
                 if !is_suppressed {
@@ -1180,6 +1269,13 @@ impl HookServer {
             .unwrap_or_default()
     }
 
+    pub fn recent_raw_event_summaries(&self, limit: usize) -> Vec<RawHookEventSummary> {
+        self.raw_events
+            .lock()
+            .map(|events| events.recent_summaries(limit))
+            .unwrap_or_default()
+    }
+
     fn record_raw_event(
         raw_events: &Arc<std::sync::Mutex<RawHookEventStore>>,
         raw: &serde_json::Value,
@@ -1217,6 +1313,94 @@ impl HookServer {
         if let Ok(mut events) = raw_events.lock() {
             events.push(hook_event);
         }
+    }
+
+    fn should_silence_event(
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+        raw: &serde_json::Value,
+        event: Option<&AgentEvent>,
+    ) -> bool {
+        if Self::is_blocking_event(raw, event) {
+            return false;
+        }
+        let Some(config_store) = Self::current_config_store(config_store) else {
+            return false;
+        };
+        Self::config_silences_raw_event(&config_store.get(), raw)
+    }
+
+    fn is_blocking_event(raw: &serde_json::Value, event: Option<&AgentEvent>) -> bool {
+        if matches!(
+            event,
+            Some(
+                AgentEvent::PermissionRequest { .. }
+                    | AgentEvent::AskQuestion { .. }
+                    | AgentEvent::PlanApproval { .. }
+                    | AgentEvent::Error { .. }
+            )
+        ) {
+            return true;
+        }
+        matches!(
+            Self::raw_event_name(raw),
+            "PermissionRequest" | "permission_request" | "PlanApproval" | "AskQuestion"
+        ) || matches!(
+            raw.get("status").and_then(|value| value.as_str()),
+            Some("waiting_for_approval" | "waiting_for_input")
+        )
+    }
+
+    fn config_silences_raw_event(config: &AppConfig, raw: &serde_json::Value) -> bool {
+        let cwd = Self::normalized_silence_text(raw.get("cwd").and_then(|value| value.as_str()));
+        if !cwd.is_empty()
+            && config
+                .excluded_hook_cwd_substrings
+                .split(['\n', ','])
+                .map(|item| Self::normalized_silence_text(Some(item)))
+                .filter(|pattern| !pattern.is_empty())
+                .any(|pattern| cwd.contains(&pattern))
+        {
+            return true;
+        }
+
+        let prompt = Self::normalized_silence_text(
+            raw.get("prompt")
+                .or_else(|| raw.get("user_prompt"))
+                .or_else(|| raw.get("message"))
+                .and_then(|value| value.as_str()),
+        );
+        config.session_silence_rules.iter().any(|rule| {
+            if !rule.enabled {
+                return false;
+            }
+            let pattern = Self::normalized_silence_text(Some(rule.pattern.as_str()));
+            if pattern.is_empty() {
+                return false;
+            }
+            match rule.kind.as_str() {
+                "cwd" => !cwd.is_empty() && cwd.contains(&pattern),
+                "prompt" => !prompt.is_empty() && prompt.starts_with(&pattern),
+                _ => false,
+            }
+        })
+    }
+
+    fn normalized_silence_text(value: Option<&str>) -> String {
+        value
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    fn raw_event_name(raw: &serde_json::Value) -> &str {
+        raw.get("event")
+            .or_else(|| raw.get("hook_event_name"))
+            .or_else(|| raw.get("hookEventName"))
+            .or_else(|| raw.get("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
     }
 
     fn session_id_from_raw_or_event(
@@ -1548,6 +1732,12 @@ impl HookServer {
                         }
                         _ => {}
                     }
+                }
+
+                if Self::is_subagent_tool(tool_name)
+                    && Self::is_codex_session(store, session_id, _raw)
+                {
+                    Self::refresh_subagents_from_transcript(store, session_id, _raw);
                 }
 
                 if Self::is_subagent_tool(tool_name) && !tool_use_id.is_empty() {
@@ -2340,7 +2530,7 @@ impl HookServer {
     fn is_compacting_context_text(text: &str) -> bool {
         let normalized = text
             .trim()
-            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '。' | '！'))
+            .trim_end_matches(['.', '!', '。', '！'])
             .to_lowercase();
         normalized == "compacting"
             || normalized == "compacting context"
@@ -2352,7 +2542,7 @@ impl HookServer {
     fn is_generic_completion_text(text: &str) -> bool {
         let normalized = text
             .trim()
-            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '。' | '！'))
+            .trim_end_matches(['.', '!', '。', '！'])
             .to_lowercase();
         normalized.is_empty()
             || normalized == "done"
@@ -2414,7 +2604,31 @@ impl HookServer {
     }
 
     fn is_subagent_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "Agent" | "Task")
+        let normalized = tool_name
+            .trim()
+            .trim_start_matches("functions.")
+            .trim_start_matches("multi_agent_v1.")
+            .replace(['-', ' '], "_")
+            .to_lowercase();
+        matches!(
+            normalized.as_str(),
+            "agent"
+                | "task"
+                | "spawn_agent"
+                | "send_input"
+                | "wait_agent"
+                | "close_agent"
+                | "resume_agent"
+        )
+    }
+
+    fn is_codex_session(store: &SessionStore, session_id: &str, raw: &serde_json::Value) -> bool {
+        raw.get("agent")
+            .and_then(|value| value.as_str())
+            .is_some_and(|agent| matches!(agent, "codex" | "openai.codex"))
+            || store
+                .get_session(session_id)
+                .is_some_and(|session| session.agent_type == "codex")
     }
 
     fn subagent_metadata_from_tool_input(
@@ -2506,6 +2720,7 @@ impl HookServer {
         let cmux_workspace_id = optional_nonempty_string(raw, "_cmux_workspace_id");
         let remote_host_id = optional_nonempty_string(raw, "_remote_host_id");
         let remote_host_name = optional_nonempty_string(raw, "_remote_host_name");
+        let model = optional_nonempty_string(raw, "model");
 
         if pid.is_none()
             && tty.is_none()
@@ -2520,6 +2735,7 @@ impl HookServer {
             && cmux_workspace_id.is_none()
             && remote_host_id.is_none()
             && remote_host_name.is_none()
+            && model.is_none()
         {
             return;
         }
@@ -2564,11 +2780,69 @@ impl HookServer {
             if let Some(value) = remote_host_name {
                 s.remote_host_name = Some(value.to_string());
             }
+            if let Some(value) = model {
+                s.model = Some(value.to_string());
+            }
         });
     }
 
     fn is_remote_hook_event(raw: &serde_json::Value) -> bool {
         raw.get("_remote_host_id").is_some() || raw.get("_remote_host_name").is_some()
+    }
+
+    fn route_interaction_to_terminal_if_idle(
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+        store: &Arc<SessionStore>,
+        raw: &serde_json::Value,
+        session_id: &str,
+        interaction_kind: &str,
+    ) -> bool {
+        let Some(idle_seconds) = Self::idle_interaction_route_seconds(config_store, raw) else {
+            return false;
+        };
+
+        Self::update_session_metadata_from_raw(store, raw);
+        store.emit_update_suppressed(true);
+        log::info!(
+            "Routing {} interaction for session {} back to terminal after {}s of user idle time",
+            interaction_kind,
+            session_id,
+            idle_seconds
+        );
+        true
+    }
+
+    fn idle_interaction_route_seconds(
+        config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
+        raw: &serde_json::Value,
+    ) -> Option<u64> {
+        let config_store = Self::current_config_store(config_store)?;
+        let config = config_store.get();
+        let idle_seconds = crate::platform::idle::user_idle_seconds()?;
+        if Self::idle_interaction_should_route(&config, raw, Some(idle_seconds)) {
+            Some(idle_seconds)
+        } else {
+            None
+        }
+    }
+
+    fn idle_interaction_should_route(
+        config: &AppConfig,
+        raw: &serde_json::Value,
+        idle_seconds: Option<u64>,
+    ) -> bool {
+        if !config.idle_interaction_routing_enabled
+            || config.idle_interaction_routing_minutes == 0
+            || Self::is_remote_hook_event(raw)
+        {
+            return false;
+        }
+
+        let Some(idle_seconds) = idle_seconds else {
+            return false;
+        };
+        let threshold = u64::from(config.idle_interaction_routing_minutes) * 60;
+        idle_seconds >= threshold
     }
 
     fn refresh_cache_ttl_from_transcript(
@@ -3042,6 +3316,69 @@ mod tests {
             HookServer::tool_input_signature_from_raw(&pre),
             HookServer::tool_input_signature_from_raw(&permission)
         );
+    }
+
+    #[test]
+    fn silence_config_matches_cwd_but_blocking_event_is_protected() {
+        let mut config = AppConfig::default();
+        config.excluded_hook_cwd_substrings = "/tmp/my-project".to_string();
+        let raw = serde_json::json!({
+            "event": "PermissionRequest",
+            "status": "waiting_for_approval",
+            "cwd": "/tmp/my-project",
+            "session_id": "s1"
+        });
+        let event = AgentEvent::PermissionRequest {
+            session_id: "s1".to_string(),
+            tool_name: "Bash".to_string(),
+            diff: None,
+            options: None,
+        };
+
+        assert!(HookServer::config_silences_raw_event(&config, &raw));
+        assert!(HookServer::is_blocking_event(&raw, Some(&event)));
+    }
+
+    #[test]
+    fn idle_interaction_routing_requires_enabled_local_idle_session() {
+        let raw = serde_json::json!({ "session_id": "s1", "cwd": "/tmp/project" });
+        let mut config = AppConfig::default();
+        config.idle_interaction_routing_minutes = 5;
+
+        assert!(!HookServer::idle_interaction_should_route(
+            &config,
+            &raw,
+            Some(600)
+        ));
+
+        config.idle_interaction_routing_enabled = true;
+        assert!(!HookServer::idle_interaction_should_route(
+            &config,
+            &raw,
+            Some(299)
+        ));
+        assert!(HookServer::idle_interaction_should_route(
+            &config,
+            &raw,
+            Some(300)
+        ));
+    }
+
+    #[test]
+    fn idle_interaction_routing_skips_remote_sessions() {
+        let raw = serde_json::json!({
+            "session_id": "remote",
+            "_remote_host_id": "host-1"
+        });
+        let mut config = AppConfig::default();
+        config.idle_interaction_routing_enabled = true;
+        config.idle_interaction_routing_minutes = 1;
+
+        assert!(!HookServer::idle_interaction_should_route(
+            &config,
+            &raw,
+            Some(3600)
+        ));
     }
 
     #[test]

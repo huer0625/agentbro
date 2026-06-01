@@ -1,30 +1,267 @@
 // CodexAdapter — Agent adapter for OpenAI Codex CLI
 
 use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 const AGENTBRO_MARKER: &str = "agentbro";
 const CODEX_PERMISSION_TIMEOUT_SECONDS: u64 = 21_600;
+const CODEX_APP_SERVER_PORT: u16 = 41241;
 
 const HOOK_EVENTS: &[(&str, &str, u64)] = &[
     ("SessionStart", "session_start", 5),
     ("UserPromptSubmit", "user_prompt_submit", 5),
     ("PreToolUse", "pre_tool_use", 5),
     ("PostToolUse", "post_tool_use", 5),
+    ("PostToolUseFailure", "post_tool_use_failure", 5),
     (
         "PermissionRequest",
         "permission_request",
         CODEX_PERMISSION_TIMEOUT_SECONDS,
     ),
+    ("PermissionDenied", "permission_denied", 5),
     ("Stop", "stop", 5),
+    ("SessionEnd", "session_end", 5),
 ];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAppServerProbe {
+    pub port: u16,
+    pub cli_path: Option<String>,
+    pub cli_version: Option<String>,
+    pub cli_available: bool,
+    pub app_server_command_available: bool,
+    pub server_listening: bool,
+    pub codex_app_installed: bool,
+    pub auth_configured: bool,
+    pub sessions_dir_exists: bool,
+    pub checks: Vec<CodexAppServerProbeCheck>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAppServerProbeCheck {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
 
 pub struct CodexAdapter {
     config_root: PathBuf,
     status: AdapterStatus,
+}
+
+pub fn probe_app_server_readiness() -> CodexAppServerProbe {
+    let cli_path = super::executable::find_binary("codex");
+    let cli_path_text = cli_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let cli_version = cli_path
+        .as_ref()
+        .and_then(|path| run_command_with_timeout(path, &["--version"], Duration::from_secs(2)))
+        .and_then(|output| output_line(&output));
+    let app_server_output = cli_path.as_ref().and_then(|path| {
+        run_command_with_timeout(path, &["app-server", "--help"], Duration::from_secs(3))
+    });
+    let app_server_command_available = app_server_output
+        .as_ref()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    let app_server_detail = app_server_output
+        .as_ref()
+        .and_then(output_line)
+        .unwrap_or_else(|| {
+            if cli_path.is_some() {
+                "codex app-server --help did not complete".to_string()
+            } else {
+                "codex CLI not found".to_string()
+            }
+        });
+    let server_listening = is_local_port_listening(CODEX_APP_SERVER_PORT);
+    let codex_app_installed = codex_app_paths().into_iter().any(|path| path.exists());
+    let codex_root = dirs::home_dir().map(|home| home.join(".codex"));
+    let auth_path = codex_root.as_ref().map(|root| root.join("auth.json"));
+    let sessions_path = codex_root.as_ref().map(|root| root.join("sessions"));
+    let auth_configured = auth_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let sessions_dir_exists = sessions_path
+        .as_ref()
+        .map(|path| path.is_dir())
+        .unwrap_or(false);
+
+    let mut checks = Vec::new();
+    checks.push(CodexAppServerProbeCheck {
+        id: "cli".to_string(),
+        label: "Codex CLI".to_string(),
+        status: if cli_path.is_some() { "ok" } else { "error" }.to_string(),
+        detail: cli_path_text
+            .as_deref()
+            .map(|path| match cli_version.as_deref() {
+                Some(version) if !version.is_empty() => format!("{path} ({version})"),
+                _ => path.to_string(),
+            })
+            .unwrap_or_else(|| {
+                "codex was not found in PATH or common install directories".to_string()
+            }),
+        suggestion: if cli_path.is_some() {
+            None
+        } else {
+            Some("Install or expose the codex CLI before using app-server sync.".to_string())
+        },
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "app-server-command".to_string(),
+        label: "app-server command".to_string(),
+        status: if app_server_command_available {
+            "ok"
+        } else {
+            "error"
+        }
+        .to_string(),
+        detail: app_server_detail,
+        suggestion: if app_server_command_available {
+            None
+        } else {
+            Some("Update Codex to a build that supports `codex app-server`.".to_string())
+        },
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "server-port".to_string(),
+        label: "Local app-server port".to_string(),
+        status: if server_listening { "ok" } else { "warn" }.to_string(),
+        detail: if server_listening {
+            format!("127.0.0.1:{CODEX_APP_SERVER_PORT} is accepting TCP connections")
+        } else {
+            format!("127.0.0.1:{CODEX_APP_SERVER_PORT} is not listening")
+        },
+        suggestion: if server_listening {
+            None
+        } else {
+            Some("Optional: AgentBro background sync uses stdio and does not require this local WebSocket port.".to_string())
+        },
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "codex-app".to_string(),
+        label: "Codex.app".to_string(),
+        status: if codex_app_installed { "ok" } else { "warn" }.to_string(),
+        detail: if codex_app_installed {
+            "Codex.app was found in /Applications or ~/Applications".to_string()
+        } else {
+            "Codex.app was not found in the standard app locations".to_string()
+        },
+        suggestion: None,
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "auth".to_string(),
+        label: "Codex auth".to_string(),
+        status: if auth_configured { "ok" } else { "warn" }.to_string(),
+        detail: auth_path
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| "~/.codex/auth.json".to_string()),
+        suggestion: if auth_configured {
+            None
+        } else {
+            Some("Run `codex login` if account-backed data is needed.".to_string())
+        },
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "transcripts".to_string(),
+        label: "Local transcripts".to_string(),
+        status: if sessions_dir_exists { "ok" } else { "warn" }.to_string(),
+        detail: sessions_path
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| "~/.codex/sessions".to_string()),
+        suggestion: None,
+    });
+    checks.push(CodexAppServerProbeCheck {
+        id: "live-sync".to_string(),
+        label: "AgentBro live sync".to_string(),
+        status: if app_server_command_available { "ok" } else { "warn" }.to_string(),
+        detail: "AgentBro can keep a persistent Codex stdio app-server listener for thread sync and realtime prompts, with energy-aware thread/list refresh, when background sync is enabled.".to_string(),
+        suggestion: Some("Enable background thread sync in Island settings for app-server prompt routing.".to_string()),
+    });
+
+    CodexAppServerProbe {
+        port: CODEX_APP_SERVER_PORT,
+        cli_path: cli_path_text,
+        cli_version,
+        cli_available: cli_path.is_some(),
+        app_server_command_available,
+        server_listening,
+        codex_app_installed,
+        auth_configured,
+        sessions_dir_exists,
+        checks,
+    }
+}
+
+fn run_command_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<Output> {
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn output_line(output: &Output) -> Option<String> {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    combined
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| {
+            const MAX_LEN: usize = 180;
+            if line.chars().count() > MAX_LEN {
+                format!("{}...", line.chars().take(MAX_LEN).collect::<String>())
+            } else {
+                line.to_string()
+            }
+        })
+}
+
+fn is_local_port_listening(port: u16) -> bool {
+    let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+fn codex_app_paths() -> Vec<PathBuf> {
+    let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join("Applications").join("Codex.app"));
+    }
+    paths
 }
 
 impl CodexAdapter {
@@ -43,11 +280,7 @@ impl CodexAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("codex")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("codex")
     }
 
     fn hooks_path(&self) -> PathBuf {
@@ -396,6 +629,7 @@ fn normalize_codex_tool_name(tool_name: &str) -> String {
     }
     let normalized = trimmed
         .trim_start_matches("functions.")
+        .trim_start_matches("multi_agent_v1.")
         .replace(['-', ' '], "_")
         .to_lowercase();
 
@@ -413,7 +647,9 @@ fn normalize_codex_tool_name(tool_name: &str) -> String {
         "web_search" | "search_query" => "WebSearch".to_string(),
         "web_fetch" | "open" | "fetch" => "WebFetch".to_string(),
         "update_plan" | "todo_write" => "TodoWrite".to_string(),
-        "spawn_agent" | "send_input" | "wait_agent" => "Agent".to_string(),
+        "spawn_agent" | "send_input" | "wait_agent" | "close_agent" | "resume_agent" => {
+            "Agent".to_string()
+        }
         _ if trimmed.is_empty() => "Tool".to_string(),
         _ => trimmed.to_string(),
     }
@@ -869,12 +1105,24 @@ fn ensure_codex_hooks_feature(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
 
     fn adapter() -> CodexAdapter {
         CodexAdapter {
             config_root: PathBuf::from("/tmp/codex-test"),
             status: AdapterStatus::Available,
         }
+    }
+
+    #[test]
+    fn codex_app_server_output_line_prefers_first_non_empty_line() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"\n  codex-cli 1.2.3\nignored".to_vec(),
+            stderr: b"stderr".to_vec(),
+        };
+
+        assert_eq!(output_line(&output).as_deref(), Some("codex-cli 1.2.3"));
     }
 
     #[test]
@@ -904,8 +1152,9 @@ mod tests {
             CODEX_PERMISSION_TIMEOUT_SECONDS
         );
         assert!(settings["hooks"]["UserPromptSubmit"].is_array());
-        assert!(settings["hooks"].get("SessionEnd").is_none());
-        assert!(settings["hooks"].get("PostToolUseFailure").is_none());
+        assert!(settings["hooks"]["SessionEnd"].is_array());
+        assert!(settings["hooks"]["PostToolUseFailure"].is_array());
+        assert!(settings["hooks"]["PermissionDenied"].is_array());
         assert!(settings["hooks"].get("StopFailure").is_none());
     }
 
@@ -1022,6 +1271,33 @@ trust_level = "trusted"
             } => {
                 assert_eq!(tool_name, "Read");
                 assert_eq!(tool_target.as_deref(), Some("HoverList.tsx"));
+                assert_eq!(status, "running");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalizes_codex_namespaced_subagent_tools() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "multi_agent_v1.spawn_agent",
+                "tool_input": { "message": "请只计算 1+1" }
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::ToolUse {
+                tool_name,
+                tool_target,
+                status,
+                ..
+            } => {
+                assert_eq!(tool_name, "Agent");
+                assert_eq!(tool_target.as_deref(), Some("请只计算 1+1"));
                 assert_eq!(status, "running");
             }
             other => panic!("unexpected event: {other:?}"),

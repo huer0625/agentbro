@@ -361,7 +361,7 @@ impl NetworkMonitor {
                         let elapsed = started_at.elapsed().as_millis() as u64;
                         let message = err.to_string();
                         monitor_for_stream.record_error(&request_id_for_stream, elapsed, message.clone());
-                        yield Err(std::io::Error::new(std::io::ErrorKind::Other, message));
+                        yield Err(std::io::Error::other(message));
                         return;
                     }
                 }
@@ -515,6 +515,12 @@ impl NetworkMonitor {
             request_count: inner.requests.len(),
             active_request_count: inner.active_request_count,
         }
+    }
+}
+
+impl Default for NetworkMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -742,7 +748,7 @@ fn is_main_agent_request(
     _message_count: usize,
     tool_count: usize,
 ) -> bool {
-    if !body.get("system").is_some() || !body.get("tools").and_then(Value::as_array).is_some() {
+    if body.get("system").is_none() || body.get("tools").and_then(Value::as_array).is_none() {
         return false;
     }
     if !sys.contains("Claude Code") {

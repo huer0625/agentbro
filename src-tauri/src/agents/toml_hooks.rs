@@ -1,10 +1,9 @@
 // Segment-aware TOML hook parser for `[[hooks]]` array-of-tables format.
 //
-// Ported from ping-island's TOMLHookConfigParser (Swift). Parses a TOML file
-// into Segment::Text and Segment::Hook fragments so we can safely merge
-// AgentBro-managed hooks with user-defined hooks and surrounding configuration
-// without losing anything. Strict text-only parser (no toml crate) — preserves
-// formatting and comments outside of `[[hooks]]` blocks.
+// Parses a TOML file into Segment::Text and Segment::Hook fragments so we can
+// safely merge AgentBro-managed hooks with user-defined hooks and surrounding
+// configuration without losing anything. Strict text-only parser (no toml
+// crate) — preserves formatting and comments outside of `[[hooks]]` blocks.
 
 use super::profiles::MARKER_PREFIX;
 

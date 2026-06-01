@@ -1,22 +1,10 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { PetOption, PetMetadata } from '../types/pet'
 import type { AgentType, SessionState } from '../types/agent'
 import { discoverPets, setActivePetId as setActivePetIdRemote } from '../services/tauriApi'
 import { useConfigStore } from './configStore'
-
-/**
- * Default agent → codex pet auto-mapping for `activePetId === null` (auto mode).
- * If a session's agentType is not in the map, falls back to the first available pet.
- */
-const DEFAULT_AGENT_PET_MAP: Record<string, string> = {
-  'codex': 'codex:codex',
-  'claude-code': 'codex:dewey',
-  'gemini-cli': 'codex:seedy',
-  'cursor': 'codex:fireball',
-  'qoder': 'codex:rocky',
-  'cline': 'codex:stacky',
-}
 
 interface PetStore {
   registry: PetOption[]
@@ -30,10 +18,10 @@ interface PetStore {
 }
 
 function decoratePet(meta: PetMetadata): PetOption {
-  const matched = Object.entries(DEFAULT_AGENT_PET_MAP)
-    .filter(([, petId]) => petId === meta.id)
-    .map(([agentType]) => agentType)
-  return { ...meta, agentTypes: matched.length > 0 ? matched : undefined }
+  // Convert the backend filesystem path into an `asset://` URL the WebView
+  // can stream. We compute this once on load instead of in every render so
+  // the resulting string is reference-stable for React deps.
+  return { ...meta, spritesheetUrl: convertFileSrc(meta.spritesheetPath) }
 }
 
 export const usePetStore = create<PetStore>()(
@@ -96,17 +84,22 @@ export const usePetStore = create<PetStore>()(
 
 /**
  * Resolve the pet that should currently render. Pure function — pass in the
- * registry, the user's selection, and the relevant session list.
+ * registry, the user's selection, the relevant session list, and the user's
+ * agent → pet map (set in 「设置 → 集成」for AUTO mode).
  *
  * - When `activePetId` is set and present in the registry, returns it (locked mode).
  * - When `null` (auto mode), looks at the highest-priority active session's
- *   agentType and returns the matching pet from `DEFAULT_AGENT_PET_MAP`.
+ *   agentType and resolves in this order:
+ *     1. `agentPetMap[agentType]` — user-configured default for that agent
+ *     2. A pet whose own `agentTypes` metadata claims this agent
+ *     3. `registry[0]`
  * - Falls back to the first registered pet, or `null` if the registry is empty.
  */
 export function selectActivePet(
   registry: PetOption[],
   activePetId: string | null,
   sessions: SessionState[],
+  agentPetMap: Record<string, string> = {},
 ): PetOption | null {
   if (registry.length === 0) return null
 
@@ -117,10 +110,10 @@ export function selectActivePet(
 
   const top = pickTopActiveSession(sessions)
   if (top) {
-    const targetId = DEFAULT_AGENT_PET_MAP[top.agentType]
-    if (targetId) {
-      const auto = registry.find((p) => p.id === targetId)
-      if (auto) return auto
+    const userMapped = agentPetMap[top.agentType]
+    if (userMapped) {
+      const pet = registry.find((p) => p.id === userMapped)
+      if (pet) return pet
     }
     const matchByAgent = registry.find((p) => p.agentTypes?.includes(top.agentType))
     if (matchByAgent) return matchByAgent
@@ -133,10 +126,6 @@ function pickTopActiveSession(sessions: SessionState[]): SessionState | null {
   if (sessions.length === 0) return null
   const active = sessions.find((s) => s.phase !== 'done' && s.phase !== 'idle')
   return active ?? sessions[0]
-}
-
-export function getAgentPetMap(): Readonly<Record<string, string>> {
-  return DEFAULT_AGENT_PET_MAP
 }
 
 // Backwards compat for tests / non-store callers.

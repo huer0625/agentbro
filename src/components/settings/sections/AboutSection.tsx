@@ -2,8 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
 import { save } from '@tauri-apps/plugin-dialog'
-import { quitApp, exportDiagnostics, getCurrentAppVersion } from '../../../services/tauriApi'
-import type { UpdateStatus } from '../../../hooks/useUpdater'
+import { quitApp, exportDiagnostics, getCurrentAppVersion, setAnalyticsEnabled } from '../../../services/tauriApi'
+import { HOMEBREW_UPDATE_COMMAND } from '../../../hooks/useUpdater'
+import type { UpdateInstallChannel, UpdateStatus } from '../../../hooks/useUpdater'
 import { useConfigStore } from '../../../stores/configStore'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -13,8 +14,12 @@ import { GlassButton } from '../../shared'
 
 interface AboutSectionProps {
   updateStatus?: UpdateStatus
+  updateInstallChannel?: UpdateInstallChannel
   updateVersion?: string | null
   updateError?: string | null
+  updateRestartPending?: boolean
+  updateRestartBlockedByActivity?: boolean
+  updateBlockingSessionCount?: number
   onCheckForUpdate?: () => void
 }
 
@@ -39,7 +44,16 @@ function ExternalArrow() {
   )
 }
 
-export function AboutSection({ updateStatus, updateVersion, updateError, onCheckForUpdate }: AboutSectionProps) {
+export function AboutSection({
+  updateStatus,
+  updateInstallChannel = 'direct',
+  updateVersion,
+  updateError,
+  updateRestartPending = false,
+  updateRestartBlockedByActivity = false,
+  updateBlockingSessionCount = 0,
+  onCheckForUpdate,
+}: AboutSectionProps) {
   const { t } = useTranslation()
   const [diagStatus, setDiagStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [communityOpen, setCommunityOpen] = useState(false)
@@ -50,6 +64,8 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
 
   const autoCheckUpdate = useConfigStore((s) => s.autoCheckUpdate)
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
+  const analyticsEnabled = useConfigStore((s) => s.analyticsEnabled)
+  const analyticsConsentPromptCompleted = useConfigStore((s) => s.analyticsConsentPromptCompleted)
   const updateConfig = useConfigStore((s) => s.updateConfig)
 
   const updatePopoverPos = useCallback(() => {
@@ -130,12 +146,41 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
     }
   }
 
+  const handleAnalyticsEnabledChange = (enabled: boolean) => {
+    const previousEnabled = analyticsEnabled
+    const previousCompleted = analyticsConsentPromptCompleted
+    updateConfig('analyticsEnabled', enabled)
+    updateConfig('analyticsConsentPromptCompleted', true)
+    setAnalyticsEnabled(enabled).catch((error) => {
+      console.error('[settings] setAnalyticsEnabled:', error)
+      updateConfig('analyticsEnabled', previousEnabled)
+      updateConfig('analyticsConsentPromptCompleted', previousCompleted)
+    })
+  }
+
   const updateDescription = (() => {
     switch (updateStatus) {
       case 'checking': return t('settings.updateChecking', { defaultValue: '正在检查更新...' })
-      case 'available': return t('settings.updateAvailable', { version: updateVersion, defaultValue: `发现新版本 ${updateVersion}` })
+      case 'available':
+        return updateInstallChannel === 'homebrew'
+          ? t('settings.updateAvailableHomebrew', { version: updateVersion, command: HOMEBREW_UPDATE_COMMAND, defaultValue: `发现新版本 ${updateVersion}。请运行 ${HOMEBREW_UPDATE_COMMAND}` })
+          : t('settings.updateAvailable', { version: updateVersion, defaultValue: `发现新版本 ${updateVersion}` })
       case 'downloading': return t('settings.updateDownloading', { version: updateVersion, defaultValue: `正在下载 ${updateVersion}...` })
-      case 'ready': return t('settings.updateReady', { version: updateVersion, defaultValue: `新版本 ${updateVersion} 已就绪，重启后生效` })
+      case 'ready':
+        if (updateRestartBlockedByActivity) {
+          return t('settings.updateReadyWaitingIdle', {
+            version: updateVersion,
+            count: updateBlockingSessionCount,
+            defaultValue: `新版本 ${updateVersion} 已就绪，会在当前会话空闲后自动重启安装`,
+          })
+        }
+        if (updateRestartPending) {
+          return t('settings.updateReadyAuto', {
+            version: updateVersion,
+            defaultValue: `新版本 ${updateVersion} 已就绪，会在短暂空闲后自动重启安装`,
+          })
+        }
+        return t('settings.updateReady', { version: updateVersion, defaultValue: `新版本 ${updateVersion} 已就绪，重启后生效` })
       case 'error': return updateError ?? t('settings.updateCheckFailed', { defaultValue: '无法连接更新服务，请稍后重试，或通过“发布版本”手动下载最新版。' })
       case 'up-to-date': return t('settings.latestVersion')
       default: return t('settings.latestVersion')
@@ -312,6 +357,13 @@ export function AboutSection({ updateStatus, updateVersion, updateError, onCheck
           <div>{t('settings.designSystem')}</div>
           <div style={{ marginTop: 'var(--space-sm)', color: '#aeaeb2' }}>
             {t('settings.copyright')}
+          </div>
+          <div className="about-analytics-row">
+            <div className="about-analytics-row__copy">
+              <span className="about-analytics-row__label">{t('settings.anonymousAnalytics')}</span>
+              <span className="about-analytics-row__description">{t('settings.anonymousAnalyticsDesc')}</span>
+            </div>
+            <Toggle checked={analyticsEnabled} onChange={handleAnalyticsEnabledChange} />
           </div>
         </div>
       </SettingGroup>

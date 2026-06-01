@@ -305,7 +305,12 @@ pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
             std::fs::copy(source, &dest)?;
         }
     } else if !dest.exists() {
-        return Err("Bridge binary not found next to main executable".into());
+        let searched = bridge_source_candidates()
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("Bridge binary not found. Searched: {searched}").into());
     }
 
     #[cfg(unix)]
@@ -318,23 +323,37 @@ pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn find_source_bridge() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    let bridge = exe_dir.join("agentbro-bridge");
-    if bridge.exists() {
-        return Some(bridge);
-    }
+    bridge_source_candidates()
+        .into_iter()
+        .find(|bridge| bridge.exists())
+}
 
-    let bundled_bridge = exe_dir
-        .parent()
-        .and_then(|contents_dir| contents_dir.parent())
-        .map(|app_dir| {
-            app_dir
-                .join("Contents")
-                .join("Resources")
-                .join("agentbro-bridge")
-        });
-    bundled_bridge.filter(|bridge| bridge.exists())
+fn bridge_source_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("agentbro-bridge"));
+            if let Some(contents_dir) = exe_dir.parent() {
+                candidates.push(contents_dir.join("Resources").join("agentbro-bridge"));
+                if let Some(app_dir) = contents_dir.parent() {
+                    candidates.push(
+                        app_dir
+                            .join("Contents")
+                            .join("Resources")
+                            .join("agentbro-bridge"),
+                    );
+                }
+            }
+        }
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/agentbro-bridge"));
+    candidates
+        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/agentbro-bridge"));
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/agentbro-bridge-resource/agentbro-bridge"),
+    );
+    candidates
 }
 
 pub fn shell_quote(value: &str) -> String {

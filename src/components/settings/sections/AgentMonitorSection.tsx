@@ -17,13 +17,14 @@ import {
   type NetworkRequestDetail,
   type NetworkRequestSummary,
 } from '../../../services/monitorApi'
-import { getChatHistory, jumpToTerminal, openSystemPath } from '../../../services/tauriApi'
+import { getChatHistoryTail, jumpToTerminal, openSystemPath } from '../../../services/tauriApi'
 import { mapParsedMessages } from '../../../hooks/useTauri'
 import { selectSessionList, useSessionStore } from '../../../stores/sessionStore'
 import type { BackendSession } from '../../../services/tauriApi'
 import type { ChatMessage, SessionState, TokenUsage } from '../../../types/agent'
 import { formatDurationShort } from '../../../utils/time'
 import { formatTokens } from '../../../utils/tokens'
+import { energyIntervalMs, getAppEnergyMode } from '../../../utils/energyPolicy'
 import type { MonitorSettingsView } from '../../../types/capability'
 import { SwitchUsagePanel } from './switch/SwitchUsagePanel'
 import { SwitchAppTabs } from './switch/SwitchAppTabs'
@@ -323,6 +324,17 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
   const [networkError, setNetworkError] = useState('')
   const [wrapperStatus, setWrapperStatus] = useState<ClaudeWrapperStatus>(DEFAULT_WRAPPER_STATUS)
   const [wrapperBusy, setWrapperBusy] = useState(false)
+  const energyMode = useMemo(() => getAppEnergyMode(liveSessions), [liveSessions])
+  const sessionRefreshIntervalMs = energyIntervalMs(energyMode, {
+    activeMs: 3000,
+    idleVisibleMs: 7000,
+    quietMs: 15000,
+  })
+  const networkRefreshIntervalMs = energyIntervalMs(energyMode, {
+    activeMs: 2000,
+    idleVisibleMs: 5000,
+    quietMs: 12000,
+  })
 
   const loadSessions = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true)
@@ -393,18 +405,18 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
   }, [loadNetworkRequests, loadNetworkStatus, loadWrapperStatus])
 
   useEffect(() => {
-    const timer = window.setInterval(() => loadSessions(false), 3000)
+    const timer = window.setInterval(() => loadSessions(false), sessionRefreshIntervalMs)
     return () => window.clearInterval(timer)
-  }, [loadSessions])
+  }, [loadSessions, sessionRefreshIntervalMs])
 
   useEffect(() => {
     if (!networkStatus.enabled) return
     const timer = window.setInterval(() => {
       loadNetworkStatus()
       loadNetworkRequests()
-    }, 2000)
+    }, networkRefreshIntervalMs)
     return () => window.clearInterval(timer)
-  }, [loadNetworkRequests, loadNetworkStatus, networkStatus.enabled])
+  }, [loadNetworkRequests, loadNetworkStatus, networkRefreshIntervalMs, networkStatus.enabled])
 
   useEffect(() => {
     if (!selectedId) {
@@ -440,10 +452,10 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
     let cancelled = false
     setChatLoading(true)
     setChatError('')
-    getChatHistory(selectedId)
-      .then((parsed) => {
+    getChatHistoryTail(selectedId, { limit: 200 })
+      .then((slice) => {
         if (cancelled) return
-        setMessages(mapParsedMessages(parsed))
+        setMessages(mapParsedMessages(slice.messages))
       })
       .catch((err) => {
         if (cancelled) return

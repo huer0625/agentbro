@@ -195,6 +195,44 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('运行中')).toHaveClass('hover-list__subagent-status--running')
   })
 
+  it('drops completed subagents from an earlier wave once a new wave is running (codex)', () => {
+    const now = Date.now()
+    render(
+      <HoverList
+        sessions={[session({
+          agentType: 'codex',
+          subagents: [
+            {
+              agentId: 'old-done',
+              name: 'wave-1',
+              agentType: 'worker',
+              description: 'Earlier turn work',
+              startedAt: now - 60_000,
+              completedAt: now - 50_000,
+              status: 'completed',
+              tools: [],
+              lastAssistantMessage: 'Wave 1 done.',
+            },
+            {
+              agentId: 'new-running',
+              name: 'wave-2',
+              agentType: 'worker',
+              description: 'Current turn work',
+              startedAt: now - 2_000,
+              status: 'running',
+              tools: ['Read'],
+            },
+          ],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Subagents (1)')).toBeInTheDocument()
+    expect(screen.getByText('@wave-2')).toBeInTheDocument()
+    expect(screen.queryByText('@wave-1')).not.toBeInTheDocument()
+  })
+
   it('summarizes running subagents like a child-agent team', () => {
     render(
       <HoverList
@@ -399,6 +437,18 @@ describe('HoverList interactions', () => {
     )
 
     expect(screen.getByText('iTerm2')).toHaveClass('hover-list__terminal-badge')
+    expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
+  })
+
+  it('labels Wave sessions from the bundle id', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '/dev/ttys001', termBundleId: 'dev.commandline.waveterm' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Wave')).toHaveClass('hover-list__terminal-badge')
     expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
   })
 

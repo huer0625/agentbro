@@ -1,15 +1,15 @@
 {
   "name": "agentbro",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.2.3",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:bridge": "cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge",
-    "build:bridge:release": "cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge --release",
+    "build:bridge": "mkdir -p src-tauri/target/agentbro-bridge-resource && touch src-tauri/target/agentbro-bridge-resource/agentbro-bridge && cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge && cp src-tauri/target/debug/agentbro-bridge src-tauri/target/agentbro-bridge-resource/agentbro-bridge",
+    "build:bridge:release": "mkdir -p src-tauri/target/agentbro-bridge-resource && touch src-tauri/target/agentbro-bridge-resource/agentbro-bridge && cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge --release && cp src-tauri/target/release/agentbro-bridge src-tauri/target/agentbro-bridge-resource/agentbro-bridge",
     "tauri:dev": "pnpm build:bridge && cargo tauri dev",
-    "tauri:build": "pnpm build:bridge:release && cargo tauri build",
+    "tauri:build": "pnpm build:bridge:release && cargo tauri build --bundles app,dmg --no-sign --ci --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
     "release:check": "node scripts/check-release-readiness.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -18,8 +18,8 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "framer-motion": "^12",

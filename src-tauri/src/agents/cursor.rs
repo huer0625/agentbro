@@ -25,12 +25,7 @@ impl CursorAdapter {
 
     fn is_installed() -> bool {
         // Check for cursor CLI or app
-        if std::process::Command::new("which")
-            .arg("cursor")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
+        if super::executable::command_exists("cursor") {
             return true;
         }
         // Check for macOS app bundle

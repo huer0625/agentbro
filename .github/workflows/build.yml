@@ -57,6 +57,8 @@ jobs:
 
       - name: Build Tauri app
         run: |
+          mkdir -p target/agentbro-bridge-resource
+          touch target/agentbro-bridge-resource/agentbro-bridge
           cargo build --release --target ${{ matrix.rust-target }}
         working-directory: src-tauri
 

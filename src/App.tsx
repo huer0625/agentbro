@@ -7,6 +7,7 @@ import { SettingsApp } from './components/settings'
 import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
 import { usePetStore } from './stores/petStore'
+import { BackgroundUpdater } from './components/BackgroundUpdater'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
@@ -16,20 +17,23 @@ import './styles/globals.css'
 // the `config-changed` event. We must NOT replay stale values from another
 // window's `storage` snapshot, or a notch window writing localStorage during a
 // `island-layout-preview` race can clobber the settings window's just-changed
-// `islandSurfaceMode`, causing the surface mode toggle to ping-pong.
+// `islandSurfaceMode`, causing the surface mode toggle to flip-flop.
 const BACKEND_MANAGED_CONFIG_KEYS = new Set<keyof ReturnType<typeof useConfigStore.getState>>([
   'soundEnabled', 'volume', 'launchAtLogin', 'autoHide', 'smartSuppression',
   'showUsageQuota', 'usageQueryEnabled', 'language', 'autoHideNoSessions', 'displayMonitor',
+  'codexAppServerSyncEnabled', 'codexAppServerSyncIntervalSeconds',
   'globalShortcut',
   'shortcutApprove', 'shortcutApproveEnabled',
   'shortcutDeny', 'shortcutDenyEnabled',
   'shortcutSkip', 'shortcutSkipEnabled',
   'soundEvents', 'soundRules', 'customSounds', 'soundPack',
   'probeSessionFilter',
+  'excludedHookCwdSubstrings', 'sessionSilenceRules',
   'tipsEnabled', 'pixelCursorEnabled', 'confettiEnabled',
   'analyticsEnabled', 'analyticsConsentPromptCompleted',
-  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandActivePetId',
+  'islandSurfaceMode', 'islandPetScale', 'islandPetWindowOrigin', 'islandPetWindowAnchor', 'islandActivePetId', 'islandAgentPetMap',
   'followFocus', 'quietHours', 'idleTimeoutMinutes',
+  'idleInteractionRoutingEnabled', 'idleInteractionRoutingMinutes',
 ])
 
 function applyPersistedConfig(raw: string | null) {
@@ -222,7 +226,10 @@ function App() {
           const { getCurrentWindow } = await import('@tauri-apps/api/window')
           const { invoke } = await import('@tauri-apps/api/core')
           await invoke('set_dock_visible', { visible: false })
-          getCurrentWindow().hide()
+          // Destroy (not hide) so the WebView XPC processes actually exit.
+          // The backend's `open_settings_window` rebuilds the window via
+          // `build_settings_window` next time the user reopens settings.
+          getCurrentWindow().destroy()
         } catch {
           // fallback: do nothing
         }
@@ -246,6 +253,7 @@ function App() {
       background: 'transparent',
       position: 'relative',
     }}>
+      <BackgroundUpdater />
       <NotchPanel />
     </div>
   )

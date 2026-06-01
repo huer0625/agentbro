@@ -169,12 +169,5 @@ impl AgentAdapter for TraeCliAdapter {
 }
 
 fn which(binary: &str) -> Option<String> {
-    std::process::Command::new("which")
-        .arg(binary)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
+    super::executable::find_binary(binary).map(|path| path.display().to_string())
 }

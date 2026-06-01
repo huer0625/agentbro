@@ -24,11 +24,7 @@ impl GeminiAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("gemini")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("gemini")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -75,61 +71,54 @@ impl AgentAdapter for GeminiAdapter {
         &self,
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw
-            .get("session_id")
-            .and_then(|v| v.as_str())
+        let session_id = string_field(raw, &["session_id", "sessionId"])
             .unwrap_or("unknown")
             .to_string();
-        let event = raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        let event = string_field(raw, &["event", "hook_event_name", "hookEventName"]).unwrap_or("");
+        let cwd = string_field(raw, &["cwd"]).unwrap_or("").to_string();
+        let tool_name = string_field(raw, &["tool", "tool_name", "toolName"])
+            .unwrap_or("Tool")
+            .to_string();
+        let tool_input = raw
+            .get("tool_input")
+            .or_else(|| raw.get("toolInput"))
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         match event {
-            "SessionStart" => Ok(AgentEvent::SessionStart {
+            "SessionStart" | "session_start" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_string(),
-                cwd: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                terminal: raw
-                    .get("tty")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                cwd,
+                terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "gemini".to_string(),
             }),
-            "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
-            "PreToolUse" => Ok(AgentEvent::ToolUse {
+            "SessionEnd" | "session_end" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "BeforeTool" | "PreToolUse" | "pre_tool_use" => Ok(AgentEvent::ToolUse {
                 session_id,
-                tool_name: raw
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                tool_input: raw
-                    .get("tool_input")
-                    .map(|v| v.to_string())
-                    .unwrap_or_default(),
+                tool_name,
+                tool_input,
                 tool_target: None,
                 status: "running".to_string(),
             }),
-            "PostToolUse" => Ok(AgentEvent::ToolUse {
+            "AfterTool" | "PostToolUse" | "post_tool_use" => Ok(AgentEvent::ToolUse {
                 session_id,
-                tool_name: raw
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                tool_input: raw
-                    .get("tool_input")
-                    .map(|v| v.to_string())
-                    .unwrap_or_default(),
+                tool_name,
+                tool_input,
                 tool_target: None,
                 status: "success".to_string(),
+            }),
+            "BeforeAgent" => Ok(AgentEvent::Processing {
+                session_id,
+                description: string_field(raw, &["message", "description"])
+                    .unwrap_or("Agent started")
+                    .to_string(),
+            }),
+            "AfterAgent" => Ok(AgentEvent::AssistantResponseComplete {
+                session_id,
+                text: string_field(raw, &["summary", "last_assistant_message", "message"])
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("Agent completed")
+                    .to_string(),
             }),
             _ => Ok(AgentEvent::Processing {
                 session_id,
@@ -141,4 +130,9 @@ impl AgentAdapter for GeminiAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.settings_path()]
     }
+}
+
+fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| raw.get(key).and_then(|value| value.as_str()))
 }

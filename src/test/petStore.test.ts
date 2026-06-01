@@ -12,7 +12,8 @@ function makePet(id: string, agentTypes?: string[]): PetOption {
     displayName: id,
     provider: id.startsWith('codex:') ? 'codex' : 'user',
     builtin: id.startsWith('codex:'),
-    spritesheetDataUrl: 'data:image/webp;base64,AAAA',
+    spritesheetPath: `/tmp/test-pets/${id}/spritesheet.webp`,
+    spritesheetUrl: `asset://localhost/tmp/test-pets/${id}/spritesheet.webp`,
     frameSize: { width: 192, height: 208 },
     animations: ANIMS,
     stateMapping: STATE_MAP,
@@ -44,23 +45,34 @@ describe('selectActivePet', () => {
   const registry = [dewey, codexPet, fireball]
 
   it('returns null when registry is empty', () => {
-    expect(selectActivePet([], null, [])).toBeNull()
-    expect(selectActivePet([], 'codex:dewey', [])).toBeNull()
+    expect(selectActivePet([], null, [], {})).toBeNull()
+    expect(selectActivePet([], 'codex:dewey', [], {})).toBeNull()
   })
 
   it('returns the locked pet when activePetId matches a registered pet', () => {
-    expect(selectActivePet(registry, 'codex:fireball', [])?.id).toBe('codex:fireball')
+    expect(selectActivePet(registry, 'codex:fireball', [], {})?.id).toBe('codex:fireball')
   })
 
   it('falls through to auto when activePetId is unknown (e.g. uninstalled pet)', () => {
-    const result = selectActivePet(registry, 'codex:ghost', [makeSession('claude-code')])
+    const result = selectActivePet(registry, 'codex:ghost', [makeSession('claude-code')], {})
     expect(result?.id).toBe('codex:dewey')
   })
 
-  it('auto mode picks pet by active session agentType', () => {
-    expect(selectActivePet(registry, null, [makeSession('claude-code')])?.id).toBe('codex:dewey')
-    expect(selectActivePet(registry, null, [makeSession('codex')])?.id).toBe('codex:codex')
-    expect(selectActivePet(registry, null, [makeSession('cursor')])?.id).toBe('codex:fireball')
+  it('auto mode prefers user-configured agentPetMap over agentTypes match', () => {
+    const map = { 'claude-code': 'codex:fireball' }
+    expect(selectActivePet(registry, null, [makeSession('claude-code')], map)?.id).toBe('codex:fireball')
+  })
+
+  it('auto mode falls back to agentTypes match when user map missing the agent', () => {
+    expect(selectActivePet(registry, null, [makeSession('claude-code')], {})?.id).toBe('codex:dewey')
+    expect(selectActivePet(registry, null, [makeSession('codex')], {})?.id).toBe('codex:codex')
+    expect(selectActivePet(registry, null, [makeSession('cursor')], {})?.id).toBe('codex:fireball')
+  })
+
+  it('auto mode skips user map entry pointing to an uninstalled pet and falls back', () => {
+    const map = { 'claude-code': 'codex:ghost' }
+    const result = selectActivePet(registry, null, [makeSession('claude-code')], map)
+    expect(result?.id).toBe('codex:dewey')
   })
 
   it('auto mode prefers active sessions over idle/done sessions', () => {
@@ -68,16 +80,16 @@ describe('selectActivePet', () => {
       makeSession('codex', 'done'),
       makeSession('claude-code', 'processing'),
     ]
-    expect(selectActivePet(registry, null, sessions)?.id).toBe('codex:dewey')
+    expect(selectActivePet(registry, null, sessions, {})?.id).toBe('codex:dewey')
   })
 
   it('auto mode falls back to registry[0] when no agentType matches', () => {
     const noMatchRegistry = [makePet('user:xyz')]
-    const result = selectActivePet(noMatchRegistry, null, [makeSession('claude-code')])
+    const result = selectActivePet(noMatchRegistry, null, [makeSession('claude-code')], {})
     expect(result?.id).toBe('user:xyz')
   })
 
   it('auto mode falls back to registry[0] when there are no sessions', () => {
-    expect(selectActivePet(registry, null, [])?.id).toBe('codex:dewey')
+    expect(selectActivePet(registry, null, [], {})?.id).toBe('codex:dewey')
   })
 })

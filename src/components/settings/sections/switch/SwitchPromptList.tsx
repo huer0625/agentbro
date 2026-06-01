@@ -12,14 +12,14 @@ export function SwitchPromptList() {
 
   useEffect(() => {
     loadPrompts()
-  }, [activeAppType])
+  }, [activeAppType, loadPrompts])
 
   useEffect(() => {
     if (error) {
       const t = setTimeout(clearError, 5000)
       return () => clearTimeout(t)
     }
-  }, [error])
+  }, [error, clearError])
 
   const handleNew = () => {
     setEditingPrompt(null)

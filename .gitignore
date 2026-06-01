@@ -17,6 +17,8 @@ tmp/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/*.local.*
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 
 .codex/
 .superpowers/

@@ -19,11 +19,7 @@ impl HermesAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("hermes")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("hermes")
     }
 
     fn plugin_path(&self) -> PathBuf {

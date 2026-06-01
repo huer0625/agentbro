@@ -69,6 +69,8 @@ build_app_bundle() {
     local bridge_out="$BUILD_DIR/universal-apple-darwin/release/agentbro-bridge"
 
     echo "==> Building universal bridge helper..."
+    mkdir -p "$BUILD_DIR/agentbro-bridge-resource"
+    touch "$BUILD_DIR/agentbro-bridge-resource/agentbro-bridge"
     cargo build --release --target aarch64-apple-darwin --bin agentbro-bridge --manifest-path src-tauri/Cargo.toml
     cargo build --release --target x86_64-apple-darwin --bin agentbro-bridge --manifest-path src-tauri/Cargo.toml
     mkdir -p "$(dirname "$bridge_out")"
@@ -76,12 +78,15 @@ build_app_bundle() {
         "$BUILD_DIR/aarch64-apple-darwin/release/agentbro-bridge" \
         "$BUILD_DIR/x86_64-apple-darwin/release/agentbro-bridge" \
         -output "$bridge_out"
+    cp "$bridge_out" "$BUILD_DIR/agentbro-bridge-resource/agentbro-bridge"
+    chmod +x "$BUILD_DIR/agentbro-bridge-resource/agentbro-bridge"
 
     cargo tauri build \
         --target universal-apple-darwin \
         --bundles app \
         --no-sign \
-        --ci
+        --ci \
+        --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
     if [ ! -d "$tauri_app" ]; then
         echo "Tauri app bundle not found: $tauri_app" >&2
@@ -108,6 +113,7 @@ sign_app() {
     echo "==> Signing app bundle..."
     local entitlements="src-tauri/Entitlements.plist"
     local app_path="$DIST_DIR/$APP_NAME.app"
+    local resource_bridge="$app_path/Contents/Resources/agentbro-bridge"
 
     while IFS= read -r binary; do
         if [ ! -x "$binary" ]; then
@@ -119,6 +125,15 @@ sign_app() {
             --sign "$identity" \
             "$binary"
     done < <(find "$app_path/Contents/MacOS" -type f)
+
+    if [ -f "$resource_bridge" ]; then
+        chmod +x "$resource_bridge"
+        echo "==> Signing executable resource: $resource_bridge"
+        codesign --force --timestamp --options runtime \
+            --entitlements "$entitlements" \
+            --sign "$identity" \
+            "$resource_bridge"
+    fi
 
     echo "==> Signing app container..."
     codesign --force --timestamp --options runtime \

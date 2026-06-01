@@ -23,7 +23,6 @@ const sidebarGroups: SidebarGroup[] = [
     items: [
       { id: 'general', labelKey: 'settings.general', icon: '⚙', iconBg: '#8E8E93' },
       { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
-      { id: 'agents', labelKey: 'settings.agents', icon: '🤖', iconBg: '#34C759' },
     ],
   },
   {
@@ -136,6 +135,7 @@ export function SettingsSidebar({
     const navItems: Array<{ id: IslandSettingsView; label: string; icon: string; iconBg: string }> = [
       { id: 'overview', label: t('settings.island.tabs.overview', { defaultValue: 'Overview' }), icon: '✦', iconBg: '#5856D6' },
       { id: 'display', label: t('settings.island.tabs.display', { defaultValue: 'Display' }), icon: '◉', iconBg: '#007AFF' },
+      { id: 'market', label: t('settings.island.tabs.market', { defaultValue: 'Pet Market' }), icon: '🛒', iconBg: '#34C759' },
       { id: 'behavior', label: t('settings.island.tabs.behavior', { defaultValue: 'Behavior' }), icon: '⚡', iconBg: '#FF9500' },
       { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '⚙', iconBg: '#34C759' },
       { id: 'remote', label: t('settings.island.tabs.remote', { defaultValue: 'SSH Remote' }), icon: '⇄', iconBg: '#00A8A8' },

@@ -6,6 +6,7 @@ import { DiffView } from '../notch/DiffView'
 import { setNotchFocusable, jumpToTerminal } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getWritePermissionPreview, parseToolInput, shortenPath, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
+import { isCompactPermissionPrompt } from '../../utils/notificationLayout'
 import './PermissionCard.css'
 
 interface PermissionCardProps {
@@ -180,6 +181,13 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   parsedInput = parseToolInput(data.toolInput)
   const toolLabel = getToolActivityLabel(t, data.toolName)
   const supportsPersistentActions = session.agentType !== 'codex'
+  const isCompactPermission = isCompactPermissionPrompt(overlay.data)
+  const cardClassName = `overlay-card--permission${isCompactPermission ? ' overlay-card--permission-compact' : ''}`
+  const actionsClassName = [
+    'perm-card__actions',
+    isCompactPermission ? 'perm-card__actions--compact' : undefined,
+    supportsPersistentActions ? undefined : 'perm-card__actions--two',
+  ].filter(Boolean).join(' ')
 
   useEffect(() => {
     if (showFeedback) feedbackRef.current?.focus()
@@ -245,7 +253,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   }, [showFeedback, handleReject, handleJump, overlay.id])
 
   return (
-    <OverlayCard session={session} onDismiss={onDismiss} onShowSessions={onShowSessions} sessionCount={sessionCount} className="overlay-card--permission" bodyClassName="perm-card">
+    <OverlayCard session={session} onDismiss={onDismiss} onShowSessions={onShowSessions} sessionCount={sessionCount} className={cardClassName} bodyClassName="perm-card">
       <div className="perm-card__scroll">
         {/* Queue progress bar */}
         {queueLength > 1 && (
@@ -304,7 +312,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
       )}
 
       {/* Action buttons */}
-      <div className="perm-card__actions">
+      <div className={actionsClassName}>
         <button
           type="button"
           className="perm-card__btn perm-card__btn--deny"

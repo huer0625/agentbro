@@ -25,11 +25,7 @@ impl AntiGravityAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("ag")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("ag")
     }
 
     fn settings_path(&self) -> PathBuf {

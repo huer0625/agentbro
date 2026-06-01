@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { getChatHistory, getSubagentChatHistory } from '../../services/tauriApi'
+import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { ChatHeader } from './ChatHeader'
 import { SubagentList } from './SubagentList'
@@ -118,6 +118,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   // Auto-load chat history when ChatView mounts, and refresh it as hook
   // metadata changes so detail view does not look empty while a run is active.
+  // Only loads the tail (~50 messages) to keep the floating detail view light.
   useEffect(() => {
     if (!activeSessionId) return
 
@@ -125,15 +126,20 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     queueMicrotask(() => {
       if (cancelled) return
       setLoadingHistory(activeSessionChatLength === 0)
-      getChatHistory(activeSessionId)
-        .then((parsed) => {
+      getChatHistoryTail(activeSessionId, { limit: 50 })
+        .then((slice) => {
           if (cancelled) return
-          if (parsed.length > 0) {
-            const messages = mapParsedMessages(parsed)
-            useSessionStore.getState().setChatHistory(activeSessionId, messages)
+          if (slice.messages.length > 0) {
+            const messages = mapParsedMessages(slice.messages)
+            useSessionStore.getState().setChatHistory(activeSessionId, messages, {
+              hasMore: slice.hasMore,
+              firstMessageId: slice.firstMessageId ?? undefined,
+              totalCount: slice.totalCount,
+              transcriptPath: slice.transcriptPath ?? undefined,
+            })
           }
         })
-        .catch((e) => console.warn('[ChatView] getChatHistory:', e))
+        .catch((e) => console.warn('[ChatView] getChatHistoryTail:', e))
         .finally(() => {
           if (!cancelled) setLoadingHistory(false)
         })
@@ -251,7 +257,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   }, [onBack])
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
-    if (!activeSessionId || !subagent.agentTranscriptPath) return
+    const historyPath = subagent.agentTranscriptPath
+      || (subagent.transcriptPath ? `${subagent.transcriptPath}#agentbro-subagent=${encodeURIComponent(subagent.agentId)}` : undefined)
+    if (!activeSessionId || !historyPath) return
     const title = subagent.name
       ? `@${subagent.name}`
       : (subagent.description || subagent.agentType || 'Subagent')
@@ -266,7 +274,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       messages: [],
       loading: true,
     })
-    getSubagentChatHistory(activeSessionId, subagent.agentTranscriptPath)
+    getSubagentChatHistory(activeSessionId, historyPath)
       .then((parsed) => {
         setSubagentHistory((current) => {
           if (!current || current.sessionId !== activeSessionId || current.agentId !== subagent.agentId) return current
@@ -292,7 +300,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   useEffect(() => {
     if (!initialSubagentId || !activeSession) return
     const subagent = activeSession.subagents.find((item) => item.agentId === initialSubagentId)
-    if (!subagent?.agentTranscriptPath) return
+    if (!subagent || !(subagent.agentTranscriptPath || subagent.transcriptPath)) return
     const id = window.setTimeout(() => {
       handleOpenSubagentHistory(subagent)
       onInitialSubagentHandled?.()
@@ -307,6 +315,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const currentSubagentHistory = subagentHistory?.sessionId === activeSession.id ? subagentHistory : null
   const displayedMessages = currentSubagentHistory?.messages ?? remoteDisplayMessages(activeSession)
   const agentName = getAgentDisplayName(activeSession)
+  const showHistoryLimitNotice = !currentSubagentHistory && activeSession.chatHistoryMeta?.hasMore
 
   return (
     <div className="chat-view">
@@ -317,6 +326,11 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       )}
 
       <div className="chat-view__messages glass-scroll" ref={contentRef} onScroll={handleScroll} style={{ fontSize: contentFontSize }}>
+        {showHistoryLimitNotice && (
+          <div className="chat-view__history-limit">
+            <span>{t('notch.historyLimitNotice', '性能优化，只加载最近几条消息。')}</span>
+          </div>
+        )}
         {currentSubagentHistory && (
           <div className="chat-view__subagent-history">
             <button className="chat-view__subagent-back" onClick={() => setSubagentHistory(null)}>
@@ -414,6 +428,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
           onDraftStateChange={onInputDraftStateChange}
+          onJumpToHostApp={() => jumpToTerminal(activeSession.id).catch((error) => console.warn('[ChatView] jumpToTerminal:', error))}
         />
       )}
 

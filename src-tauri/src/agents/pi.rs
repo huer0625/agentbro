@@ -25,11 +25,7 @@ impl PiAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("pi")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("pi")
     }
 
     fn hooks_path(&self) -> PathBuf {

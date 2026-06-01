@@ -24,11 +24,7 @@ impl CodeBuddyAdapter {
     }
 
     fn is_installed() -> bool {
-        std::process::Command::new("which")
-            .arg("codebuddy")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::executable::command_exists("codebuddy")
     }
 
     fn settings_path(&self) -> PathBuf {

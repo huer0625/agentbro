@@ -3,6 +3,7 @@
 // External dependency required: tokio (already a Tauri dependency)
 // No additional crates needed beyond std + tokio.
 
+mod attach;
 pub mod installer;
 pub mod manager;
 pub mod path;

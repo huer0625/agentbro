@@ -3,16 +3,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { useUpdateStore } from '../../stores/updateStore'
+import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionHasVisibleActivity, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
-import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
+import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
+import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
+import { UpdateBanner } from './UpdateBanner'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
 import { PermissionCard } from '../overlay/PermissionCard'
@@ -36,6 +39,10 @@ const closeMorphTransition = {
   duration: 0.5,
   ease: [0.2, 0, 0, 1] as const,
 }
+
+const WAKE_GAP_THRESHOLD_MS = 45_000
+const MIN_WAKE_SILENCE_MS = 8_000
+const MAX_WAKE_SILENCE_MS = 60_000
 
 const contentTransition = {
   duration: 0.2,
@@ -61,6 +68,8 @@ const HOVER_PANEL_MIN_HEIGHT = 180
 const EXPANDED_PREVIEW_SESSION_COUNT = 4
 const EXPANDED_PREVIEW_ROW_HEIGHT = 58
 const EXPANDED_PREVIEW_VERTICAL_PADDING = 48
+const PET_SURFACE_WIDTH = 820
+const PET_SURFACE_HEIGHT = 360
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
   return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
 }
@@ -265,6 +274,9 @@ export function NotchPanel() {
   const usageSnapshots = useSessionStore(selectUsageSnapshots)
   const activeOverlay = useSessionStore(selectActiveOverlay)
   const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
+  const updateAvailableVersion = useUpdateStore((s) => s.availableVersion)
+  const updateDismissedVersion = useUpdateStore((s) => s.dismissedVersion)
+  const showUpdateBanner = Boolean(updateAvailableVersion) && updateAvailableVersion !== updateDismissedVersion
   const dwellDuration = useConfigStore((s) => s.dwellDuration)
   const notchStyle = useConfigStore((s) => s.notchStyle)
   const maxPanelHeight = useConfigStore((s) => s.maxPanelHeight)
@@ -331,6 +343,33 @@ export function NotchPanel() {
   }, [applyIdleTimeout, idleTimeoutMinutes, sessionTimeoutMinutes])
 
   useEffect(() => {
+    let lastSeenAt = Date.now()
+    const silenceMs = Math.min(
+      MAX_WAKE_SILENCE_MS,
+      Math.max(MIN_WAKE_SILENCE_MS, escSilenceDuration * 1000),
+    )
+
+    const checkForWake = () => {
+      const now = Date.now()
+      if (shouldSilenceAfterWake(lastSeenAt, now, WAKE_GAP_THRESHOLD_MS)) {
+        setWakeSilencedUntil(now + silenceMs)
+      }
+      lastSeenAt = now
+    }
+
+    const onVisibleOrFocus = () => checkForWake()
+    const interval = window.setInterval(checkForWake, 10_000)
+    document.addEventListener('visibilitychange', onVisibleOrFocus)
+    window.addEventListener('focus', onVisibleOrFocus)
+
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibleOrFocus)
+      window.removeEventListener('focus', onVisibleOrFocus)
+    }
+  }, [escSilenceDuration, setWakeSilencedUntil])
+
+  useEffect(() => {
     if (!followFocus) {
       setFocusedSessionIds(null)
       return
@@ -360,8 +399,14 @@ export function NotchPanel() {
       }
     }
 
+    const refreshInterval = energyIntervalMs(getAppEnergyMode(sessions), {
+      activeMs: 1000,
+      idleVisibleMs: 3000,
+      quietMs: 8000,
+    })
+
     refreshFocusedSessions()
-    const interval = window.setInterval(refreshFocusedSessions, 1000)
+    const interval = window.setInterval(refreshFocusedSessions, refreshInterval)
     return () => {
       cancelled = true
       window.clearInterval(interval)
@@ -568,6 +613,23 @@ export function NotchPanel() {
       if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
     }
   }, [activeOverlay, blockingAttentionCount, panelState, setPanelState])
+
+  // Auto-expand the notch once per version when a new update is detected, so the
+  // banner is seen without the user opening anything. Yields to blocking
+  // overlays (approvals/questions) and never re-pops the same version this run.
+  const autoExpandedUpdateVersionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!showUpdateBanner || !updateAvailableVersion) return
+    if (autoExpandedUpdateVersionRef.current === updateAvailableVersion) return
+    const blockingActive = Boolean(activeOverlay && isBlockingOverlay(activeOverlay))
+    if (blockingActive) return
+    autoExpandedUpdateVersionRef.current = updateAvailableVersion
+    if (panelState === 'collapsed') {
+      interactionLockUntilRef.current = Math.max(interactionLockUntilRef.current, Date.now() + 1200)
+      setNotchOpacity(1).catch(() => {})
+      setPanelState('hover')
+    }
+  }, [showUpdateBanner, updateAvailableVersion, activeOverlay, panelState, setPanelState])
 
   // Persistent mode hides only after the configured no-active-session delay.
   useEffect(() => {
@@ -936,12 +998,18 @@ export function NotchPanel() {
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
+        const visibleFeedbackOverlay = Boolean(
+          activeOverlay
+          && isNonBlockingOverlay(activeOverlay)
+          && !interaction.isHidden,
+        )
         const ignoreTransparentHost = !islandEnabled
           || (
             !isDragging
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
+            && !visibleFeedbackOverlay
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
@@ -1170,14 +1238,19 @@ export function NotchPanel() {
       setPanelState('expanded')
     }, 0)
 
-    getChatHistory(sessionId)
-      .then((parsed) => {
-        if (parsed.length > 0) {
-          const messages = mapParsedMessages(parsed)
-          useSessionStore.getState().setChatHistory(sessionId, messages)
+    getChatHistoryTail(sessionId, { limit: 50 })
+      .then((slice) => {
+        if (slice.messages.length > 0) {
+          const messages = mapParsedMessages(slice.messages)
+          useSessionStore.getState().setChatHistory(sessionId, messages, {
+            hasMore: slice.hasMore,
+            firstMessageId: slice.firstMessageId ?? undefined,
+            totalCount: slice.totalCount,
+            transcriptPath: slice.transcriptPath ?? undefined,
+          })
         }
       })
-      .catch((e) => console.warn('[notch] getChatHistory:', e))
+      .catch((e) => console.warn('[notch] getChatHistoryTail:', e))
   }
 
   const handleSubagentClick = (sessionId: string, subagent: SubagentInfo) => {
@@ -1286,10 +1359,17 @@ export function NotchPanel() {
   )
   const usesWideApprovalOverlay = hasBlockingOverlayContent
     && (activeOverlay?.type === 'permission' || activeOverlay?.type === 'plan' || activeOverlay?.type === 'question')
+  const usesCompactPermissionOverlay = hasBlockingOverlayContent
+    && activeOverlay?.type === 'permission'
+    && isCompactPermissionPrompt(activeOverlay.data)
   const expandedPanelContentWidth = isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50)
+  const compactPermissionPanelWidth = Math.min(600, expandedPanelContentWidth)
   const approvalPanelWidth = typeof window === 'undefined'
-    ? expandedPanelContentWidth
-    : Math.min(expandedPanelContentWidth, Math.max(360, window.innerWidth - 24))
+    ? (usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth)
+    : Math.min(
+        usesCompactPermissionOverlay ? compactPermissionPanelWidth : expandedPanelContentWidth,
+        Math.max(360, window.innerWidth - 24),
+      )
   const feedbackPresentationOpen = Boolean(
     !layoutPreview
     && activeOverlay
@@ -1298,7 +1378,7 @@ export function NotchPanel() {
   )
   const collapsedHeight = getCollapsedIslandHeight(notchHeightMode, customNotchHeight)
   const contentWidth = isPetMode
-    ? 820
+    ? PET_SURFACE_WIDTH
     : previewMode === 'micro'
       ? microPillWidth
       : previewMode === 'compact'
@@ -1358,7 +1438,7 @@ export function NotchPanel() {
       )
   const panelHeight =
     isPetMode
-      ? 360
+      ? PET_SURFACE_HEIGHT
       : previewMode === 'micro' || previewMode === 'compact'
         ? collapsedHeight
         : previewMode === 'completion'
@@ -1424,11 +1504,11 @@ export function NotchPanel() {
   const maxHostSlopX = Math.max(NOTCH_HIT_SLOP_X_COLLAPSED, NOTCH_HIT_SLOP_X_EXPANDED)
   const maxHostSlopY = Math.max(NOTCH_HIT_SLOP_Y_COLLAPSED, NOTCH_HIT_SLOP_Y_EXPANDED)
   const expandedHostContentWidth = isPetMode
-    ? 820
+    ? PET_SURFACE_WIDTH
     : usesWideApprovalOverlay
       ? approvalPanelWidth
       : expandedPanelContentWidth
-  const expandedHostPanelHeight = isPetMode ? 360 : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
+  const expandedHostPanelHeight = isPetMode ? PET_SURFACE_HEIGHT : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
@@ -1579,10 +1659,8 @@ export function NotchPanel() {
   }, [])
 
   // Keep the native transparent host at a stable max canvas. macOS can briefly
-  // show the old WebView backing store when a transparent NSWindow is resized
+  // flash the old WebView backing store when a transparent NSWindow is resized
   // during hover/collapse; fixed host geometry avoids that repaint path.
-  // Cursor passthrough for the transparent area is handled with
-  // set_ignore_cursor_events while collapsed.
   useLayoutEffect(() => {
     if (isDragging) return
     const current = hostHitboxSizeRef.current
@@ -1633,6 +1711,9 @@ export function NotchPanel() {
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
     let inFlight = false
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+
     const repositionToCursorDisplay = () => {
       if (inFlight) return
       inFlight = true
@@ -1648,9 +1729,27 @@ export function NotchPanel() {
         { force: true },
       )
     }
-    const interval = window.setInterval(repositionToCursorDisplay, 500)
+
+    // One-shot reposition on mount: covers the case where the cursor was
+    // already on a different monitor than the saved one.
     repositionToCursorDisplay()
-    return () => window.clearInterval(interval)
+
+    // Then react to monitor transitions broadcast by the backend tracker.
+    // No more polling from this window.
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      if (cancelled) return
+      listen('cursor-monitor-changed', () => {
+        repositionToCursorDisplay()
+      }).then((fn) => {
+        if (cancelled) { fn(); return }
+        unlisten = fn
+      }).catch(() => {})
+    }).catch(() => {})
+
+    return () => {
+      cancelled = true
+      if (unlisten) unlisten()
+    }
   }, [displayMonitor, effectiveHorizontalOffset, hostHitboxSize.height, hostHitboxSize.width, isDragging, requestNativeHostResize, updateHostAnchorOffset])
 
   const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {
@@ -1829,6 +1928,10 @@ export function NotchPanel() {
                   isMicro={isMicro}
                   focusFilteredEmpty={focusFilteredEmpty}
                 />
+              )}
+
+              {showUpdateBanner && updateAvailableVersion && !preparingOpen && !hasBlockingOverlayContent && !feedbackPresentationOpen && effectivePanelState !== 'collapsed' && (
+                <UpdateBanner version={updateAvailableVersion} />
               )}
 
               <AnimatePresence mode="wait">

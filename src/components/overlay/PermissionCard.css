@@ -37,9 +37,18 @@
   box-shadow: none;
 }
 
+.overlay-card.overlay-card--permission-compact {
+  gap: 8px;
+  padding: 11px 16px 12px;
+}
+
 .overlay-card--permission .overlay-card__header {
   align-items: flex-start;
   min-height: 34px;
+}
+
+.overlay-card--permission-compact .overlay-card__header {
+  min-height: 30px;
 }
 
 .overlay-card--permission .overlay-card__close {
@@ -95,6 +104,12 @@
   min-height: 0;
   padding-right: 2px;
   overflow-y: auto;
+}
+
+.overlay-card--permission-compact .perm-card__scroll {
+  flex: 0 1 auto;
+  gap: 8px;
+  overflow: visible;
 }
 
 .perm-card__scroll::-webkit-scrollbar {
@@ -174,11 +189,17 @@
 .perm-card__detail-box {
   background: var(--perm-command-bg);
   border: 1px solid var(--perm-command-border);
-  border-radius: 0;
+  border-radius: 10px;
   padding: 9px 10px 8px;
   flex: 0 0 auto;
   max-height: 250px;
   overflow-y: auto;
+}
+
+.overlay-card--permission-compact .perm-card__detail-box {
+  max-height: 128px;
+  padding: 8px 10px;
+  overflow: hidden;
 }
 
 .perm-card__detail-tool-label {
@@ -219,7 +240,6 @@
 
 .perm-card__preview-code--bash {
   border: 0;
-  border-radius: 0;
   background: transparent;
   padding: 0;
   font-size: var(--approval-body-font-size);
@@ -238,6 +258,15 @@
   line-height: var(--approval-body-line-height);
   color: var(--perm-text);
   margin: 0;
+}
+
+.overlay-card--permission-compact .perm-card__preview-command {
+  max-height: 68px;
+  overflow: hidden;
+}
+
+.overlay-card--permission-compact .perm-card__preview-desc {
+  margin-top: 4px;
 }
 
 .perm-card__preview-command {
@@ -393,6 +422,20 @@
   margin-top: 2px;
 }
 
+.perm-card__actions--compact {
+  justify-content: flex-end;
+  padding-top: 5px;
+  border-top: 1px solid var(--perm-command-border);
+}
+
+.perm-card__actions--compact.perm-card__actions--two .perm-card__btn {
+  flex: 0 1 190px;
+}
+
+.perm-card__actions--compact.perm-card__actions--two .perm-card__btn--allow {
+  flex-basis: 210px;
+}
+
 .perm-card__btn {
   flex: 1 1 0;
   display: inline-flex;
@@ -498,6 +541,11 @@
     padding: 0 7px;
     font-size: 12px;
     border-radius: 8px;
+  }
+
+  .perm-card__actions--compact.perm-card__actions--two .perm-card__btn,
+  .perm-card__actions--compact.perm-card__actions--two .perm-card__btn--allow {
+    flex: 1 1 0;
   }
 
   .perm-card__kbd {

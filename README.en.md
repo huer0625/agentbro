@@ -69,11 +69,27 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 | Instant actions | Handle permission requests, questions, plan approvals, completions, and response cards in the island. |
 | Quick replies | Type a message directly in the island without switching back to the terminal. |
 | Task awareness | Show tool activity, subagent progress, task summaries, and token/rate-limit data where supported. |
+| Pet mode | Switch the island into a pet status panel whose vitals react to context pressure and token usage. |
+| Pet Market | Browse community pets and install them with one click, powered by the abpets CLI. See [www.agentbro.net/pets](https://www.agentbro.net/pets). |
 | Hook integration | One-click hook installation, Hook Doctor diagnostics, and custom CLI hook templates. |
 | Desktop controls | Global shortcuts, sounds, notifications, themes, display placement, and terminal-focus suppression. |
 | Local-first | The hook server runs locally through `/tmp/agentbro.sock` or `127.0.0.1:17892`. |
 | SSH Remote | Forward agent events from remote SSH machines back to your local island for remote development. |
 | Webhook notifications | Send notifications to DingTalk / Feishu webhooks. |
+
+## Pet Market
+
+Beyond the island, AgentBro can switch the floating window into a **pet status panel**: a desktop pet follows your active agent, and its vitals react in real time to context pressure and token usage — so you can tell at a glance whether a session is relaxed or under strain.
+
+The **Pet Market** lets you browse community-contributed pets and install them with one click, all driven by the [`abpets`](https://www.npmjs.com/package/abpets) CLI (Node.js v18+). Open it from **Island -> Pet Market** in settings, or preview every pet on the web:
+
+👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
+
+Want to author your own pet? Use the [`shirenchuang/agentbro-pet`](https://github.com/shirenchuang/agentbro-pet) skill to turn a character concept, brand cue, or reference image into an AgentBro-ready `pet.json` + `spritesheet.webp` package with pluggable image-generation backends. Install it with `npx skills add https://github.com/shirenchuang/agentbro-pet.git` or clone it directly; Codex, Claude Code, Cursor, Gemini CLI, and any other agent that can run scripts and generate images can use the workflow.
+
+<img src="https://github.com/user-attachments/assets/53a17db6-54c4-40f1-95b6-89a7f1977f00" alt="AgentBro pet mode" width="100%" />
+
+<img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro Pet Market" width="100%" />
 
 ## Supported Agents
 
@@ -107,6 +123,7 @@ AgentBro stays local-first. The first public release focuses on making the islan
 
 - Remote sync: sync settings, hooks, themes, prompts, skills, and remote host configuration across devices.
 - Skills community: discover, install, share, and update Skill Packs for different agents.
+- Pet ecosystem: ship more community pets, grow the Pet Market, and open up authoring and sharing of custom pets.
 - Team collaboration: shared configuration, team Skill Packs, access control, and clearer collaboration views.
 
 ## Join The Community
@@ -140,6 +157,14 @@ Linux support is possible later, but it is not part of the first public release 
 
 ### Homebrew Cask
 
+One-line install:
+
+```bash
+brew tap shirenchuang/tap && brew install --cask agentbro
+```
+
+Step-by-step install:
+
 ```bash
 brew tap shirenchuang/tap
 brew install --cask agentbro
@@ -147,7 +172,8 @@ brew install --cask agentbro
 
 ### Download a Release
 
-You can also download the latest DMG from [GitHub Releases](https://github.com/shirenchuang/agentbro/releases).
+- 🌍 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) (all versions)
+- 🇨🇳 Mainland China mirror (faster): [latest DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
 
 ## Local Development
 
@@ -222,6 +248,7 @@ Please target the `dev` branch. Run `pnpm lint && pnpm test:run && pnpm build &&
 Release notes and signing requirements live in [`docs/release.md`](docs/release.md).
 
 - Website: [www.agentbro.net](https://www.agentbro.net)
+- China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 - GitHub releases: `https://github.com/shirenchuang/agentbro/releases`
 
 ## License

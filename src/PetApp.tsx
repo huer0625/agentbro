@@ -4,6 +4,7 @@
 
 import { useEffect } from 'react'
 import { PetSurface } from './components/notch/PetSurface'
+import { BackgroundUpdater } from './components/BackgroundUpdater'
 import { useTauriInit } from './hooks/useTauri'
 import { useSessionStore } from './stores/sessionStore'
 import { useConfigStore } from './stores/configStore'
@@ -35,6 +36,7 @@ export function PetApp() {
 
   return (
     <div className="pet-window-root">
+      <BackgroundUpdater />
       <PetSurface sessions={sessions} scale={scale} hidden={isTauri() ? surfaceMode !== 'pet' : false} />
       {import.meta.env.DEV && petVitalsDebugOpen && <PetVitalsLab />}
     </div>

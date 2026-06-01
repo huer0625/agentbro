@@ -29,6 +29,10 @@ pub struct JumpContext {
     pub kitty_window_id: Option<String>,
     /// WEZTERM_PANE env var
     pub wezterm_pane: Option<String>,
+    /// Wave Terminal block routing metadata for native RPC focus.
+    pub waveterm_block_id: Option<String>,
+    pub waveterm_tab_id: Option<String>,
+    pub waveterm_jwt: Option<String>,
     /// Zellij pane/session identifiers
     pub zellij_pane_id: Option<String>,
     pub zellij_session_name: Option<String>,
@@ -171,6 +175,12 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
         return JumpResult::TerminalNotFound;
     };
 
+    if let Some(bundle_id) = ctx.term_bundle_id.as_deref() {
+        if is_ide_host_bundle(bundle_id) && !native_bundle_matches_context(ctx, bundle_id) {
+            return jump_to_ide_window(bundle_id, ctx.cwd.as_deref());
+        }
+    }
+
     let lower = term_app.to_lowercase();
 
     // ── iTerm2: precise session ID targeting ─────────────────────────────────
@@ -185,7 +195,12 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
 
     // ── Ghostty: AppleScript CWD/title matching ──────────────────────────────
     if lower.contains("ghostty") {
-        return jump_ghostty(ctx.cwd.as_deref(), ctx.tty_path.as_deref());
+        return jump_ghostty(
+            ctx.cwd.as_deref(),
+            ctx.tty_path.as_deref(),
+            None,
+            ctx.agent_type.as_deref(),
+        );
     }
 
     // ── Terminal.app: TTY tab matching ───────────────────────────────────────
@@ -202,6 +217,15 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
         );
     }
 
+    // ── Wave: focus the owning block through Wave's native RPC ───────────────
+    if lower.contains("wave") {
+        return jump_wave(
+            ctx.waveterm_block_id.as_deref(),
+            ctx.waveterm_tab_id.as_deref(),
+            ctx.waveterm_jwt.as_deref(),
+        );
+    }
+
     // ── Kitty: kitten @ focus-window ────────────────────────────────────────
     if lower.contains("kitty") {
         return jump_kitty(ctx.kitty_window_id.as_deref(), ctx.cwd.as_deref());
@@ -209,7 +233,11 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
 
     // ── Kaku: CLI pane targeting ─────────────────────────────────────────────
     if lower.contains("kaku") {
-        return jump_kaku(ctx.tty_path.as_deref(), ctx.cwd.as_deref());
+        return jump_kaku(
+            ctx.wezterm_pane.as_deref(),
+            ctx.tty_path.as_deref(),
+            ctx.cwd.as_deref(),
+        );
     }
 
     // ── Warp: activate first, then best-effort DB/CLI targeting when possible.
@@ -240,18 +268,42 @@ pub fn jump_to_terminal_app(terminal_name: &str) -> JumpResult {
     jump_via_app_activation(normalized)
 }
 
+/// Best-effort focus for IDE integrated terminals. We cannot reliably select an
+/// internal terminal pane without app-specific Accessibility automation, so we
+/// raise the IDE window whose title most likely matches the session cwd.
+pub fn jump_to_ide_window(bundle_id: &str, cwd: Option<&str>) -> JumpResult {
+    let activation = activate_bundle(bundle_id);
+    let Some(folder) = cwd.and_then(cwd_folder_name) else {
+        return match activation {
+            Ok(()) => JumpResult::Success,
+            Err(err) => JumpResult::Failed(err),
+        };
+    };
+
+    let script = ide_window_script(bundle_id, folder);
+    match run_osascript(&script) {
+        JumpResult::Success => JumpResult::Success,
+        JumpResult::Failed(_) if activation.is_ok() => JumpResult::Success,
+        other => other,
+    }
+}
+
 // ─── iTerm2 ──────────────────────────────────────────────────────────────────
 
 fn jump_iterm_by_session(session_id: &str) -> JumpResult {
     // Strip "w0t0p0:" prefix (ITERM_SESSION_ID format)
-    let sid = session_id.split(':').next_back().unwrap_or(session_id);
+    let sid = applescript_escape(session_id.split(':').next_back().unwrap_or(session_id));
     let script = format!(
         r#"tell application "iTerm2"
     activate
     repeat with aWindow in windows
+        try
+            if miniaturized of aWindow then set miniaturized of aWindow to false
+        end try
         repeat with aTab in tabs of aWindow
             repeat with aSession in sessions of aTab
                 if unique ID of aSession is "{sid}" then
+                    select aTab
                     select aSession
                     select aWindow
                     return
@@ -265,13 +317,18 @@ end tell"#
 }
 
 fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
-    // Build TTY match clause
+    let script = iterm_by_tty_or_cwd_script(tty, cwd);
+    run_osascript(&script)
+}
+
+fn iterm_by_tty_or_cwd_script(tty: Option<&str>, cwd: Option<&str>) -> String {
     let tty_clause = tty
         .map(|t| {
-            let dev = tty_to_dev_path(t);
+            let dev = applescript_escape(&tty_to_dev_path(t));
             format!(
                 r#"try
                     if tty of aSession contains "{dev}" then
+                        select aTab
                         select aSession
                         select aWindow
                         return
@@ -283,9 +340,12 @@ fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult 
 
     let cwd_clause = cwd
         .map(|c| {
+            let cwd = applescript_escape(c.trim_end_matches('/'));
+            let folder = cwd_folder_name(c).map(applescript_escape).unwrap_or_default();
             format!(
                 r#"try
-                    if variable named "session.path" of aSession is "{c}" then
+                    if variable named "session.path" of aSession is "{cwd}" or path of aSession contains "{folder}" or name of aSession contains "{folder}" then
+                        select aTab
                         select aSession
                         select aWindow
                         return
@@ -296,13 +356,16 @@ fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult 
         .unwrap_or_default();
 
     if tty_clause.is_empty() && cwd_clause.is_empty() {
-        return run_osascript(r#"tell application "iTerm2" to activate"#);
+        return r#"tell application "iTerm2" to activate"#.to_string();
     }
 
-    let script = format!(
+    format!(
         r#"tell application "iTerm2"
     activate
     repeat with aWindow in windows
+        try
+            if miniaturized of aWindow then set miniaturized of aWindow to false
+        end try
         repeat with aTab in tabs of aWindow
             repeat with aSession in sessions of aTab
                 {tty_clause}
@@ -311,13 +374,17 @@ fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult 
         end repeat
     end repeat
 end tell"#
-    );
-    run_osascript(&script)
+    )
 }
 
 // ─── Ghostty ─────────────────────────────────────────────────────────────────
 
-fn jump_ghostty(cwd: Option<&str>, tty: Option<&str>) -> JumpResult {
+fn jump_ghostty(
+    cwd: Option<&str>,
+    tty: Option<&str>,
+    session_id: Option<&str>,
+    source: Option<&str>,
+) -> JumpResult {
     let _ = run_osascript(r#"tell application "Ghostty" to activate"#);
 
     let cwd = match cwd.filter(|c| !c.is_empty()) {
@@ -325,7 +392,30 @@ fn jump_ghostty(cwd: Option<&str>, tty: Option<&str>) -> JumpResult {
         None => return JumpResult::Success,
     };
 
-    let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
+    let cwd_candidates = cwd_variants(cwd)
+        .into_iter()
+        .map(|candidate| {
+            format!(
+                r#""{}""#,
+                applescript_escape(candidate.trim_end_matches('/'))
+            )
+        })
+        .collect::<Vec<_>>();
+    let cwd_list = if cwd_candidates.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{{}}}", cwd_candidates.join(", "))
+    };
+    let folder = cwd_folder_name(cwd).unwrap_or(cwd);
+    let escaped_folder = applescript_escape(folder);
+    let escaped_source = applescript_escape(source.unwrap_or(""));
+    let escaped_session_prefix = applescript_escape(
+        session_id
+            .filter(|sid| !sid.is_empty())
+            .map(|sid| sid.chars().take(8).collect::<String>())
+            .as_deref()
+            .unwrap_or(""),
+    );
 
     // If we have a tty, try the precise FD-order mapping first.
     // Ghostty's ptmx FDs sorted by FD number correspond 1:1 with
@@ -341,8 +431,9 @@ fn jump_ghostty(cwd: Option<&str>, tty: Option<&str>) -> JumpResult {
             if (count terminals of t) ≥ {index} then
                 set term to terminal {index} of t
                 try
-                    if working directory of term is "{escaped_cwd}" then
+                    if {cwd_list} contains (working directory of term as text) then
                         focus term
+                        activate
                         return "focused"
                     end if
                 end try
@@ -351,7 +442,6 @@ fn jump_ghostty(cwd: Option<&str>, tty: Option<&str>) -> JumpResult {
     end repeat
 end tell"#,
                 index = index,
-                escaped_cwd = escaped_cwd,
             );
             let result = run_osascript(&script);
             if matches!(result, JumpResult::Success) {
@@ -360,24 +450,87 @@ end tell"#,
         }
     }
 
-    // Fallback: match by working directory and focus the terminal directly.
-    let script = format!(
+    let script = ghostty_cwd_title_script(
+        &cwd_list,
+        &escaped_folder,
+        &escaped_source,
+        &escaped_session_prefix,
+    );
+    run_osascript(&script)
+}
+
+fn ghostty_cwd_title_script(
+    cwd_list: &str,
+    folder: &str,
+    source: &str,
+    session_prefix: &str,
+) -> String {
+    format!(
         r#"tell application "Ghostty"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with term in terminals of t
+    set targetCwds to {cwd_list}
+    set targetFolder to "{folder}"
+    set targetSource to "{source}"
+    set targetSession to "{session_prefix}"
+    set matches to {{}}
+    repeat with term in terminals
+        try
+            if targetCwds contains (working directory of term as text) then
+                set end of matches to term
+            end if
+        end try
+    end repeat
+    if (count of matches) = 0 then
+        repeat with term in terminals
+            try
+                set termName to (name of term as text)
+                if targetFolder is not "" and termName contains targetFolder then
+                    set end of matches to term
+                end if
+            end try
+        end repeat
+    end if
+    if targetSession is not "" then
+        repeat with term in matches
+            try
+                if name of term contains targetSession then
+                    focus term
+                    activate
+                    return "focused"
+                end if
+            end try
+        end repeat
+    end if
+    if targetSource is not "" then
+        repeat with term in matches
+            try
+                if name of term contains targetSource then
+                    focus term
+                    activate
+                    return "focused"
+                end if
+            end try
+        end repeat
+    end if
+    if (count of matches) > 0 then
+        focus (item 1 of matches)
+    end if
+    activate
+end tell
+try
+    tell application "System Events"
+        tell process "Ghostty"
+            set frontmost to true
+            repeat with w in windows
                 try
-                    if working directory of term is "{escaped_cwd}" then
-                        focus term
-                        return "focused"
+                    if value of attribute "AXMinimized" of w is true then
+                        set value of attribute "AXMinimized" of w to false
                     end if
                 end try
             end repeat
-        end repeat
-    end repeat
-end tell"#
-    );
-    run_osascript(&script)
+        end tell
+    end tell
+end try"#
+    )
 }
 
 /// Map a tty device path to a 1-based Ghostty AppleScript terminal index.
@@ -444,50 +597,98 @@ fn ghostty_terminal_index_for_tty(tty: &str) -> Option<usize> {
 // ─── Terminal.app ────────────────────────────────────────────────────────────
 
 fn jump_terminal_app(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
+    let script = terminal_app_script(tty, cwd);
+    run_osascript(&script)
+}
+
+fn terminal_app_script(tty: Option<&str>, cwd: Option<&str>) -> String {
+    let target_tty = tty
+        .filter(|value| !value.is_empty())
+        .map(tty_to_dev_path)
+        .map(|value| applescript_escape(&value))
+        .unwrap_or_default();
+    let target_dir = cwd
+        .and_then(cwd_folder_name)
+        .map(applescript_escape)
+        .unwrap_or_default();
     let tty_clause = tty
-        .map(|t| {
-            let dev = tty_to_dev_path(t);
-            format!(
-                r#"repeat with aTab in tabs of aWindow
+        .filter(|value| !value.is_empty())
+        .map(|_| {
+            r#"if not found and targetTty is not "" then
+            repeat with aTab in tabs of aWindow
                 try
-                    if tty of aTab is "{dev}" then
+                    if tty of aTab is targetTty then
+                        if miniaturized of aWindow then set miniaturized of aWindow to false
                         set selected tab of aWindow to aTab
                         set index of aWindow to 1
-                        return
+                        set found to true
+                        exit repeat
                     end if
                 end try
-            end repeat"#
-            )
+            end repeat
+        end if"#
         })
-        .unwrap_or_default();
-
+        .unwrap_or("");
     let cwd_clause = cwd
-        .map(|c| {
-            let folder = c.rsplit('/').next().unwrap_or(c);
-            format!(
-                r#"repeat with aTab in tabs of aWindow
+        .and_then(cwd_folder_name)
+        .map(|_| {
+            r#"if not found and targetDir is not "" then
+            repeat with aTab in tabs of aWindow
                 try
-                    if custom title of aTab contains "{folder}" then
+                    if (name of aTab as text) contains targetDir or custom title of aTab contains targetDir then
+                        if miniaturized of aWindow then set miniaturized of aWindow to false
                         set selected tab of aWindow to aTab
                         set index of aWindow to 1
-                        return
+                        set found to true
+                        exit repeat
                     end if
                 end try
-            end repeat"#
-            )
+            end repeat
+        end if"#
         })
-        .unwrap_or_default();
+        .unwrap_or("");
 
-    let script = format!(
+    format!(
         r#"tell application "Terminal"
+    set targetTty to "{target_tty}"
+    set targetDir to "{target_dir}"
+    set found to false
     activate
     repeat with aWindow in windows
+        try
+            if miniaturized of aWindow then set miniaturized of aWindow to false
+        end try
         {tty_clause}
         {cwd_clause}
+        if found then exit repeat
     end repeat
-end tell"#
-    );
-    run_osascript(&script)
+    if not found then
+        repeat with aWindow in windows
+            try
+                if miniaturized of aWindow then
+                    set miniaturized of aWindow to false
+                    set index of aWindow to 1
+                    exit repeat
+                end if
+            end try
+        end repeat
+    end if
+end tell
+try
+    tell application "System Events"
+        tell process "Terminal"
+            set frontmost to true
+            repeat with w in windows
+                try
+                    if value of attribute "AXMinimized" of w is true then
+                        set value of attribute "AXMinimized" of w to false
+                    end if
+                end try
+            end repeat
+        end tell
+    end tell
+end try"#
+    )
 }
 
 // ─── WezTerm ─────────────────────────────────────────────────────────────────
@@ -498,6 +699,17 @@ fn jump_wezterm(pane_id: Option<&str>, tty: Option<&str>, cwd: Option<&str>) -> 
     let Some(bin) = find_binary("wezterm") else {
         return JumpResult::Success;
     };
+
+    if let Some(pid) = pane_id.filter(|value| !value.is_empty()) {
+        if std::process::Command::new(&bin)
+            .args(["cli", "activate-pane", "--pane-id", pid])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return JumpResult::Success;
+        }
+    }
 
     let tty_dev = tty.map(tty_to_dev_path);
 
@@ -519,52 +731,75 @@ fn jump_wezterm(pane_id: Option<&str>, tty: Option<&str>, cwd: Option<&str>) -> 
         None => return JumpResult::Success,
     };
 
+    let mut pane_match_id: Option<i64> = None;
     let mut tab_id: Option<i64> = None;
 
     if let Some(pid) = pane_id {
-        tab_id = panes.iter().find_map(|p| {
+        if let Some(p) = panes.iter().find(|p| {
             let id_str = p["pane_id"].as_i64().map(|id| id.to_string());
-            if id_str.as_deref() == Some(pid) {
-                p["tab_id"].as_i64()
-            } else {
-                None
-            }
-        });
-    }
-
-    if tab_id.is_none() {
-        if let Some(ref tty_str) = tty_dev {
-            tab_id = panes.iter().find_map(|p| {
-                if p["tty_name"].as_str() == Some(tty_str.as_str()) {
-                    p["tab_id"].as_i64()
-                } else {
-                    None
-                }
-            });
+            id_str.as_deref() == Some(pid)
+        }) {
+            pane_match_id = p["pane_id"].as_i64();
+            tab_id = p["tab_id"].as_i64();
         }
     }
 
-    if tab_id.is_none() {
+    if pane_match_id.is_none() && tab_id.is_none() {
+        if let Some(ref tty_str) = tty_dev {
+            if let Some(p) = panes
+                .iter()
+                .find(|p| p["tty_name"].as_str() == Some(tty_str.as_str()))
+            {
+                pane_match_id = p["pane_id"].as_i64();
+                tab_id = p["tab_id"].as_i64();
+            }
+        }
+    }
+
+    if pane_match_id.is_none() && tab_id.is_none() {
         if let Some(cwd_str) = cwd {
             let cwd_url = format!("file://{}", cwd_str);
-            tab_id = panes.iter().find_map(|p| {
+            if let Some(p) = panes.iter().find(|p| {
                 let pane_cwd = p["cwd"].as_str().unwrap_or("");
-                if pane_cwd == cwd_url || pane_cwd == cwd_str {
-                    p["tab_id"].as_i64()
-                } else {
-                    None
-                }
-            });
+                pane_cwd == cwd_url || pane_cwd == cwd_str
+            }) {
+                pane_match_id = p["pane_id"].as_i64();
+                tab_id = p["tab_id"].as_i64();
+            }
         }
     }
 
-    if let Some(id) = tab_id {
+    if let Some(id) = pane_match_id {
+        let _ = std::process::Command::new(&bin)
+            .args(["cli", "activate-pane", "--pane-id", &id.to_string()])
+            .output();
+    } else if let Some(id) = tab_id {
         let _ = std::process::Command::new(&bin)
             .args(["cli", "activate-tab", "--tab-id", &id.to_string()])
             .output();
     }
 
     JumpResult::Success
+}
+
+// ─── Wave ───────────────────────────────────────────────────────────────────
+
+fn jump_wave(block_id: Option<&str>, tab_id: Option<&str>, jwt: Option<&str>) -> JumpResult {
+    let _ = activate_app("Wave").or_else(|_| activate_bundle("dev.commandline.waveterm"));
+
+    let Some(block_id) = block_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(tab_id) = tab_id.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    let Some(jwt) = jwt.filter(|value| !value.is_empty()) else {
+        return JumpResult::Success;
+    };
+    match crate::terminal::wave::focus_block(block_id, tab_id, jwt) {
+        Ok(()) => JumpResult::Success,
+        Err(err) => JumpResult::Failed(err),
+    }
 }
 
 // ─── Zellij ──────────────────────────────────────────────────────────────────
@@ -642,11 +877,22 @@ fn jump_cmux(surface_id: Option<&str>, workspace_id: Option<&str>) -> JumpResult
 
 // ─── Kaku ────────────────────────────────────────────────────────────────────
 
-fn jump_kaku(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
+fn jump_kaku(pane_id: Option<&str>, tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
     let _ = activate_app("Kaku");
     let Some(bin) = find_binary("kaku") else {
         return JumpResult::Success;
     };
+
+    if let Some(pid) = pane_id.filter(|value| !value.is_empty()) {
+        if std::process::Command::new(&bin)
+            .args(["cli", "activate-pane", "--pane-id", pid])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return JumpResult::Success;
+        }
+    }
 
     let output = match std::process::Command::new(&bin)
         .args(["cli", "list", "--format", "json"])
@@ -880,14 +1126,63 @@ fn activate_bundle(bundle_id: &str) -> Result<(), String> {
     }
 }
 
+fn ide_window_script(bundle_id: &str, folder: &str) -> String {
+    let bundle_id = applescript_escape(bundle_id);
+    let folder = applescript_escape(folder);
+    format!(
+        r#"tell application "System Events"
+    set matchingProcesses to application processes whose bundle identifier is "{bundle_id}"
+    if (count of matchingProcesses) is 0 then return
+    set targetProcess to item 1 of matchingProcesses
+    set frontmost of targetProcess to true
+    set bestWindow to missing value
+    set bestLen to 999999
+    repeat with w in windows of targetProcess
+        try
+            set wName to name of w as text
+            if wName contains "{folder}" then
+                if value of attribute "AXMinimized" of w is true then
+                    set value of attribute "AXMinimized" of w to false
+                end if
+                set wLen to count of wName
+                if wLen < bestLen then
+                    set bestWindow to w
+                    set bestLen to wLen
+                end if
+            end if
+        end try
+    end repeat
+    if bestWindow is not missing value then
+        perform action "AXRaise" of bestWindow
+    end if
+end tell"#
+    )
+}
+
+fn applescript_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn cwd_folder_name(cwd: &str) -> Option<&str> {
+    let trimmed = cwd.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.rsplit('/').find(|part| !part.is_empty())
+}
+
 fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
     if let Some(bundle_id) = ctx.term_bundle_id.as_deref() {
         if !registry::is_terminal_bundle(bundle_id) {
+            if !native_bundle_matches_context(ctx, bundle_id) {
+                return None;
+            }
             return Some(match bundle_id {
                 "com.openai.chat" => "com.openai.chat",
                 "com.openai.codex" => "com.openai.codex",
                 "com.todesktop.230313mzl4w4u92" => "com.todesktop.230313mzl4w4u92",
                 "com.trae.app" => "com.trae.app",
+                "cn.trae.solo.app" => "cn.trae.solo.app",
                 "com.qoder.ide" => "com.qoder.ide",
                 "com.factory.app" => "com.factory.app",
                 "com.tencent.codebuddy" => "com.tencent.codebuddy",
@@ -902,7 +1197,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
 
     match ctx.agent_type.as_deref() {
         Some("cursor") => Some("com.todesktop.230313mzl4w4u92"),
-        Some("trae") | Some("traecn") => Some("com.trae.app"),
+        Some("trae") => Some("com.trae.app"),
+        Some("traecn") => Some("cn.trae.solo.app"),
         Some("qoder") => Some("com.qoder.ide"),
         Some("droid") => Some("com.factory.app"),
         Some("codebuddy") => Some("com.tencent.codebuddy"),
@@ -912,6 +1208,57 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
         Some("workbuddy") => Some("com.workbuddy.workbuddy"),
         _ => None,
     }
+}
+
+fn native_bundle_matches_context(ctx: &JumpContext, bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    matches!(
+        (ctx.agent_type.as_deref(), lower.as_str()),
+        (Some("codex"), "com.openai.codex")
+            | (Some("cursor"), "com.todesktop.230313mzl4w4u92")
+            | (Some("cursor-cli"), "com.todesktop.230313mzl4w4u92")
+            | (Some("trae"), "com.trae.app")
+            | (Some("traecn"), "com.trae.app")
+            | (Some("traecn"), "cn.trae.solo.app")
+            | (Some("trae-cli"), "com.trae.app")
+            | (Some("traecli"), "com.trae.app")
+            | (Some("qoder"), "com.qoder.ide")
+            | (Some("qoder-cli"), "com.qoder.ide")
+            | (Some("droid"), "com.factory.app")
+            | (Some("codebuddy"), "com.tencent.codebuddy")
+            | (Some("codebuddycn"), "com.tencent.codebuddy.cn")
+            | (Some("codybuddycn"), "com.tencent.codebuddy.cn")
+            | (Some("stepfun"), "com.stepfun.app")
+            | (Some("opencode"), "ai.opencode.desktop")
+            | (Some("workbuddy"), "com.workbuddy.workbuddy")
+    )
+}
+
+fn is_ide_host_bundle(bundle_id: &str) -> bool {
+    let lower = bundle_id.to_ascii_lowercase();
+    lower.contains("vscode")
+        || lower.contains("vscodium")
+        || lower.contains("todesktop.230313mzl4w4u92")
+        || lower.contains("cursor")
+        || lower.contains("windsurf")
+        || lower.contains("codeium")
+        || lower.contains("zed")
+        || lower.contains("jetbrains")
+        || lower.contains("xcode")
+        || lower == "com.apple.dt.xcode"
+        || lower.contains("panic.nova")
+        || lower.contains("android.studio")
+        || lower.contains("antigravity")
+        || lower == "com.trae.app"
+        || lower == "cn.trae.solo.app"
+        || lower == "com.qoder.ide"
+        || lower == "com.qoder.ide.helper"
+        || lower == "com.factory.app"
+        || lower == "com.tencent.codebuddy"
+        || lower == "com.tencent.codebuddy.cn"
+        || lower == "com.stepfun.app"
+        || lower == "ai.opencode.desktop"
+        || lower == "com.workbuddy.workbuddy"
 }
 
 fn outer_terminal_app(
@@ -961,6 +1308,8 @@ fn terminal_app_from_bundle_id(bundle_id: &str) -> Option<&'static str> {
         Some("cmux")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("waveterm") || lower.contains("commandline.wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") || lower.contains("microsoft.vscode") {
@@ -990,6 +1339,8 @@ fn terminal_app_from_term_program(term_program: &str) -> Option<&'static str> {
         Some("kitty")
     } else if lower.contains("warp") {
         Some("Warp")
+    } else if lower.contains("wave") {
+        Some("Wave")
     } else if lower.contains("alacritty") {
         Some("Alacritty")
     } else if lower.contains("vscode") {
@@ -1018,6 +1369,8 @@ fn normalized_app_name(name: &str) -> &str {
         "cmux"
     } else if lower.contains("warp") {
         "Warp"
+    } else if lower.contains("wave") {
+        "Wave"
     } else if lower.contains("alacritty") {
         "Alacritty"
     } else if lower.contains("terminal") && !lower.contains("ghostty") {
@@ -1158,8 +1511,9 @@ WHERE active_tab_index != tab_idx
   AND tab_idx BETWEEN 0 AND 8;
 "#
     );
+    let db_uri = sqlite_file_uri(db);
     let output = std::process::Command::new(sqlite)
-        .args([db, query.as_str()])
+        .args(["-readonly", db_uri.as_str(), query.as_str()])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1170,6 +1524,20 @@ WHERE active_tab_index != tab_idx
         .parse::<i64>()
         .ok()
         .filter(|position| (1..=9).contains(position))
+}
+
+fn sqlite_file_uri(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len() + 24);
+    for ch in path.chars() {
+        match ch {
+            '%' => encoded.push_str("%25"),
+            '?' => encoded.push_str("%3F"),
+            '#' => encoded.push_str("%23"),
+            ' ' => encoded.push_str("%20"),
+            _ => encoded.push(ch),
+        }
+    }
+    format!("file://{encoded}?mode=ro&nolock=1")
 }
 
 fn cwd_variants(raw: &str) -> Vec<String> {
@@ -1215,6 +1583,8 @@ end tell"#,
 fn tty_to_dev_path(tty: &str) -> String {
     if tty.starts_with("/dev/") {
         tty.to_string()
+    } else if tty.starts_with("tty") {
+        format!("/dev/{tty}")
     } else {
         format!("/dev/tty{}", tty)
     }
@@ -1225,8 +1595,9 @@ mod tests {
     use crate::terminal::process_tree;
 
     use super::{
-        normalized_app_name, outer_terminal_app, terminal_app_from_bundle_id,
-        terminal_app_from_term_program, JumpContext,
+        cwd_variants, ide_window_script, iterm_by_tty_or_cwd_script, native_bundle_for_context,
+        normalized_app_name, outer_terminal_app, sqlite_file_uri, terminal_app_from_bundle_id,
+        terminal_app_from_term_program, terminal_app_script, JumpContext,
     };
     use std::collections::HashMap;
 
@@ -1245,7 +1616,12 @@ mod tests {
             terminal_app_from_bundle_id("com.googlecode.iterm2"),
             Some("iTerm2")
         );
+        assert_eq!(
+            terminal_app_from_bundle_id("dev.commandline.waveterm"),
+            Some("Wave")
+        );
         assert_eq!(terminal_app_from_term_program("iTerm.app"), Some("iTerm2"));
+        assert_eq!(terminal_app_from_term_program("Wave"), Some("Wave"));
         assert_eq!(terminal_app_from_bundle_id("com.anthropic.claude"), None);
     }
 
@@ -1309,5 +1685,72 @@ mod tests {
         };
 
         assert_eq!(outer_terminal_app(&ctx, &tree).as_deref(), Some("iTerm2"));
+    }
+
+    #[test]
+    fn native_app_fallback_requires_matching_source_for_ide_bundles() {
+        let claude_in_qoder = JumpContext {
+            agent_type: Some("claude-code".to_string()),
+            term_bundle_id: Some("com.qoder.ide".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(native_bundle_for_context(&claude_in_qoder), None);
+
+        let qoder_app = JumpContext {
+            agent_type: Some("qoder".to_string()),
+            term_bundle_id: Some("com.qoder.ide".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(native_bundle_for_context(&qoder_app), Some("com.qoder.ide"));
+    }
+
+    #[test]
+    fn terminal_app_script_matches_default_tab_name_before_custom_title() {
+        let script = terminal_app_script(Some("ttys001"), Some("/Users/me/code/agentbro"));
+
+        assert!(script.contains("set targetTty to \"/dev/ttys001\""));
+        assert!(script.contains("set targetDir to \"agentbro\""));
+        assert!(script.contains("name of aTab as text"));
+        assert!(script.contains("custom title of aTab"));
+        assert!(script.contains("AXMinimized"));
+    }
+
+    #[test]
+    fn iterm_fallback_script_selects_tab_session_and_cwd_folder() {
+        let script = iterm_by_tty_or_cwd_script(None, Some("/Users/me/code/agentbro"));
+
+        assert!(script.contains("path of aSession contains \"agentbro\""));
+        assert!(script.contains("name of aSession contains \"agentbro\""));
+        assert!(script.contains("select aTab"));
+        assert!(script.contains("select aSession"));
+    }
+
+    #[test]
+    fn ide_window_script_targets_bundle_and_project_window() {
+        let script = ide_window_script("com.todesktop.230313mzl4w4u92", "agentbro");
+
+        assert!(script.contains(
+            "application processes whose bundle identifier is \"com.todesktop.230313mzl4w4u92\""
+        ));
+        assert!(script.contains("wName contains \"agentbro\""));
+        assert!(script.contains("AXRaise"));
+    }
+
+    #[test]
+    fn warp_sqlite_uri_uses_read_only_nolock() {
+        assert_eq!(
+            sqlite_file_uri("/Users/me/My Project/warp#state.sqlite"),
+            "file:///Users/me/My%20Project/warp%23state.sqlite?mode=ro&nolock=1"
+        );
+    }
+
+    #[test]
+    fn warp_cwd_variants_cover_firmlinks_and_trailing_slashes() {
+        let variants = cwd_variants("/tmp/agentbro/");
+
+        assert!(variants.contains(&"/tmp/agentbro".to_string()));
+        assert!(variants.contains(&"/tmp/agentbro/".to_string()));
+        assert!(variants.contains(&"/private/tmp/agentbro".to_string()));
+        assert!(variants.contains(&"/private/tmp/agentbro/".to_string()));
     }
 }

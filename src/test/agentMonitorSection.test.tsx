@@ -19,7 +19,7 @@ const monitorMocks = vi.hoisted(() => ({
 }))
 
 const tauriMocks = vi.hoisted(() => ({
-  getChatHistory: vi.fn(),
+  getChatHistoryTail: vi.fn(),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
   openSystemPath: vi.fn(() => Promise.resolve()),
 }))
@@ -41,7 +41,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
-    getChatHistory: tauriMocks.getChatHistory,
+    getChatHistoryTail: tauriMocks.getChatHistoryTail,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     openSystemPath: tauriMocks.openSystemPath,
   }
@@ -133,6 +133,7 @@ const detail = {
     }],
     tasks: [],
     isYoloMode: false,
+    model: null,
     lastUserMessage: null,
     lastResponse: null,
     lastThought: null,
@@ -199,14 +200,20 @@ describe('AgentMonitorSection', () => {
     })
     monitorMocks.getNetworkMonitorRequests.mockResolvedValue([])
     monitorMocks.getNetworkMonitorRequestDetail.mockResolvedValue(null)
-    tauriMocks.getChatHistory.mockResolvedValue([
-      {
-        id: 'msg-1',
-        role: 'user',
-        timestamp: '2026-05-17T00:00:00Z',
-        blocks: [{ type: 'text', text: '请检查监控模块' }],
-      },
-    ])
+    tauriMocks.getChatHistoryTail.mockResolvedValue({
+      messages: [
+        {
+          id: 'msg-1',
+          role: 'user',
+          timestamp: '2026-05-17T00:00:00Z',
+          blocks: [{ type: 'text', text: '请检查监控模块' }],
+        },
+      ],
+      hasMore: false,
+      firstMessageId: 'msg-1',
+      totalCount: 1,
+      transcriptPath: '/Users/me/.claude/projects/agentbro/session-1.jsonl',
+    })
   })
 
   it('shows monitor sessions and loads detail tabs', async () => {
@@ -228,7 +235,7 @@ describe('AgentMonitorSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '对话' }))
     await waitFor(() => expect(screen.getByText('请检查监控模块')).toBeInTheDocument())
-    expect(tauriMocks.getChatHistory).toHaveBeenCalledWith('session-1')
+    expect(tauriMocks.getChatHistoryTail).toHaveBeenCalledWith('session-1', { limit: 200 })
 
     fireEvent.click(screen.getByRole('button', { name: 'Raw 事件' }))
     await waitFor(() => expect(screen.getByText('PreToolUse')).toBeInTheDocument())
@@ -349,7 +356,7 @@ describe('AgentMonitorSection', () => {
 
     await waitFor(() => expect(screen.getByText('已开启')).toBeInTheDocument())
     await waitFor(() => expect(screen.getAllByText('MainAgent').length).toBeGreaterThan(0))
-    expect(screen.getByText('cache read 40')).toBeInTheDocument()
+    expect(await screen.findByText('cache read 40')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Tools' }))
     await waitFor(() => expect(screen.getAllByText('Edit').length).toBeGreaterThan(0))
@@ -358,13 +365,13 @@ describe('AgentMonitorSection', () => {
     expect(await screen.findByText('event #1')).toBeInTheDocument()
   })
 
-  it('opens Agent management while keeping other unfinished modules out of the menu', async () => {
+  it('keeps unfinished modules out of the settings menu', async () => {
     monitorMocks.getMonitorSessions.mockResolvedValue([])
     monitorMocks.getMonitorSessionDetail.mockResolvedValue(null)
 
     render(<SettingsApp onClose={vi.fn()} />)
 
-    expect(screen.getByText('settings.agents')).toBeInTheDocument()
+    expect(screen.queryByText('settings.agents')).not.toBeInTheDocument()
     expect(screen.queryByText('settings.agentMonitor')).not.toBeInTheDocument()
     expect(screen.queryByText('settings.switch')).not.toBeInTheDocument()
   })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CompositionEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -6,6 +6,7 @@ import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { sendMessage, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
+import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import { formatDurationShort } from '../../utils/time'
 import { MascotRouter } from '../notch/mascots/MascotRouter'
 import './OverlayFeedbackPanel.css'
@@ -58,6 +59,7 @@ export function OverlayFeedbackPanel({
   const onDismissRef = useRef(onDismiss)
   const pointerInsideRef = useRef(false)
   const inputFocusedRef = useRef(false)
+  const inputComposingRef = useRef(false)
   const dismissPendingRef = useRef(false)
   const remainingRef = useRef(dwellMs)
   const startedAtRef = useRef(0)
@@ -65,6 +67,7 @@ export function OverlayFeedbackPanel({
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dismissAfterSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
   const countdownDeadline = countdownStartedAt + dwellMs
   const hasInputDraft = inputValue.trim().length > 0
@@ -73,6 +76,7 @@ export function OverlayFeedbackPanel({
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
   const agentName = getAgentDisplayName(session)
+  const capability = getComposerCapability(session)
 
   useEffect(() => {
     onDismissRef.current = onDismiss
@@ -126,6 +130,7 @@ export function OverlayFeedbackPanel({
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
       if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
       if (dismissAfterSendTimerRef.current) clearTimeout(dismissAfterSendTimerRef.current)
+      if (refocusTimerRef.current) clearTimeout(refocusTimerRef.current)
     }
   }, [countdownDeadline, dwellMs, scheduleDismiss, updateProgress])
 
@@ -159,9 +164,17 @@ export function OverlayFeedbackPanel({
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
     }
+    if (refocusTimerRef.current) {
+      clearTimeout(refocusTimerRef.current)
+      refocusTimerRef.current = null
+    }
     setNotchFocusable(true)
       .then(() => {
         window.requestAnimationFrame(() => inputRef.current?.focus())
+        refocusTimerRef.current = setTimeout(() => {
+          refocusTimerRef.current = null
+          if (inputFocusedRef.current) inputRef.current?.focus()
+        }, 80)
       })
       .catch(() => {
         inputRef.current?.focus()
@@ -170,6 +183,10 @@ export function OverlayFeedbackPanel({
 
   const releaseInputFocus = useCallback(() => {
     if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+    if (refocusTimerRef.current) {
+      clearTimeout(refocusTimerRef.current)
+      refocusTimerRef.current = null
+    }
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
       inputFocusedRef.current = false
@@ -212,6 +229,7 @@ export function OverlayFeedbackPanel({
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation()
+    if (event.nativeEvent.isComposing || inputComposingRef.current) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       void handleSend()
@@ -222,8 +240,18 @@ export function OverlayFeedbackPanel({
     }
   }, [handleSend, inputValue])
 
+  const handleCompositionStart = useCallback(() => {
+    inputComposingRef.current = true
+  }, [])
+
+  const handleCompositionEnd = useCallback((event: CompositionEvent<HTMLInputElement>) => {
+    inputComposingRef.current = false
+    setInputValue(event.currentTarget.value)
+  }, [])
+
   const handleJump = useCallback(() => {
     onJumpToTerminal()
+    onDismissRef.current()
   }, [onJumpToTerminal])
 
   const handlePanelMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
@@ -321,42 +349,50 @@ export function OverlayFeedbackPanel({
         </div>
       </button>
 
-      <div className="overlay-feedback__reply" data-no-drag>
-        <input
-          ref={inputRef}
-          className="overlay-feedback__input"
-          data-has-draft={hasInputDraft ? 'true' : 'false'}
-          value={inputValue}
-          placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
-          disabled={sending}
-          onChange={(event) => setInputValue(event.target.value)}
-          onKeyDown={handleKeyDown}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            focusInput()
-          }}
-          onClick={(event) => event.stopPropagation()}
-          onFocus={focusInput}
-          onBlur={releaseInputFocus}
+      {capability.kind === 'locked' ? (
+        <OverlayComposerHint
+          reason={capability.reason}
+          onJumpToHostApp={handleJump}
         />
-        <button
-          type="button"
-          className="overlay-feedback__send"
-          disabled={!inputValue.trim() || sending}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            if (blurTimerRef.current) {
-              clearTimeout(blurTimerRef.current)
-              blurTimerRef.current = null
-            }
-            void handleSend()
-          }}
-        >
-          {sending ? '...' : t('notch.send', { defaultValue: 'Send' })}
-        </button>
-      </div>
+      ) : (
+        <div className="overlay-feedback__reply" data-no-drag>
+          <input
+            ref={inputRef}
+            className="overlay-feedback__input"
+            data-has-draft={hasInputDraft ? 'true' : 'false'}
+            value={inputValue}
+            placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
+            disabled={sending}
+            onChange={(event) => setInputValue(event.target.value)}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
+            onKeyDown={handleKeyDown}
+            onMouseDown={(event) => {
+              event.stopPropagation()
+              focusInput()
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onFocus={focusInput}
+            onBlur={releaseInputFocus}
+          />
+          <button
+            type="button"
+            className="overlay-feedback__send"
+            disabled={!inputValue.trim() || sending}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (blurTimerRef.current) {
+                clearTimeout(blurTimerRef.current)
+                blurTimerRef.current = null
+              }
+              void handleSend()
+            }}
+          >
+            {sending ? '...' : t('notch.send', { defaultValue: 'Send' })}
+          </button>
+        </div>
+      )}
 
       <div className="overlay-card__secondary" data-no-drag>
         {onShowSessions && sessionCount != null ? (
@@ -390,4 +426,55 @@ export function OverlayFeedbackPanel({
       </div>
     </div>
   )
+}
+
+function OverlayComposerHint({
+  reason,
+  onJumpToHostApp,
+}: {
+  reason: ComposerLockReason
+  onJumpToHostApp: () => void
+}) {
+  const { t } = useTranslation()
+  const messageKey = composerHintMessageKey(reason)
+  const ctaKey = composerHintCtaKey(reason)
+
+  return (
+    <div className="overlay-feedback__reply overlay-feedback__reply--hint" data-no-drag role="note">
+      <span className="overlay-feedback__hint-text">{t(messageKey)}</span>
+      {ctaKey && (
+        <button
+          type="button"
+          className="overlay-feedback__hint-cta"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onJumpToHostApp()
+          }}
+        >
+          {t(ctaKey)}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function composerHintMessageKey(reason: ComposerLockReason): string {
+  switch (reason) {
+    case 'codex-app': return 'notch.composerHintCodexApp'
+    case 'qoder-app': return 'notch.composerHintQoderApp'
+    case 'remote': return 'notch.composerHintRemote'
+    case 'no-terminal': return 'notch.composerHintNoTerminal'
+  }
+}
+
+function composerHintCtaKey(reason: ComposerLockReason): string | null {
+  switch (reason) {
+    case 'codex-app':
+    case 'qoder-app':
+      return 'notch.openHostApp'
+    case 'remote':
+    case 'no-terminal':
+      return null
+  }
 }

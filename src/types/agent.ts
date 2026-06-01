@@ -1,7 +1,7 @@
 /* AgentBro — Shared TypeScript Types */
 
 export type AgentType =
-  | 'claude-code' | 'codex' | 'gemini-cli'
+  | 'claude-code' | 'cline' | 'codex' | 'gemini-cli'
   | 'cursor' | 'cursor-cli'
   | 'copilot'
   | 'trae' | 'traecli' | 'traecn'
@@ -130,6 +130,18 @@ export interface TerminalInfo {
   paneId?: string
 }
 
+/**
+ * Metadata for tail-only chat history. Backend returns only the newest slice
+ * (e.g. last 50 messages); hasMore lets the UI explain that older messages
+ * were intentionally skipped for performance.
+ */
+export interface ChatHistoryMeta {
+  hasMore: boolean
+  firstMessageId?: string
+  totalCount?: number
+  transcriptPath?: string
+}
+
 export type SessionNoticeKind =
   | 'terminal_approval'
   | 'terminal_question'
@@ -172,6 +184,7 @@ export interface SessionState {
   lastToolStatus?: ToolStatus
   description?: string
   chatHistory: ChatMessage[]
+  chatHistoryMeta?: ChatHistoryMeta
   subagents: SubagentInfo[]
   activeTools: ToolResult[]
   tasks?: TaskInfo[]
@@ -195,6 +208,7 @@ export interface SessionState {
   responseText?: string
   taskCompletedAt?: number // timestamp when task completed
   isYoloMode?: boolean
+  model?: string
   notice?: SessionNotice
   lastActivityAt?: number // timestamp for processing timeout
 }

@@ -15,6 +15,8 @@ const tauriMocks = vi.hoisted(() => ({
   setSoundEventRule: vi.fn(() => Promise.resolve()),
   registerGlobalShortcut: vi.fn(() => Promise.resolve()),
   setGlobalActionShortcuts: vi.fn(() => Promise.resolve()),
+  setIslandSurfaceOptions: vi.fn(() => Promise.resolve()),
+  setAnalyticsEnabled: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -31,6 +33,8 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     setSoundEventRule: tauriMocks.setSoundEventRule,
     registerGlobalShortcut: tauriMocks.registerGlobalShortcut,
     setGlobalActionShortcuts: tauriMocks.setGlobalActionShortcuts,
+    setIslandSurfaceOptions: tauriMocks.setIslandSurfaceOptions,
+    setAnalyticsEnabled: tauriMocks.setAnalyticsEnabled,
   }
 })
 
@@ -58,11 +62,18 @@ describe('settings island menu', () => {
     tauriMocks.listDisplays.mockResolvedValue([])
     tauriMocks.registerGlobalShortcut.mockResolvedValue(undefined)
     tauriMocks.setGlobalActionShortcuts.mockResolvedValue(undefined)
+    tauriMocks.setIslandSurfaceOptions.mockResolvedValue(undefined)
+    tauriMocks.setAnalyticsEnabled.mockResolvedValue(undefined)
     useConfigStore.setState({
       displayMonitor: 'auto',
       followFocus: false,
       tipsEnabled: true,
       sshHosts: [],
+      analyticsEnabled: false,
+      analyticsConsentPromptCompleted: true,
+      islandSurfaceMode: 'island',
+      islandPetScale: 72,
+      islandPetWindowOrigin: null,
     })
   })
 
@@ -85,6 +96,28 @@ describe('settings island menu', () => {
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
 
+  it('completes first-run setup with surface mode and analytics consent', async () => {
+    useConfigStore.setState({
+      analyticsEnabled: false,
+      analyticsConsentPromptCompleted: false,
+      islandSurfaceMode: 'island',
+      islandPetWindowOrigin: { x: 12, y: 18 },
+    })
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('radio', { name: /settings.surfacePet/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
+
+    await waitFor(() => expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(true))
+    expect(useConfigStore.getState().islandSurfaceMode).toBe('pet')
+    expect(useConfigStore.getState().islandPetWindowOrigin).toBe(null)
+    expect(tauriMocks.setIslandSurfaceOptions).toHaveBeenCalledWith({
+      islandSurfaceMode: 'pet',
+      islandPetScale: 72,
+    })
+    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(false)
+  })
+
   it('places SSH Remote under Integration and keeps it separate from Advanced', async () => {
     const { container } = render(<SettingsApp onClose={vi.fn()} />)
 
@@ -93,7 +126,9 @@ describe('settings island menu', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Overview/ })).toHaveClass('active'))
     const islandMenuLabels = Array.from(container.querySelectorAll('.settings-capability-nav button'))
       .map((button) => button.getAttribute('aria-label'))
-    expect(islandMenuLabels.slice(3, 5)).toEqual(['Integration', 'SSH Remote'])
+    const integrationIdx = islandMenuLabels.indexOf('Integration')
+    expect(integrationIdx).toBeGreaterThan(-1)
+    expect(islandMenuLabels.slice(integrationIdx, integrationIdx + 2)).toEqual(['Integration', 'SSH Remote'])
 
     fireEvent.click(screen.getByRole('button', { name: /SSH Remote/ }))
 

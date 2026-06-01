@@ -5,3 +5,4 @@ pub mod process_tree;
 pub mod registry;
 pub mod suppression;
 pub mod tmux;
+pub mod wave;

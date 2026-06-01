@@ -36,10 +36,6 @@ fn apps_claude_opencode() -> Vec<String> {
     vec!["claude".into(), "opencode".into()]
 }
 
-fn apps_claude_gemini() -> Vec<String> {
-    vec!["claude".into(), "gemini".into()]
-}
-
 fn apps_claude_opencode_gemini_hermes() -> Vec<String> {
     vec![
         "claude".into(),
