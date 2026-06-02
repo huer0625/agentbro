@@ -1502,6 +1502,13 @@ impl HookServer {
         config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
     ) {
         Self::update_session_metadata_from_raw(store, _raw);
+
+        let done_cleanup_secs = config_store
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|c| c.get().idle_timeout_minutes as u64 * 60))
+            .unwrap_or(DONE_SESSION_HISTORY_CLEANUP_SECS);
+
         match event {
             AgentEvent::SessionStart {
                 session_id,
@@ -1827,7 +1834,7 @@ impl HookServer {
                 Self::schedule_done_session_cleanup(
                     store,
                     session_id,
-                    DONE_SESSION_HISTORY_CLEANUP_SECS,
+                    done_cleanup_secs,
                 );
             }
             AgentEvent::AssistantResponseComplete { session_id, text } => {
@@ -1959,7 +1966,7 @@ impl HookServer {
                 message,
                 status,
             } => {
-                Self::process_notification(store, session_id, message, status, sound, _raw);
+                Self::process_notification(store, session_id, message, status, sound, _raw, done_cleanup_secs);
             }
             AgentEvent::SubagentStart {
                 session_id,
@@ -2251,6 +2258,7 @@ impl HookServer {
         status: &Option<String>,
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         raw: &serde_json::Value,
+        done_cleanup_secs: u64,
     ) {
         let lower = message.to_lowercase();
         let notification_type = raw
@@ -2312,7 +2320,7 @@ impl HookServer {
             Self::schedule_done_session_cleanup(
                 store,
                 session_id,
-                DONE_SESSION_HISTORY_CLEANUP_SECS,
+                done_cleanup_secs,
             );
             return;
         }
