@@ -30,7 +30,7 @@ use crate::webhook::{self, templates::NotificationEvent};
 
 const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
 const SESSION_END_CLEANUP_SECS: u64 = 5;
-const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 120 * 60;
+const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 300;
 const DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 300;
 const HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 21_600;
 const RECENT_TOOL_CACHE_TTL_MS: u64 = 2 * 60 * 1000;
@@ -1974,6 +1974,14 @@ impl HookServer {
                     agent_id,
                     description,
                     session_id
+                );
+                // Ensure parent session exists (may not exist yet due to event ordering)
+                store.get_or_create_session(
+                    session_id,
+                    "opencode",
+                    "",
+                    "",
+                    "",
                 );
                 store.add_subagent(
                     session_id,

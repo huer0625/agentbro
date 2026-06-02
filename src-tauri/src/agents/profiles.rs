@@ -2735,6 +2735,20 @@ export const server = async ({{ client, serverUrl }}) => {{
   return {{
     name: "AgentBro",
     description: "Forward OpenCode hook events to AgentBro.",
+    dispose: async () => {{
+      for (const [rawSessionID, session] of sessions.entries()) {{
+        if (!session.parentID && session._started) {{
+          const sessionId = `opencode-${{rawSessionID}}`;
+          const payload = makeBasePayload(sessionId, {{
+            hook_event_name: "SessionEnd",
+            last_assistant_message: session.lastAssistantText || undefined,
+            session_title: session.pendingTitle || undefined
+          }});
+          await runBridge(payload, false);
+        }}
+      }}
+      sessions.clear();
+    }},
     event: async ({{ event }}) => {{
       const payload = mapEvent(event);
       if (!payload) return;
