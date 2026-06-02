@@ -41,20 +41,7 @@ fn config_dir_from_env(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> 
 }
 
 fn config_dir_from_login_shell() -> Option<PathBuf> {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string());
-    let output = std::process::Command::new(shell)
-        .args(["-lc", "printf '%s' \"${CLAUDE_CONFIG_DIR:-}\""])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let value = super::executable::login_shell_var("CLAUDE_CONFIG_DIR")?;
     config_dir_from_env(|_| Some(value.clone()))
 }
 
@@ -1066,10 +1053,10 @@ pub fn send_message_to_terminal(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    if terminal_app.eq_ignore_ascii_case("wave") {
-        if send_message_via_wave_rpc(&terminal_env, message).is_ok() {
-            return Ok(());
-        }
+    if terminal_app.eq_ignore_ascii_case("wave")
+        && send_message_via_wave_rpc(&terminal_env, message).is_ok()
+    {
+        return Ok(());
     }
 
     run_osascript(&build_system_events_paste_script(message))

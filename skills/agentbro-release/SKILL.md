@@ -70,6 +70,7 @@ git stash pop
    - Chinese second, under `## 中文`.
    - Keep the same facts in both sections. Do not ship an English-only or Chinese-only release body.
    - The app update dialog selects the Chinese section only when the user's language is Chinese; all other UI languages show the English section.
+   - If this release includes first-time contributors, include a `### New Contributors` block in English and a matching `### 新贡献者` block in Chinese. Mention GitHub usernames and PR numbers.
 
 5. Bump to the next patch version and run validation:
 
@@ -150,11 +151,25 @@ gh release view "$PREV" --json body -q .body          # what users were last tol
    never mentioned (e.g. Pet Market shipped silently in an earlier tag),
    include it in this release's highlights.
 
-5. Lead with a one-line summary of the release's theme, then a **Highlights**
+5. Check first-time contributors before writing the final notes:
+
+```bash
+gh api repos/shirenchuang/agentbro/releases/generate-notes \
+  -f tag_name=vX.Y.Z \
+  -f target_commitish=main \
+  -f previous_tag_name="$PREV" \
+  --jq .body
+```
+
+Use this as a contributor-discovery aid, not as the final release body. If a
+new contributor appears, add them manually to both language sections, e.g.
+`Welcome @username for their first contribution in #123.`
+
+6. Lead with a one-line summary of the release's theme, then a **Highlights**
    list ordered by user impact (biggest feature first, minor fixes last). Keep
    the existing Install / Downloads / Notes sections.
 
-6. Mirror every fact into the `## 中文` section. Same buckets, same ordering.
+7. Mirror every fact into the `## 中文` section. Same buckets, same ordering.
 
 This step is mandatory, not optional polish. A release note that does not
 account for the full `$PREV..HEAD` diff is incomplete.
