@@ -635,7 +635,10 @@ mod tests {
         });
         let evt = adapter().parse_event(&raw).expect("parse");
         match evt {
-            AgentEvent::TaskComplete { session_id, summary } => {
+            AgentEvent::TaskComplete {
+                session_id,
+                summary,
+            } => {
                 assert_eq!(session_id, "abc");
                 assert_eq!(summary, "I have completed the task successfully.");
             }
@@ -652,7 +655,10 @@ mod tests {
         });
         let evt = adapter().parse_event(&raw).expect("parse");
         match evt {
-            AgentEvent::TaskComplete { session_id, summary } => {
+            AgentEvent::TaskComplete {
+                session_id,
+                summary,
+            } => {
                 assert_eq!(session_id, "abc");
                 assert_eq!(summary, "Task completed");
             }
