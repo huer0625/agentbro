@@ -303,7 +303,7 @@ impl HookServer {
             .get("agent")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let seconds = if matches!(agent, "codex" | "openai.codex" | "claude-code" | "claude") {
+        let seconds = if matches!(agent, "codex" | "openai.codex" | "claude-code" | "claude" | "opencode") {
             HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS
         } else {
             DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS
@@ -1906,9 +1906,19 @@ impl HookServer {
                     session_id.clone(),
                     None,
                 );
+                Self::schedule_done_session_cleanup(
+                    store,
+                    session_id,
+                    done_cleanup_secs,
+                );
             }
             AgentEvent::Interrupt { session_id } => {
                 store.update_phase(session_id, SessionPhase::Interrupted);
+                Self::schedule_done_session_cleanup(
+                    store,
+                    session_id,
+                    done_cleanup_secs,
+                );
             }
             AgentEvent::TokenUsage {
                 session_id,
@@ -2476,7 +2486,9 @@ impl HookServer {
             let should_remove = store_for_cleanup
                 .get_session(&session_id_for_cleanup)
                 .map(|session| {
-                    session.phase == SessionPhase::Done
+                    (session.phase == SessionPhase::Done
+                        || session.phase == SessionPhase::Error
+                        || session.phase == SessionPhase::Interrupted)
                         && session.pending_permission.is_none()
                         && session.pending_question.is_none()
                         && session.pending_plan.is_none()
@@ -3257,11 +3269,21 @@ mod tests {
 
     #[test]
     fn non_codex_interaction_timeout_keeps_existing_window() {
-        let raw = serde_json::json!({ "agent": "opencode" });
+        let raw = serde_json::json!({ "agent": "gemini" });
 
         assert_eq!(
             HookServer::interaction_response_timeout(&raw),
             Duration::from_secs(DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn opencode_interaction_timeout_uses_long_window() {
+        let raw = serde_json::json!({ "agent": "opencode" });
+
+        assert_eq!(
+            HookServer::interaction_response_timeout(&raw),
+            Duration::from_secs(HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS)
         );
     }
 

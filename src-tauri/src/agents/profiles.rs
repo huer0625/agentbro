@@ -2522,7 +2522,7 @@ function detectTTY() {{
   return undefined;
 }}
 function makeBasePayload(sessionId, extra = {{}}) {{
-  return {{ session_id: sessionId, _source: "opencode", _env: collectBridgeEnv(), _tty: detectedTTY, pid: process.pid, ...extra }};
+  return {{ session_id: sessionId, agent: "opencode", _source: "opencode", _env: collectBridgeEnv(), _tty: detectedTTY, pid: process.pid, ...extra }};
 }}
 function normalizeQuestions(questions) {{
   if (!Array.isArray(questions)) return [];
@@ -2557,13 +2557,16 @@ const detectedTTY = detectTTY();
 const sessions = new Map();
 const messageRoles = new Map();
 function getSession(sessionID) {{
-  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined, parentID: undefined, _started: false }});
   return sessions.get(sessionID);
 }}
-
+function ensureSession(sessionID) {{
+  if (!sessions.has(sessionID)) sessions.set(sessionID, {{ cwd: undefined, lastAssistantText: "", pendingTitle: undefined, parentID: undefined, _started: false, _lastAssistantNotifyAt: 0 }});
+  return sessions.get(sessionID);
+}}
 function resolveSessionId(rawSessionID) {{
   const session = sessions.get(rawSessionID);
-  return session?.parentID ? `opencode-${{session.parentID}}` : `opencode-${{rawSessionID}}`;
+  if (!session) return null;
+  return session.parentID ? `opencode-${{session.parentID}}` : `opencode-${{rawSessionID}}`;
 }}
 
 function mapEvent(event) {{
@@ -2575,37 +2578,46 @@ function mapEvent(event) {{
     const rawSessionID = stableString(properties.info.id);
     const cwd = stableString(properties.info.directory);
     const parentID = stableString(properties.info.parentID);
-    getSession(rawSessionID).cwd = cwd;
-    getSession(rawSessionID).parentID = parentID;
+    const session = ensureSession(rawSessionID);
+    session.cwd = cwd;
+    session.parentID = parentID;
+    session._started = true;
     if (parentID) {{
       return makeBasePayload(`opencode-${{parentID}}`, {{ hook_event_name: "SubagentStart", agent_name: `subagent-${{rawSessionID}}`, description: "Subagent started" }});
     }}
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "SessionStart", cwd }});
+    return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionStart", cwd }});
   }}
   if (type === "session.deleted" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
-    const hadParent = !!sessions.get(rawSessionID)?.parentID;
+    const session = getSession(rawSessionID);
+    const hadParent = !!session?.parentID;
+    const parentID = session?.parentID;
     sessions.delete(rawSessionID);
-    if (hadParent) return undefined;
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "SessionEnd" }});
+    if (hadParent && parentID) {{
+      return makeBasePayload(`opencode-${{parentID}}`, {{ hook_event_name: "SubagentStop", cwd: session?.cwd, agent_name: `subagent-${{rawSessionID}}`, description: "Subagent removed" }});
+    }}
+    if (!hadParent) {{
+      return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd" }});
+    }}
+    return undefined;
   }}
   if (type === "session.updated" && isObject(properties.info) && stableString(properties.info.id)) {{
     const rawSessionID = stableString(properties.info.id);
-    const session = getSession(rawSessionID);
+    const session = ensureSession(rawSessionID);
     const isNew = !session._started;
     const cwd = stableString(properties.info.directory) ?? session.cwd;
     if (cwd) session.cwd = cwd;
     const title = stableString(properties.info.title);
     if (title && !title.startsWith("New session")) session.pendingTitle = title;
-    if (properties.info.time?.archived && !session.parentID) return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "SessionEnd", cwd }});
+    const parentID = stableString(properties.info.parentID);
+    if (parentID !== undefined) session.parentID = parentID;
+    if (properties.info.time?.archived && !session.parentID) return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionEnd", cwd }});
     if (isNew) {{
       session._started = true;
-      const parentID = stableString(properties.info.parentID);
-      session.parentID = parentID;
       if (parentID) {{
         return makeBasePayload(`opencode-${{parentID}}`, {{ hook_event_name: "SubagentStart", agent_name: `subagent-${{rawSessionID}}`, description: "Subagent started" }});
       }}
-      return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "SessionStart", cwd }});
+      return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "SessionStart", cwd }});
     }}
     return undefined;
   }}
@@ -2613,12 +2625,13 @@ function mapEvent(event) {{
     const rawSessionID = stableString(properties.sessionID);
     if (properties.status?.type === "idle") {{
       const session = getSession(rawSessionID);
+      if (!session) return undefined;
       if (session.parentID) {{
         const parentSessionId = `opencode-${{session.parentID}}`;
         sessions.delete(rawSessionID);
         return makeBasePayload(parentSessionId, {{ hook_event_name: "SubagentStop", cwd: session.cwd, agent_name: `subagent-${{rawSessionID}}`, description: "Subagent completed" }});
       }}
-      return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Stop", cwd: session.cwd, last_assistant_message: session.lastAssistantText || undefined, session_title: session.pendingTitle || undefined }});
+      return makeBasePayload(`opencode-${{rawSessionID}}`, {{ hook_event_name: "Stop", cwd: session.cwd, last_assistant_message: session.lastAssistantText || undefined, session_title: session.pendingTitle || undefined }});
     }}
     return undefined;
   }}
@@ -2629,13 +2642,24 @@ function mapEvent(event) {{
   if (type === "message.part.updated" && isObject(properties.part) && stableString(properties.part.sessionID)) {{
     const rawSessionID = stableString(properties.part.sessionID);
     const session = getSession(rawSessionID);
+    if (!session) return undefined;
     const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     if (properties.part.type === "text" && stableString(properties.part.messageID)) {{
       const meta = messageRoles.get(stableString(properties.part.messageID));
       const text = stableString(properties.part.text);
       if (!meta || !text) return undefined;
       if (meta.role === "user") return makeBasePayload(sessionId, {{ hook_event_name: "UserPromptSubmit", cwd: session.cwd, prompt: text }});
-      if (meta.role === "assistant") session.lastAssistantText = text;
+      if (meta.role === "assistant") {{
+        if (text !== session.lastAssistantText) {{
+          session.lastAssistantText = text;
+          const now = Date.now();
+          if (!session._lastAssistantNotifyAt || now - session._lastAssistantNotifyAt >= 1000) {{
+            session._lastAssistantNotifyAt = now;
+            return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, notification_type: "assistant_message", message: text }});
+          }}
+        }}
+      }}
       return undefined;
     }}
     if (properties.part.type === "tool") {{
@@ -2648,68 +2672,124 @@ function mapEvent(event) {{
   }}
   if (type === "permission.asked" && stableString(properties.id) && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "PermissionRequest", cwd: getSession(rawSessionID).cwd, tool_name: toolNameForPermission(properties.permission), tool_input: permissionToolInput(properties), _opencode_request_id: stableString(properties.id) }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "PermissionRequest", cwd: session.cwd, tool_name: toolNameForPermission(properties.permission), tool_input: permissionToolInput(properties), _opencode_request_id: stableString(properties.id) }});
   }}
   if (type === "question.asked" && stableString(properties.id) && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "PermissionRequest", cwd: getSession(rawSessionID).cwd, tool_name: "AskUserQuestion", tool_input: {{ questions: normalizeQuestions(properties.questions) }}, _opencode_request_id: stableString(properties.id) }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "PermissionRequest", cwd: session.cwd, tool_name: "AskUserQuestion", tool_input: {{ questions: normalizeQuestions(properties.questions) }}, _opencode_request_id: stableString(properties.id) }});
   }}
   if (type === "session.error" && isObject(properties) && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const errorMsg = stableString(properties.error?.message) ?? stableString(properties.error) ?? "Session error";
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Error", cwd: getSession(rawSessionID).cwd, message: errorMsg }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "Error", cwd: session.cwd, message: errorMsg }});
   }}
   if (type === "session.compacted" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: "Context compacted" }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, message: "Context compacted" }});
   }}
 
   if (type === "session.next.step.ended" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const tokens = isObject(properties.tokens) ? properties.tokens : {{}};
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "TokenUsage", cwd: getSession(rawSessionID).cwd, input_tokens: tokens.input, output_tokens: tokens.output, cost: properties.cost }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "TokenUsage", cwd: session.cwd, input_tokens: tokens.input, output_tokens: tokens.output, cost: properties.cost }});
   }}
   if (type === "session.next.step.failed" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const errorMsg = stableString(properties.error?.message) ?? "Step failed";
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Error", cwd: getSession(rawSessionID).cwd, message: errorMsg }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "Error", cwd: session.cwd, message: errorMsg }});
   }}
   if (type === "session.next.shell.started" && stableString(properties.sessionID) && stableString(properties.command)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "ShellExecutionStart", cwd: getSession(rawSessionID).cwd, command: properties.command }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "ShellExecutionStart", cwd: session.cwd, command: properties.command }});
   }}
   if (type === "session.next.shell.ended" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "ShellExecutionEnd", cwd: getSession(rawSessionID).cwd, command: "", output: stableString(properties.output) }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "ShellExecutionEnd", cwd: session.cwd, command: "", output: stableString(properties.output) }});
   }}
   if (type === "session.next.compaction.started" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const reason = stableString(properties.reason);
     const reasonText = (reason && reason.length > 0) ? reason : "auto";
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Compacting context (${{reasonText}})` }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, message: `Compacting context (${{reasonText}})` }});
   }}
   if (type === "session.next.compaction.ended" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: "Context compaction complete" }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, message: "Context compaction complete" }});
   }}
   if (type === "session.next.tool.failed" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const errorMsg = stableString(properties.error?.message) ?? "Tool failed";
     const callID = stableString(properties.callID) ?? "unknown";
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "PostToolUseFailure", cwd: getSession(rawSessionID).cwd, tool_name: `tool:${{callID}}`, message: errorMsg }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "PostToolUseFailure", cwd: session.cwd, tool_name: `tool:${{callID}}`, message: errorMsg }});
   }}
   if (type === "session.next.reasoning.ended" && stableString(properties.sessionID) && stableString(properties.text)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "AgentThought", cwd: getSession(rawSessionID).cwd, thought: properties.text }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "AgentThought", cwd: session.cwd, thought: properties.text }});
   }}
   if (type === "session.next.retried" && stableString(properties.sessionID)) {{
     const rawSessionID = stableString(properties.sessionID);
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
     const attempt = properties.attempt ?? "?";
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Retrying (attempt ${{attempt}})` }});
+    return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, message: `Retrying (attempt ${{attempt}})` }});
   }}
   if (type === "todo.updated" && stableString(properties.sessionID) && Array.isArray(properties.todos)) {{
     const rawSessionID = stableString(properties.sessionID);
-    return makeBasePayload(resolveSessionId(rawSessionID), {{ hook_event_name: "Notification", cwd: getSession(rawSessionID).cwd, message: `Todo updated: ${{properties.todos.length}} items` }});
+    const session = getSession(rawSessionID);
+    if (!session) return undefined;
+    const sessionId = resolveSessionId(rawSessionID);
+    if (!sessionId) return undefined;
+    return makeBasePayload(sessionId, {{ hook_event_name: "Notification", cwd: session.cwd, message: `Todo updated: ${{properties.todos.length}} items` }});
   }}
   return undefined;
 }}
@@ -2737,10 +2817,13 @@ export const server = async ({{ client, serverUrl }}) => {{
     description: "Forward OpenCode hook events to AgentBro.",
     dispose: async () => {{
       for (const [rawSessionID, session] of sessions.entries()) {{
-        if (!session.parentID && session._started) {{
-          const sessionId = `opencode-${{rawSessionID}}`;
+        if (session._started) {{
+          const sessionId = session.parentID ? `opencode-${{session.parentID}}` : `opencode-${{rawSessionID}}`;
+          const eventName = session.parentID ? "SubagentStop" : "SessionEnd";
           const payload = makeBasePayload(sessionId, {{
-            hook_event_name: "SessionEnd",
+            hook_event_name: eventName,
+            cwd: session.cwd,
+            agent_name: session.parentID ? `subagent-${{rawSessionID}}` : undefined,
             last_assistant_message: session.lastAssistantText || undefined,
             session_title: session.pendingTitle || undefined
           }});
