@@ -139,6 +139,34 @@ fn is_codex_source(source: &str) -> bool {
     source == "codex" || source == "openai.codex"
 }
 
+fn is_gemini_source(source: &str) -> bool {
+    source == "gemini"
+}
+
+fn permission_hook_output_gemini(decision: &str, reason: &str) -> serde_json::Value {
+    match decision {
+        "allow" => serde_json::json!({
+            "decision": { "behavior": "allow" }
+        }),
+        "auto" => serde_json::json!({
+            "decision": { "behavior": "allow" }
+        }),
+        "deny" => {
+            let msg = if reason.is_empty() {
+                "Denied by user via AgentBro"
+            } else {
+                reason
+            };
+            serde_json::json!({
+                "decision": { "behavior": "deny", "message": msg }
+            })
+        }
+        _ => serde_json::json!({
+            "decision": { "behavior": "allow" }
+        }),
+    }
+}
+
 fn permission_hook_output(
     source: &str,
     decision: &str,
@@ -841,6 +869,29 @@ fn main() {
                 return;
             }
 
+            // Gemini: BeforeTool acts as the permission gate (no separate PermissionRequest event).
+            // Block and wait for user approval via AgentBro UI.
+            if is_gemini_source(&source) {
+                obj.insert("status".into(), "waiting_for_approval".into());
+                if !tool_name.is_empty() {
+                    obj.insert("tool".into(), tool_name.into());
+                } else if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
+                    obj.insert("tool".into(), t.clone());
+                }
+                obj.insert("tool_input".into(), tool_input);
+                if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+                    obj.insert("tool_use_id".into(), id.clone());
+                }
+
+                if let Some(resp) = send_and_maybe_receive(&state, true) {
+                    let decision = resp["decision"].as_str().unwrap_or("allow");
+                    let reason = resp["reason"].as_str().unwrap_or("");
+                    let output = permission_hook_output_gemini(decision, reason);
+                    println!("{}", output);
+                }
+                return;
+            }
+
             obj.insert("status".into(), "running_tool".into());
             if !tool_name.is_empty() {
                 obj.insert("tool".into(), tool_name.into());
@@ -1068,20 +1119,15 @@ fn main() {
         }
         "BeforeAgent" => {
             obj.insert("status".into(), "processing".into());
-            copy_optional_field(obj, &data, "message", &["message", "description"]);
+            copy_optional_field(obj, &data, "prompt", &["prompt", "message", "description"]);
         }
         "AfterAgent" => {
-            obj.insert("status".into(), "processing".into());
+            obj.insert("status".into(), "response_received".into());
             copy_optional_field(
                 obj,
                 &data,
-                "summary",
-                &[
-                    "summary",
-                    "last_assistant_message",
-                    "message",
-                    "description",
-                ],
+                "prompt_response",
+                &["prompt_response", "summary", "last_assistant_message", "message"],
             );
         }
         "PreCompact" => {

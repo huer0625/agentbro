@@ -38,6 +38,7 @@ type InlinePermissionRequest = Omit<PermissionRequest, 'toolInput'> & { toolInpu
 const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'claude-code': { bg: 'rgba(59, 130, 246, 0.15)', text: '#3b82f6' },
   'codex': { bg: 'rgba(16, 185, 129, 0.15)', text: '#10b981' },
+  'gemini': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'gemini-cli': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'cursor': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },
   'cursor-cli': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },

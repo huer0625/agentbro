@@ -47,6 +47,22 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   state_get_status: 'notch.tool.readingState',
   Compacting: 'notch.tool.compacting',
   'Compacting context': 'notch.tool.compactingContext',
+  // Gemini CLI tools
+  run_shell_command: 'notch.tool.running',
+  read_file: 'notch.tool.reading',
+  write_file: 'notch.tool.writing',
+  replace: 'notch.tool.editing',
+  read_many_files: 'notch.tool.reading',
+  grep_search: 'notch.tool.searching',
+  glob: 'notch.tool.searching',
+  list_directory: 'notch.tool.reading',
+  google_web_search: 'notch.tool.searching',
+  web_fetch: 'notch.tool.fetching',
+  ask_user: 'notch.tool.waitingForAnswer',
+  write_todos: 'notch.tool.updatingTasks',
+  enter_plan_mode: 'notch.tool.planning',
+  exit_plan_mode: 'notch.tool.planning',
+  activate_skill: 'notch.tool.runningSkill',
 }
 
 export function getToolActivityLabel(t: Translate, toolName: string): string {

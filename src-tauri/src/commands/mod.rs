@@ -4489,9 +4489,7 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
 
     {
         let home = dirs::home_dir();
-        let trust_path = home
-            .as_ref()
-            .map(|h| h.join(".gemini").join("trustedFolders.json"));
+        let trust_path = home.as_ref().map(|h| h.join(".gemini").join("trustedFolders.json"));
         let cwd = std::env::current_dir().ok();
         let mut trust_ok = true;
         let mut trust_detail = "Gemini folder trust: no working directory".to_string();
@@ -4504,8 +4502,7 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
                             if level.as_str() == Some("TRUST_PARENT") {
                                 let parent = std::path::PathBuf::from(_path);
                                 if cwd.starts_with(&parent) {
-                                    trust_detail =
-                                        format!("{} is trusted via {}", cwd.display(), _path);
+                                    trust_detail = format!("{} is trusted via {}", cwd.display(), _path);
                                     trust_ok = true;
                                     break;
                                 }
@@ -4999,6 +4996,24 @@ fn parse_session_messages_for_command(
     let file_path = resolve_transcript_path_for_session(state, session_id);
 
     let Some(file_path) = file_path else {
+        // No JSONL file — build chat history from raw hook events.
+        // This covers agents like OpenCode that don't write transcript files.
+        let raw_events = state.hook_server.raw_events_for_session(session_id);
+        if !raw_events.is_empty() {
+            let fallback_session = session.unwrap_or_else(|| {
+                crate::hooks::session_store::SessionState::new(
+                    session_id.to_string(),
+                    "unknown".to_string(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                )
+            });
+            return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
+                &fallback_session,
+                raw_events,
+            )));
+        }
         if let Some(ref session) = session {
             if session.remote_host_id.is_some() || session.remote_host_name.is_some() {
                 return Ok(SessionMessagesResult::Remote(remote_session_chat_history(
@@ -5095,6 +5110,22 @@ fn remote_session_chat_history(
                     }],
                 });
             }
+            "PermissionRequest" => {
+                let name = first_nonempty_string(&raw, &["tool", "tool_name"])
+                    .unwrap_or("Tool")
+                    .to_string();
+                let input = remote_tool_input_map(raw.get("tool_input"));
+                messages.push(ParsedMessage {
+                    id: format!("remote-perm-{}", event.seq),
+                    role: ChatRole::Assistant,
+                    timestamp,
+                    blocks: vec![MessageBlock::ToolUse {
+                        id: format!("remote-perm-{}", event.seq),
+                        name,
+                        input,
+                    }],
+                });
+            }
             "Notification" => {
                 if let Some(text) = first_nonempty_string(&raw, &["message"]) {
                     messages.push(parsed_text_message(
@@ -5109,6 +5140,29 @@ fn remote_session_chat_history(
                 if let Some(text) = first_nonempty_string(&raw, &["summary", "message", "error"]) {
                     messages.push(parsed_text_message(
                         format!("remote-stop-{}", event.seq),
+                        ChatRole::Assistant,
+                        timestamp,
+                        text,
+                    ));
+                }
+            }
+            "BeforeAgent" => {
+                if let Some(text) = first_nonempty_string(&raw, &["prompt", "message"]) {
+                    messages.push(parsed_text_message(
+                        format!("remote-user-{}", event.seq),
+                        ChatRole::User,
+                        timestamp,
+                        text,
+                    ));
+                }
+            }
+            "AfterAgent" => {
+                if let Some(text) = first_nonempty_string(
+                    &raw,
+                    &["prompt_response", "summary", "last_assistant_message", "message"],
+                ) {
+                    messages.push(parsed_text_message(
+                        format!("remote-assistant-{}", event.seq),
                         ChatRole::Assistant,
                         timestamp,
                         text,
