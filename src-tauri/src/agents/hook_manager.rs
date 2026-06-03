@@ -251,7 +251,7 @@ pub fn bridge_binary_is_current() -> bool {
     }
 
     let Some(source) = find_source_bridge() else {
-        return true;
+        return false;
     };
 
     match (std::fs::read(dest), std::fs::read(source)) {
@@ -325,7 +325,33 @@ pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn find_source_bridge() -> Option<PathBuf> {
     bridge_source_candidates()
         .into_iter()
-        .find(|bridge| bridge.exists())
+        .find(|bridge| bridge_candidate_is_usable(bridge))
+}
+
+fn bridge_candidate_is_usable(bridge: &Path) -> bool {
+    bridge.exists() && bridge_candidate_is_fresh(bridge)
+}
+
+fn bridge_candidate_is_fresh(bridge: &Path) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if bridge.starts_with(manifest_dir.join("target")) {
+            return bridge_is_newer_than_source(bridge, &manifest_dir.join("src/bridge/main.rs"));
+        }
+    }
+    true
+}
+
+#[cfg(debug_assertions)]
+fn bridge_is_newer_than_source(bridge: &Path, source: &Path) -> bool {
+    let Ok(bridge_modified) = std::fs::metadata(bridge).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    let Ok(source_modified) = std::fs::metadata(source).and_then(|meta| meta.modified()) else {
+        return true;
+    };
+    bridge_modified >= source_modified
 }
 
 fn bridge_source_candidates() -> Vec<PathBuf> {
@@ -367,4 +393,33 @@ pub fn shell_quote(value: &str) -> String {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn debug_bridge_freshness_rejects_older_bridge_binary() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "agentbro-bridge-freshness-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bridge = dir.join("agentbro-bridge");
+        let source = dir.join("main.rs");
+        std::fs::write(&bridge, b"old bridge").unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&source, b"new source").unwrap();
+
+        #[cfg(debug_assertions)]
+        assert!(!bridge_is_newer_than_source(&bridge, &source));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

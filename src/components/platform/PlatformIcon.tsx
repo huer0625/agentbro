@@ -14,7 +14,6 @@ import piCliIcon from '../../assets/cli-icons/pi.png'
 import qoderCliIcon from '../../assets/cli-icons/qoder.png'
 import qwenCliIcon from '../../assets/cli-icons/qwen.png'
 import stepfunCliIcon from '../../assets/cli-icons/stepfun.png'
-import traeCliIcon from '../../assets/cli-icons/trae.png'
 import workbuddyCliIcon from '../../assets/cli-icons/workbuddy.png'
 import easyclawIcon from '../../assets/easyclaw.png'
 import kiroIcon from '../../assets/kiro.png'
@@ -65,11 +64,6 @@ const imageIcons: Record<string, string> = {
   'qoder-cli': qoderCliIcon,
   qwen: qwenCliIcon,
   stepfun: stepfunCliIcon,
-  trae: traeCliIcon,
-  traecli: traeCliIcon,
-  'trae-cli': traeCliIcon,
-  traecn: traeCliIcon,
-  'trae-cn': traeCliIcon,
   windsurf: windsurfIcon,
   workbuddy: workbuddyCliIcon,
   'work-buddy': workbuddyCliIcon,

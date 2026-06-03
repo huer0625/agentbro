@@ -4,9 +4,11 @@
 //! Reads JSON from stdin, forwards events to AgentBro via Unix socket or TCP.
 //! For PermissionRequest events, waits for a response and outputs it.
 
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 const TIMEOUT_SECONDS: u64 = 21_600;
@@ -405,12 +407,19 @@ fn send_and_maybe_receive(
     state: &serde_json::Value,
     wait_response: bool,
 ) -> Option<serde_json::Value> {
-    let mut stream = connect()?;
+    let Some(mut stream) = connect() else {
+        record_invocation(state, false);
+        return None;
+    };
     stream
         .set_read_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
         .ok();
     let payload = format!("{}\n", state);
-    stream.write_all(payload.as_bytes()).ok()?;
+    if stream.write_all(payload.as_bytes()).is_err() {
+        record_invocation(state, false);
+        return None;
+    }
+    record_invocation(state, true);
 
     if wait_response {
         let mut reader = BufReader::new(&mut stream);
@@ -420,6 +429,47 @@ fn send_and_maybe_receive(
         }
     }
     None
+}
+
+fn invocation_log_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".agentbro")
+        .join("hook-invocations.jsonl")
+}
+
+fn invocation_log_line(state: &serde_json::Value, forwarded: bool) -> String {
+    let source = state
+        .get("agent")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let event = state
+        .get("event")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let session_id = state
+        .get("session_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+
+    serde_json::json!({
+        "ts": chrono::Utc::now().timestamp_millis(),
+        "source": source,
+        "event": event,
+        "session_id": session_id,
+        "forwarded": forwarded,
+    })
+    .to_string()
+}
+
+fn record_invocation(state: &serde_json::Value, forwarded: bool) {
+    let path = invocation_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", invocation_log_line(state, forwarded));
+    }
 }
 
 fn copy_optional_field(
@@ -554,15 +604,29 @@ fn normalize_hook_event(event: &str) -> &str {
         "permissionRequest" => "PermissionRequest",
         "permission_denied" => "PermissionDenied",
         "permissionDenied" => "PermissionDenied",
+        "notification" => "Notification",
         "stop" => "Stop",
         "agentStop" => "Stop",
         "ErrorOccurred" => "PostToolUseFailure",
+        "pre_compact" => "PreCompact",
         "preCompact" => "PreCompact",
+        "post_compact" => "PostCompact",
+        "postCompact" => "PostCompact",
+        "subagent_start" => "SubagentStart",
         "subagentStart" => "SubagentStart",
+        "subagent_stop" => "SubagentStop",
         "subagentStop" => "SubagentStop",
         "agentSpawn" => "SessionStart",
         "stop_failure" => "StopFailure",
         other => other,
+    }
+}
+
+fn hook_input_data(input: &str, forced_event: Option<&str>) -> Option<serde_json::Value> {
+    match serde_json::from_str(input) {
+        Ok(value) => Some(value),
+        Err(_) if forced_event.is_some() => Some(serde_json::json!({})),
+        Err(_) => None,
     }
 }
 
@@ -578,10 +642,8 @@ fn main() {
         return;
     }
 
-    // Parse stdin JSON
-    let data: serde_json::Value = match serde_json::from_str(&input) {
-        Ok(v) => v,
-        Err(_) => return,
+    let Some(data) = hook_input_data(&input, forced_event.as_deref()) else {
+        return;
     };
 
     let session_id = string_field(
@@ -1368,5 +1430,39 @@ mod tests {
             "Database migration"
         );
         assert_eq!(plan_title_from_content("\n\n"), "Plan");
+    }
+
+    #[test]
+    fn invocation_log_line_omits_prompt_and_cwd() {
+        let state = serde_json::json!({
+            "agent": "qoder",
+            "event": "UserPromptSubmit",
+            "session_id": "solo-session",
+            "cwd": "/Users/me/secret-project",
+            "prompt": "sensitive prompt"
+        });
+
+        let line = invocation_log_line(&state, true);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(parsed["source"], "qoder");
+        assert_eq!(parsed["event"], "UserPromptSubmit");
+        assert_eq!(parsed["session_id"], "solo-session");
+        assert_eq!(parsed["forwarded"], true);
+        assert!(!line.contains("secret-project"));
+        assert!(!line.contains("sensitive prompt"));
+    }
+
+    #[test]
+    fn forced_event_allows_empty_input() {
+        let data = hook_input_data("", Some("UserPromptSubmit")).unwrap();
+
+        assert_eq!(data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn invalid_input_without_forced_event_is_ignored() {
+        assert!(hook_input_data("", None).is_none());
+        assert!(hook_input_data("not json", None).is_none());
     }
 }

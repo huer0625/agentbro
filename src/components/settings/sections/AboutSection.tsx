@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-shell'
 import { save } from '@tauri-apps/plugin-dialog'
-import { exportDiagnostics, getCurrentAppVersion, setAnalyticsEnabled } from '../../../services/tauriApi'
+import { exportDiagnostics, getCurrentAppVersion } from '../../../services/tauriApi'
 import { HOMEBREW_UPDATE_COMMAND } from '../../../hooks/useUpdater'
 import type { UpdateInstallChannel, UpdateStatus } from '../../../hooks/useUpdater'
 import { useConfigStore } from '../../../stores/configStore'
@@ -64,8 +64,6 @@ export function AboutSection({
 
   const autoCheckUpdate = useConfigStore((s) => s.autoCheckUpdate)
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
-  const analyticsEnabled = useConfigStore((s) => s.analyticsEnabled)
-  const analyticsConsentPromptCompleted = useConfigStore((s) => s.analyticsConsentPromptCompleted)
   const updateConfig = useConfigStore((s) => s.updateConfig)
 
   const updatePopoverPos = useCallback(() => {
@@ -144,18 +142,6 @@ export function AboutSection({
       setDiagStatus('error')
       setTimeout(() => setDiagStatus('idle'), 2000)
     }
-  }
-
-  const handleAnalyticsEnabledChange = (enabled: boolean) => {
-    const previousEnabled = analyticsEnabled
-    const previousCompleted = analyticsConsentPromptCompleted
-    updateConfig('analyticsEnabled', enabled)
-    updateConfig('analyticsConsentPromptCompleted', true)
-    setAnalyticsEnabled(enabled).catch((error) => {
-      console.error('[settings] setAnalyticsEnabled:', error)
-      updateConfig('analyticsEnabled', previousEnabled)
-      updateConfig('analyticsConsentPromptCompleted', previousCompleted)
-    })
   }
 
   const updateDescription = (() => {
@@ -357,13 +343,6 @@ export function AboutSection({
           <div>{t('settings.designSystem')}</div>
           <div style={{ marginTop: 'var(--space-sm)', color: '#aeaeb2' }}>
             {t('settings.copyright')}
-          </div>
-          <div className="about-analytics-row">
-            <div className="about-analytics-row__copy">
-              <span className="about-analytics-row__label">{t('settings.anonymousAnalytics')}</span>
-              <span className="about-analytics-row__description">{t('settings.anonymousAnalyticsDesc')}</span>
-            </div>
-            <Toggle checked={analyticsEnabled} onChange={handleAnalyticsEnabledChange} />
           </div>
         </div>
       </SettingGroup>

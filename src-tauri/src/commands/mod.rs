@@ -629,9 +629,6 @@ fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderSt
 
 fn catalog_unsupported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
     [
-        ("trae", "Trae"),
-        ("traecli", "Trae CLI"),
-        ("traecn", "Trae CN"),
         ("qoder", "Qoder"),
         ("qoder-cli", "Qoder CLI"),
         ("codebuddy", "CodeBuddy"),
@@ -2529,11 +2526,6 @@ fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) ->
         ("codex", "com.openai.codex")
             | ("cursor", "com.todesktop.230313mzl4w4u92")
             | ("cursor-cli", "com.todesktop.230313mzl4w4u92")
-            | ("trae", "com.trae.app")
-            | ("traecn", "com.trae.app")
-            | ("traecn", "cn.trae.solo.app")
-            | ("trae-cli", "com.trae.app")
-            | ("traecli", "com.trae.app")
             | ("qoder", "com.qoder.ide")
             | ("qoder-cli", "com.qoder.ide")
             | ("droid", "com.factory.app")
@@ -2561,8 +2553,6 @@ fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
         || lower.contains("panic.nova")
         || lower.contains("android.studio")
         || lower.contains("antigravity")
-        || lower == "com.trae.app"
-        || lower == "cn.trae.solo.app"
         || lower == "com.qoder.ide"
         || lower == "com.qoder.ide.helper"
         || lower == "com.factory.app"
@@ -3579,7 +3569,6 @@ pub async fn simulate_hook_event(
     fn canonical_agent_id(agent: &str) -> &str {
         match agent {
             "gemini-cli" => "gemini",
-            "traecli" | "trae-cli" => "traecli",
             "codybuddycn" => "codebuddycn",
             other => other,
         }
@@ -4372,6 +4361,22 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         detail: format!("{adapters} adapter configs contain AgentBro hooks"),
     });
 
+    let bridge_invocations = recent_bridge_invocations(50);
+    checks.push(HookDoctorCheck {
+        id: "bridge-invocations".to_string(),
+        label: "Bridge invocation trace".to_string(),
+        status: if bridge_invocations.is_empty() {
+            "info"
+        } else {
+            "ok"
+        }
+        .to_string(),
+        detail: bridge_invocations
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "No bridge invocations recorded yet".to_string()),
+    });
+
     let mut present_profiles = 0usize;
     let mut unhealthy_profiles = Vec::new();
     for adapter in &state.adapters {
@@ -4715,6 +4720,8 @@ pub async fn set_island_surface_options(
             crate::sync_pet_window_visibility_inner(&handle, is_pet_mode, saved_origin.as_ref());
         })
         .map_err(|e| e.to_string())?;
+    } else if config.island_surface_mode == "pet" {
+        crate::configure_pet_window_for_spaces(&app);
     }
     Ok(())
 }
@@ -5725,6 +5732,29 @@ fn collect_log_files() -> Vec<(String, Vec<u8>)> {
     files
 }
 
+fn bridge_invocations_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".agentbro")
+        .join("hook-invocations.jsonl")
+}
+
+fn recent_bridge_invocations(limit: usize) -> Vec<String> {
+    let path = bridge_invocations_path();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut lines = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if lines.len() > limit {
+        lines.drain(0..lines.len() - limit);
+    }
+    lines
+}
+
 /// Collect crash reports matching AgentBro from the system DiagnosticReports dir.
 fn collect_crash_reports() -> Vec<(String, Vec<u8>)> {
     let crash_dir = PathBuf::from("/Library/Logs/DiagnosticReports");
@@ -5758,6 +5788,7 @@ pub async fn export_diagnostics(
     let sessions = state.session_store.get_all_sessions();
     let diagnostic_events = state.diagnostic_buffer.all();
     let raw_event_summaries = state.hook_server.recent_raw_event_summaries(500);
+    let bridge_invocations = recent_bridge_invocations(500);
     let install_id = get_or_create_install_id();
     let now = chrono::Local::now();
     let timestamp = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
@@ -5885,6 +5916,20 @@ pub async fn export_diagnostics(
     }
     md.push_str("---\n\n");
 
+    // Bridge invocation summaries
+    md.push_str("## Recent Bridge Invocations\n\n");
+    if bridge_invocations.is_empty() {
+        md.push_str("_No bridge invocations recorded._\n\n");
+    } else {
+        md.push_str("```jsonl\n");
+        for line in &bridge_invocations {
+            md.push_str(&redact_paths(line));
+            md.push('\n');
+        }
+        md.push_str("```\n\n");
+    }
+    md.push_str("---\n\n");
+
     // Diagnostic events
     md.push_str("## Recent Events\n\n");
     if diagnostic_events.is_empty() {
@@ -5905,6 +5950,9 @@ pub async fn export_diagnostics(
     md.push_str("| `config.json` | Sanitized app configuration (JSON) |\n");
     md.push_str(
         "| `recent-hook-events.json` | Recent hook event summaries without raw payload content |\n",
+    );
+    md.push_str(
+        "| `bridge-invocations.jsonl` | Recent hook bridge invocations without prompt or payload content |\n",
     );
     md.push_str("| `logs/` | Recent application logs |\n");
     md.push_str("| `crashes/` | System crash reports (if any) |\n");
@@ -5936,6 +5984,11 @@ pub async fn export_diagnostics(
         &mut zip,
         "recent-hook-events.json",
         &redact_paths(&hook_events_json),
+    )?;
+    write_text(
+        &mut zip,
+        "bridge-invocations.jsonl",
+        &redact_paths(&bridge_invocations.join("\n")),
     )?;
 
     // Logs

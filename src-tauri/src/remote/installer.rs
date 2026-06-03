@@ -49,7 +49,6 @@ pub const REMOTE_INSTALLABLE_AGENTS: &[&str] = &[
     "gemini",
     "copilot",
     "cursor-cli",
-    "trae-cli",
     "kiro",
 ];
 

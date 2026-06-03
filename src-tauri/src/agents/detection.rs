@@ -22,7 +22,6 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("gemini", "Google Gemini", &["gemini"], &[".gemini"]),
         detect_cursor(),
         detect_copilot(),
-        detect_tool("trae", "Trae", &["trae"], &[".trae"]),
         detect_tool("qoder", "Qoder", &["qoder"], &[".qoder"]),
         detect_tool("codebuddy", "CodeBuddy", &["codebuddy"], &[".codebuddy"]),
         detect_tool("qwen", "Qwen Coder", &["qwen-coder", "qwen"], &[".qwen"]),

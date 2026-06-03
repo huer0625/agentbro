@@ -2,12 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "productName": "AgentBro",
   "identifier": "com.agentbro.desktop",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1423",
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeDevCommand": "pnpm build:bridge && pnpm dev",
+    "beforeBuildCommand": "pnpm build:bridge:release && pnpm build"
   },
   "app": {
     "macOSPrivateApi": true,

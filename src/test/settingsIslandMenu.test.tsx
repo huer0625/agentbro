@@ -96,7 +96,7 @@ describe('settings island menu', () => {
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
 
-  it('completes first-run setup with surface mode and analytics consent', async () => {
+  it('completes first-run setup with surface mode and default analytics enabled', async () => {
     useConfigStore.setState({
       analyticsEnabled: false,
       analyticsConsentPromptCompleted: false,
@@ -109,13 +109,14 @@ describe('settings island menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
 
     await waitFor(() => expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(true))
+    expect(useConfigStore.getState().analyticsEnabled).toBe(true)
     expect(useConfigStore.getState().islandSurfaceMode).toBe('pet')
     expect(useConfigStore.getState().islandPetWindowOrigin).toBe(null)
     expect(tauriMocks.setIslandSurfaceOptions).toHaveBeenCalledWith({
       islandSurfaceMode: 'pet',
       islandPetScale: 72,
     })
-    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(false)
+    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(true)
   })
 
   it('places SSH Remote under Integration and keeps it separate from Advanced', async () => {

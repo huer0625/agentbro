@@ -230,22 +230,6 @@ pub const SNAKE_SESSION_TOOL_EVENTS: &[HookEventDescriptor] = &[
     plain_event("session_end"),
 ];
 
-pub const TRAE_BASIC_EVENTS: &[HookEventDescriptor] = &[
-    plain_event("pre_tool_use"),
-    plain_event("post_tool_use"),
-    plain_event("session_start"),
-];
-
-pub const TRAE_CLI_EVENTS: &[HookEventDescriptor] = &[
-    plain_event("UserPromptSubmit"),
-    plain_event("PreToolUse"),
-    plain_event("PostToolUse"),
-    plain_event("PermissionRequest"),
-    plain_event("Stop"),
-    plain_event("SessionStart"),
-    plain_event("SessionEnd"),
-];
-
 pub const OPENCODE_EVENTS: &[HookEventDescriptor] = &[
     plain_event("SessionStart"),
     plain_event("SessionEnd"),
@@ -655,18 +639,6 @@ pub fn stepfun_profile() -> AgentIntegrationProfile {
     json_profile("stepfun", ".stepfun/settings.json", BASIC_AGENT_EVENTS)
 }
 
-pub fn trae_profile() -> AgentIntegrationProfile {
-    yaml_profile("trae", ".trae/config.yaml", TRAE_BASIC_EVENTS)
-}
-
-pub fn trae_cli_profile() -> AgentIntegrationProfile {
-    yaml_profile("traecli", ".trae/traecli.yaml", TRAE_CLI_EVENTS)
-}
-
-pub fn trae_cn_profile() -> AgentIntegrationProfile {
-    yaml_profile("traecn", ".trae-cn/config.yaml", TRAE_BASIC_EVENTS)
-}
-
 pub fn workbuddy_profile() -> AgentIntegrationProfile {
     json_profile("workbuddy", ".workbuddy/hooks.json", BASIC_AGENT_EVENTS)
 }
@@ -721,22 +693,6 @@ fn command_only_json_profile(
             entry: JsonHookEntry::CommandOnly,
             nested: false,
         },
-        configuration_path,
-        activation_path: None,
-        source: id,
-        extra_args: &[],
-        events,
-    }
-}
-
-fn yaml_profile(
-    id: &'static str,
-    configuration_path: &'static str,
-    events: &'static [HookEventDescriptor],
-) -> AgentIntegrationProfile {
-    AgentIntegrationProfile {
-        id,
-        installation_kind: InstallationKind::YamlHooks,
         configuration_path,
         activation_path: None,
         source: id,
@@ -824,9 +780,6 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "qoder-cli" => Some(qoder_cli_profile()),
         "qwen" => Some(qwen_profile()),
         "stepfun" => Some(stepfun_profile()),
-        "trae" => Some(trae_profile()),
-        "traecli" => Some(trae_cli_profile()),
-        "traecn" => Some(trae_cn_profile()),
         "workbuddy" => Some(workbuddy_profile()),
         _ => None,
     }
@@ -1308,7 +1261,54 @@ fn json_event_has_current_profile_command(
     collect_json_agentbro_commands(entries, &mut commands);
     commands
         .iter()
-        .any(|candidate| agentbro_command_is_current(profile, candidate))
+        .any(|candidate| agentbro_event_command_is_current(profile, event, candidate))
+}
+
+fn agentbro_event_command_is_current(
+    profile: &AgentIntegrationProfile,
+    event: &HookEventDescriptor,
+    command: &str,
+) -> bool {
+    if !agentbro_command_is_current(profile, command) {
+        return false;
+    }
+
+    if matches!(
+        profile.installation_kind,
+        InstallationKind::JsonHooks {
+            entry: JsonHookEntry::CommandOnly,
+            ..
+        }
+    ) {
+        command_event_matches(command, event.name)
+    } else {
+        true
+    }
+}
+
+fn command_event_matches(command: &str, event: &str) -> bool {
+    let mut previous_was_event = false;
+    for token in command.split_whitespace() {
+        let token = shell_token_value(token);
+        if previous_was_event {
+            if token == event {
+                return true;
+            }
+            previous_was_event = false;
+        }
+
+        if token == "--event" {
+            previous_was_event = true;
+            continue;
+        }
+
+        if let Some(value) = token.strip_prefix("--event=") {
+            if shell_token_value(value) == event {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn collect_json_agentbro_commands(value: &Value, commands: &mut Vec<String>) {
@@ -1659,7 +1659,12 @@ fn update_json_hooks(
         }
         let entries = value.as_array_mut().expect("event hook list is array");
         entries.retain(|entry| !json_hook_contains_profile(entry, profile));
-        entries.push(flat_json_hook_entry(entry, &event, &command));
+        let hook = flat_json_hook_entry(entry, &event, &command);
+        if matches!(entry, JsonHookEntry::CommandOnly) {
+            entries.insert(0, hook);
+        } else {
+            entries.push(hook);
+        }
     }
 
     hook_manager::write_json_config(path, &settings)
@@ -1678,6 +1683,10 @@ fn remove_json_hooks(
 }
 
 fn flat_json_hook_entry(entry: JsonHookEntry, event: &HookEventDescriptor, command: &str) -> Value {
+    let command = match entry {
+        JsonHookEntry::CommandOnly => command_for_event(command, event),
+        JsonHookEntry::TypedCommand => command.to_string(),
+    };
     let mut hook = match entry {
         JsonHookEntry::CommandOnly => serde_json::json!({ "command": command }),
         JsonHookEntry::TypedCommand => {
@@ -1688,6 +1697,14 @@ fn flat_json_hook_entry(entry: JsonHookEntry, event: &HookEventDescriptor, comma
         hook["timeout"] = serde_json::json!(timeout);
     }
     hook
+}
+
+fn command_for_event(command: &str, event: &HookEventDescriptor) -> String {
+    format!(
+        "{} --event {}",
+        command,
+        hook_manager::shell_quote(event.name)
+    )
 }
 
 fn update_nested_json_hooks(
