@@ -1083,7 +1083,10 @@ mod tests {
 
         let session = store.get_session("s1").expect("session should exist");
         assert!(session.pending_permission.is_some());
-        assert_eq!(session.pending_permission.as_ref().unwrap().tool_name, "run_shell_command");
+        assert_eq!(
+            session.pending_permission.as_ref().unwrap().tool_name,
+            "run_shell_command"
+        );
     }
 
     #[test]

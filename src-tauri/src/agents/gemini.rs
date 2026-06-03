@@ -94,10 +94,18 @@ impl AgentAdapter for GeminiAdapter {
             }),
             "SessionEnd" | "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
             "Stop" => {
-                let summary = string_field(raw, &["prompt_response", "summary", "message", "last_assistant_message"])
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or("Task completed")
-                    .to_string();
+                let summary = string_field(
+                    raw,
+                    &[
+                        "prompt_response",
+                        "summary",
+                        "message",
+                        "last_assistant_message",
+                    ],
+                )
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("Task completed")
+                .to_string();
                 Ok(AgentEvent::AssistantResponseComplete {
                     session_id,
                     text: summary,
@@ -137,10 +145,18 @@ impl AgentAdapter for GeminiAdapter {
                 })
             }
             "AfterAgent" => {
-                let response = string_field(raw, &["prompt_response", "summary", "last_assistant_message", "message"])
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("Agent completed")
-                    .to_string();
+                let response = string_field(
+                    raw,
+                    &[
+                        "prompt_response",
+                        "summary",
+                        "last_assistant_message",
+                        "message",
+                    ],
+                )
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Agent completed")
+                .to_string();
                 Ok(AgentEvent::AssistantResponseComplete {
                     session_id,
                     text: response,

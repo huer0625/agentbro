@@ -4489,7 +4489,9 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
 
     {
         let home = dirs::home_dir();
-        let trust_path = home.as_ref().map(|h| h.join(".gemini").join("trustedFolders.json"));
+        let trust_path = home
+            .as_ref()
+            .map(|h| h.join(".gemini").join("trustedFolders.json"));
         let cwd = std::env::current_dir().ok();
         let mut trust_ok = true;
         let mut trust_detail = "Gemini folder trust: no working directory".to_string();
@@ -4502,7 +4504,8 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
                             if level.as_str() == Some("TRUST_PARENT") {
                                 let parent = std::path::PathBuf::from(_path);
                                 if cwd.starts_with(&parent) {
-                                    trust_detail = format!("{} is trusted via {}", cwd.display(), _path);
+                                    trust_detail =
+                                        format!("{} is trusted via {}", cwd.display(), _path);
                                     trust_ok = true;
                                     break;
                                 }
@@ -5159,7 +5162,12 @@ fn remote_session_chat_history(
             "AfterAgent" => {
                 if let Some(text) = first_nonempty_string(
                     &raw,
-                    &["prompt_response", "summary", "last_assistant_message", "message"],
+                    &[
+                        "prompt_response",
+                        "summary",
+                        "last_assistant_message",
+                        "message",
+                    ],
                 ) {
                     messages.push(parsed_text_message(
                         format!("remote-assistant-{}", event.seq),

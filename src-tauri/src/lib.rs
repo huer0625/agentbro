@@ -1555,7 +1555,9 @@ async fn is_cursor_over_notch(
             .unwrap_or(window_height_logical);
 
         let anchor_offset_x = anchor_offset_x.unwrap_or(0.0);
-        let left = window_left_logical + ((window_width_logical - hit_width) / 2.0).max(0.0) + anchor_offset_x;
+        let left = window_left_logical
+            + ((window_width_logical - hit_width) / 2.0).max(0.0)
+            + anchor_offset_x;
         let top = window_top_logical;
         let right = left + hit_width.min(window_width_logical);
         let bottom = top + hit_height.min(window_height_logical);

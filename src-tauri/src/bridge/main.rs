@@ -1127,7 +1127,12 @@ fn main() {
                 obj,
                 &data,
                 "prompt_response",
-                &["prompt_response", "summary", "last_assistant_message", "message"],
+                &[
+                    "prompt_response",
+                    "summary",
+                    "last_assistant_message",
+                    "message",
+                ],
             );
         }
         "PreCompact" => {
