@@ -376,11 +376,13 @@
 }
 
 .market-card__job-error {
-  overflow: hidden;
+  max-height: 132px;
+  overflow: auto;
   font-size: 11px;
   line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 @keyframes market-card-progress {
