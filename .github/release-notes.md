@@ -2,12 +2,12 @@
 
 ## English
 
-This is a hotfix release for macOS install and launch reliability.
+This release improves agent integration reliability and adds clearer diagnostics for pet market installs.
 
-### Fixes
+### Improvements
 
-- **Fix "damaged app" after update or DMG install** — The release pipeline now notarizes and staples the `AgentBro.app` bundle before creating both the auto-update archive and the DMG. This keeps Gatekeeper validation working even when macOS cannot reach Apple's online notarization service.
-- **Reduce WebKit launch crash risk** — The notch focus handoff now avoids a forceful native order-front path that could trigger a WebKit crash on some macOS versions.
+- **Refresh agent integrations and diagnostics** - Agent profile detection, hook setup, bridge startup, and settings diagnostics were updated together so AgentBro can report setup problems more clearly.
+- **Improve pet market install diagnostics** - Pet install failures now surface more actionable status and repair details in the settings UI.
 
 ### Install And Update
 
@@ -29,25 +29,25 @@ This is a hotfix release for macOS install and launch reliability.
 
 ## 中文
 
-这是一次 macOS 安装和启动可靠性热修复。
+这个版本提升了 Agent 集成可靠性，并为宠物市场安装问题提供更清晰的诊断信息。
 
-### 修复
+### 改进
 
-- **修复更新后或 DMG 安装后提示应用已损坏** —— 发布流程现在会先对 `AgentBro.app` 本体完成公证并 staple，再生成自动更新包和 DMG。即使 macOS 无法访问 Apple 在线公证服务，Gatekeeper 也能离线验证应用。
-- **降低 WebKit 启动崩溃风险** —— 灵动岛焦点切换不再使用过强的原生置前路径，避免在部分 macOS 版本上触发 WebKit 崩溃。
+- **刷新 Agent 集成与诊断** - Agent 配置识别、Hook 设置、bridge 启动和设置页诊断一起更新，AgentBro 可以更清楚地报告配置问题。
+- **改进宠物市场安装诊断** - 宠物安装失败时，设置页会展示更可操作的状态和修复信息。
 
 ### 安装与更新
 
-- Homebrew 支持一行安装:`brew tap shirenchuang/tap && brew install --cask agentbro`
+- Homebrew 支持一行安装: `brew tap shirenchuang/tap && brew install --cask agentbro`
 - GitHub Release 和应用内自动更新会使用同一份版本说明。
 - 自动更新文件包含签名的 `AgentBro.app.tar.gz` 与 `latest.json`。
 
 ### 下载
 
-- 推荐下载:`AgentBro_latest_universal.dmg`
-- 版本归档:`AgentBro_{{VERSION}}_universal.dmg`
-- 自动更新文件:`AgentBro.app.tar.gz` 与 `latest.json`
-- 国内直链:`https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
+- 推荐下载: `AgentBro_latest_universal.dmg`
+- 版本归档: `AgentBro_{{VERSION}}_universal.dmg`
+- 自动更新文件: `AgentBro.app.tar.gz` 与 `latest.json`
+- 国内直链: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### 说明
 
