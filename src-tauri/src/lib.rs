@@ -145,14 +145,18 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
 #[tauri::command]
 async fn set_notch_ignore_cursor_events(
     app: tauri::AppHandle,
-    ignore: bool,
+    _ignore: bool,
     window_label: Option<String>,
 ) -> Result<(), String> {
+    // Always force the window to receive cursor events. Toggling ignore=true
+    // on a transparent Tauri window is unreliable on macOS external displays
+    // (clicks pass through the visible notch). CSS `pointer-events` on the
+    // .notch-container/.notch-hitbox pair handles visual click-through.
     let label = window_label.unwrap_or_else(|| "notch".to_string());
     let handle = app.clone();
     app.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window(&label) {
-            let _ = window.set_ignore_cursor_events(ignore);
+            let _ = window.set_ignore_cursor_events(false);
         }
     })
     .map_err(|e| e.to_string())
@@ -1480,14 +1484,27 @@ async fn is_cursor_in_window_zones(
         let cursor = app.cursor_position().map_err(|e| e.to_string())?;
         let position = window.outer_position().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
-        let cx_logical = (cursor.x - position.x as f64) / scale;
-        let cy_logical = (cursor.y - position.y as f64) / scale;
+
+        let monitor = window.current_monitor().ok().flatten();
+        let monitor_origin_logical = monitor
+            .map(|m| {
+                let s = m.scale_factor().max(1.0);
+                (m.position().x as f64 / s, m.position().y as f64 / s)
+            })
+            .unwrap_or((0.0, 0.0));
+
+        let cx_logical = cursor.x / scale - monitor_origin_logical.0;
+        let cy_logical = cursor.y / scale - monitor_origin_logical.1;
+        let win_left_logical = position.x as f64 / scale - monitor_origin_logical.0;
+        let win_top_logical = position.y as f64 / scale - monitor_origin_logical.1;
 
         Ok(zones.iter().any(|r| {
-            cx_logical >= r.left
-                && cx_logical <= r.left + r.width
-                && cy_logical >= r.top
-                && cy_logical <= r.top + r.height
+            let zone_left = win_left_logical + r.left;
+            let zone_top = win_top_logical + r.top;
+            cx_logical >= zone_left
+                && cx_logical <= zone_left + r.width
+                && cy_logical >= zone_top
+                && cy_logical <= zone_top + r.height
         }))
     })
 }
@@ -1507,24 +1524,48 @@ async fn is_cursor_over_notch(
         let cursor = app.cursor_position().map_err(|e| e.to_string())?;
         let position = window.outer_position().map_err(|e| e.to_string())?;
         let size = window.outer_size().map_err(|e| e.to_string())?;
-        let scale = window.scale_factor().unwrap_or(1.0);
+        let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+
+        // Normalize both cursor and window to absolute logical coordinates.
+        // On macOS with external monitors, window.outer_position() and
+        // app.cursor_position() can report values in different coordinate
+        // spaces depending on which monitor the window is on. Convert both
+        // to monitor-relative logical coordinates for a consistent hit test.
+        let monitor = window.current_monitor().ok().flatten();
+        let monitor_origin_logical = monitor
+            .map(|m| {
+                let s = m.scale_factor().max(1.0);
+                (m.position().x as f64 / s, m.position().y as f64 / s)
+            })
+            .unwrap_or((0.0, 0.0));
+
+        let window_left_logical = position.x as f64 / scale - monitor_origin_logical.0;
+        let window_top_logical = position.y as f64 / scale - monitor_origin_logical.1;
+        let window_width_logical = size.width as f64 / scale;
+        let window_height_logical = size.height as f64 / scale;
+
+        let cursor_x_logical = cursor.x / scale - monitor_origin_logical.0;
+        let cursor_y_logical = cursor.y / scale - monitor_origin_logical.1;
+
         let hit_width = width
             .filter(|value| *value > 0.0)
-            .map(|value| value * scale)
-            .unwrap_or(size.width as f64);
+            .unwrap_or(window_width_logical);
         let hit_height = height
             .filter(|value| *value > 0.0)
-            .map(|value| value * scale)
-            .unwrap_or(size.height as f64);
+            .unwrap_or(window_height_logical);
 
-        let anchor_offset_x = anchor_offset_x.unwrap_or(0.0) * scale;
-        let left =
-            position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0) + anchor_offset_x;
-        let top = position.y as f64;
-        let right = left + hit_width.min(size.width as f64);
-        let bottom = top + hit_height.min(size.height as f64);
+        let anchor_offset_x = anchor_offset_x.unwrap_or(0.0);
+        let left = window_left_logical
+            + ((window_width_logical - hit_width) / 2.0).max(0.0)
+            + anchor_offset_x;
+        let top = window_top_logical;
+        let right = left + hit_width.min(window_width_logical);
+        let bottom = top + hit_height.min(window_height_logical);
 
-        Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
+        Ok(cursor_x_logical >= left
+            && cursor_x_logical <= right
+            && cursor_y_logical >= top
+            && cursor_y_logical <= bottom)
     })
 }
 

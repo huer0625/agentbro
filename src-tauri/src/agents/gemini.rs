@@ -94,42 +94,74 @@ impl AgentAdapter for GeminiAdapter {
             }),
             "SessionEnd" | "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
             "Stop" => {
-                let summary = string_field(raw, &["summary", "message", "last_assistant_message"])
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or("Task completed")
-                    .to_string();
+                let summary = string_field(
+                    raw,
+                    &[
+                        "prompt_response",
+                        "summary",
+                        "message",
+                        "last_assistant_message",
+                    ],
+                )
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("Task completed")
+                .to_string();
                 Ok(AgentEvent::AssistantResponseComplete {
                     session_id,
                     text: summary,
                 })
             }
-            "BeforeTool" | "PreToolUse" | "pre_tool_use" => Ok(AgentEvent::ToolUse {
+            "BeforeTool" | "PreToolUse" | "pre_tool_use" => Ok(AgentEvent::PermissionRequest {
                 session_id,
                 tool_name,
-                tool_input,
-                tool_target: None,
-                status: "running".to_string(),
+                diff: None,
+                options: None,
             }),
-            "AfterTool" | "PostToolUse" | "post_tool_use" => Ok(AgentEvent::ToolUse {
-                session_id,
-                tool_name,
-                tool_input,
-                tool_target: None,
-                status: "success".to_string(),
-            }),
-            "BeforeAgent" => Ok(AgentEvent::Processing {
-                session_id,
-                description: string_field(raw, &["message", "description"])
+            "AfterTool" | "PostToolUse" | "post_tool_use" => {
+                let tool_response = raw
+                    .get("tool_response")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                let display_input = if tool_response.is_empty() {
+                    tool_input
+                } else {
+                    tool_response
+                };
+                Ok(AgentEvent::ToolUse {
+                    session_id,
+                    tool_name,
+                    tool_input: display_input,
+                    tool_target: None,
+                    status: "success".to_string(),
+                })
+            }
+            "BeforeAgent" => {
+                let prompt = string_field(raw, &["prompt", "message", "description"])
                     .unwrap_or("Agent started")
-                    .to_string(),
-            }),
-            "AfterAgent" => Ok(AgentEvent::AssistantResponseComplete {
-                session_id,
-                text: string_field(raw, &["summary", "last_assistant_message", "message"])
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("Agent completed")
-                    .to_string(),
-            }),
+                    .to_string();
+                Ok(AgentEvent::Processing {
+                    session_id,
+                    description: prompt,
+                })
+            }
+            "AfterAgent" => {
+                let response = string_field(
+                    raw,
+                    &[
+                        "prompt_response",
+                        "summary",
+                        "last_assistant_message",
+                        "message",
+                    ],
+                )
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Agent completed")
+                .to_string();
+                Ok(AgentEvent::AssistantResponseComplete {
+                    session_id,
+                    text: response,
+                })
+            }
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),

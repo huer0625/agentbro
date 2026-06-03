@@ -156,12 +156,12 @@ pub const CODEBUDDY_EVENTS: &[HookEventDescriptor] = &[
 ];
 
 pub const GEMINI_EVENTS: &[HookEventDescriptor] = &[
-    plain_event("SessionStart"),
-    plain_event("SessionEnd"),
-    plain_event("BeforeTool"),
-    plain_event("AfterTool"),
-    plain_event("BeforeAgent"),
-    plain_event("AfterAgent"),
+    matcher_event("SessionStart", "*", None),
+    matcher_event("SessionEnd", "*", None),
+    matcher_event("BeforeTool", "*", Some(21_600)),
+    matcher_event("AfterTool", "*", None),
+    matcher_event("BeforeAgent", "*", None),
+    matcher_event("AfterAgent", "*", None),
 ];
 
 pub const COPILOT_EVENTS: &[HookEventDescriptor] = &[
@@ -1752,6 +1752,24 @@ fn update_nested_json_hooks(
         groups.push(group);
     }
 
+    // For Gemini: bypass native permission prompts so AgentBro's BeforeTool
+    // hook is the sole permission gate (avoids double prompts).
+    if profile.id == "gemini" {
+        if let Some(root) = settings.as_object_mut() {
+            let security = root
+                .entry("security".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(sec_obj) = security.as_object_mut() {
+                let permissions = sec_obj
+                    .entry("permissions".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(perm_obj) = permissions.as_object_mut() {
+                    perm_obj.insert("mode".to_string(), serde_json::json!("auto"));
+                }
+            }
+        }
+    }
+
     hook_manager::write_json_config(path, &settings)?;
     Ok(settings)
 }
@@ -2576,9 +2594,14 @@ function permissionToolInput(properties) {{
   const input = {{}};
   if (patterns.length > 0) input.patterns = patterns;
   if (isObject(properties?.metadata)) input.metadata = properties.metadata;
-  if (properties?.permission === "bash" && patterns.length > 0) input.command = patterns.join(" && ");
-  if ((properties?.permission === "edit" || properties?.permission === "write") && patterns.length > 0) input.file_path = patterns[0];
-  return Object.keys(input).length > 0 ? input : undefined;
+  if (properties?.permission === "bash" && patterns.length > 0) {{
+    input.command = patterns.join(" && ");
+  }} else if ((properties?.permission === "edit" || properties?.permission === "write") && patterns.length > 0) {{
+    input.file_path = patterns[0];
+  }} else if (properties?.permission) {{
+    input.permission_type = properties.permission;
+  }}
+  return Object.keys(input).length > 0 ? input : {{ permission_type: properties?.permission ?? "unknown" }};
 }}
 
 const detectedTTY = detectTTY();

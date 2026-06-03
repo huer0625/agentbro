@@ -1027,7 +1027,7 @@ export function NotchPanel() {
       }
     }
 
-    const interval = window.setInterval(tick, 100)
+    const interval = window.setInterval(tick, 50)
     tick()
 
     return () => {
