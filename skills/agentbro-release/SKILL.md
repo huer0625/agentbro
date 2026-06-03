@@ -15,6 +15,16 @@ Use this skill for AgentBro release work. Keep unrelated local changes out of co
 - Do not bump versions in feature PRs. Only bump for an actual release.
 - If `gh` is not authenticated, use the public GitHub API with `curl` for read-only checks.
 
+## Version Selection
+
+Use semantic versioning when choosing the next release number:
+
+- Bug fixes and small reliability fixes bump the third number: `X.Y.Z` -> `X.Y.(Z+1)`.
+- Minor/user-facing feature releases bump the middle number and reset patch: `X.Y.Z` -> `X.(Y+1).0`.
+- Major breaking releases bump the first number and reset the rest: `X.Y.Z` -> `(X+1).0.0`.
+
+When the maintainer explicitly asks for a version, use that version after confirming the tag does not already exist locally or remotely.
+
 ## Version Files
 
 All four must match:
@@ -72,7 +82,7 @@ git stash pop
    - The app update dialog selects the Chinese section only when the user's language is Chinese; all other UI languages show the English section.
    - If this release includes first-time contributors, include a `### New Contributors` block in English and a matching `### 新贡献者` block in Chinese. Mention GitHub usernames and PR numbers.
 
-5. Bump to the next patch version and run validation:
+5. Bump to the next version using the "Version Selection" rules above and run validation:
 
 ```bash
 pnpm release:check
