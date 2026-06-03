@@ -403,9 +403,14 @@ fn reconcile_pending_for_phase(session: &mut SessionState) {
             session.pending_plan = None;
         }
         _ => {
-            session.pending_permission = None;
-            session.pending_question = None;
-            session.pending_plan = None;
+            // Preserve pending_permission if the bridge is still blocking on it.
+            // Gemini hooks use BeforeTool as the permission gate — the bridge blocks
+            // until the user responds. Clearing here would dismiss the approval UI
+            // when a Processing event (e.g. AfterAgent) arrives concurrently.
+            if session.pending_permission.is_none() {
+                session.pending_question = None;
+                session.pending_plan = None;
+            }
         }
     }
 }
@@ -1040,6 +1045,10 @@ mod tests {
             }),
         );
 
+        // Simulate the user responding: clearPermission sets pending_permission
+        // to None and phase to Processing before update_session runs.
+        store.set_pending_permission("s1", None);
+
         store.update_session("s1", |session| {
             session.phase = SessionPhase::Processing;
             session.last_tool_name = Some("Bash".to_string());
@@ -1049,6 +1058,32 @@ mod tests {
         let session = store.get_session("s1").expect("session should exist");
         assert_eq!(session.phase, SessionPhase::Processing);
         assert!(session.pending_permission.is_none());
+    }
+
+    #[test]
+    fn update_session_preserves_pending_permission_during_approval() {
+        let store = seeded_store();
+        store.set_pending_permission(
+            "s1",
+            Some(PendingPermission {
+                tool_use_id: None,
+                tool_name: "run_shell_command".to_string(),
+                tool_input: "{\"command\":\"ls -la\"}".to_string(),
+                diff: None,
+                options: None,
+            }),
+        );
+
+        // A concurrent Processing event (e.g. Gemini AfterAgent) should NOT
+        // dismiss the pending permission while the bridge is still blocking.
+        store.update_session("s1", |session| {
+            session.phase = SessionPhase::Processing;
+            session.description = Some("Agent completed".to_string());
+        });
+
+        let session = store.get_session("s1").expect("session should exist");
+        assert!(session.pending_permission.is_some());
+        assert_eq!(session.pending_permission.as_ref().unwrap().tool_name, "run_shell_command");
     }
 
     #[test]

@@ -885,8 +885,19 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
         }
 
-        // Detect new pendingPermission — create permission overlay
+        // Detect new pendingPermission — create permission overlay and chat message
         if (s.pendingPermission && !prev?.pendingPermission) {
+          // Add permission message to chat history so ChatView shows tool details
+          const permMsg: ChatMessage = {
+            role: 'permission',
+            toolName: s.pendingPermission.toolName,
+            toolInput: s.pendingPermission.toolInput,
+            diff: s.pendingPermission.diff,
+            options: s.pendingPermission.options,
+            timestamp: Date.now(),
+          }
+          s.chatHistory = [...(s.chatHistory ?? []), permMsg]
+
           const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'permission')
           if (!existingOverlay) {
             newOverlays.push({

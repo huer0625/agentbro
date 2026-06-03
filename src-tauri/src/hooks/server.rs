@@ -1628,7 +1628,7 @@ impl HookServer {
                     });
                     return;
                 }
-                if event_name == "UserPromptSubmit" {
+                if event_name == "UserPromptSubmit" || event_name == "BeforeAgent" {
                     if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
                         store.set_last_user_message(session_id, Some(prompt));
                     }

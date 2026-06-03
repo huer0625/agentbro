@@ -26,7 +26,8 @@ interface PermissionCardProps {
 
 function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Record<string, unknown> }) {
   switch (toolName) {
-    case 'Bash': {
+    case 'Bash':
+    case 'run_shell_command': {
       const command = (toolInput.command as string) ?? (toolInput.raw as string) ?? ''
       const lines = command.split('\n')
       const maxLines = 5
@@ -52,7 +53,8 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
     }
 
     case 'Edit':
-    case 'MultiEdit': {
+    case 'MultiEdit':
+    case 'replace': {
       const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
       const oldStr = toolInput.old_string as string | undefined
       const newStr = toolInput.new_string as string | undefined
@@ -83,7 +85,8 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
       )
     }
 
-    case 'Write': {
+    case 'Write':
+    case 'write_file': {
       const preview = getWritePermissionPreview(toolInput, WRITE_PERMISSION_PREVIEW_LINES)
 
       return (
@@ -102,7 +105,8 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
       )
     }
 
-    case 'Read': {
+    case 'Read':
+    case 'read_file': {
       const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
       return (
         <div className="perm-card__preview-file">
@@ -113,19 +117,22 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
     }
 
     case 'Grep':
-    case 'Glob': {
+    case 'Glob':
+    case 'grep_search': {
       const pattern = (toolInput.pattern as string) ?? ''
       const path = toolInput.path as string | undefined
+      const dirPath = (toolInput.dir_path as string) || path
       return (
         <div className="perm-card__preview-file">
           <span>{'🔍'}</span>
           <code className="perm-card__preview-pattern">{pattern}</code>
-          {path && <span className="perm-card__preview-more">in {shortenPath(path)}</span>}
+          {dirPath && <span className="perm-card__preview-more">in {shortenPath(dirPath)}</span>}
         </div>
       )
     }
 
-    case 'WebSearch': {
+    case 'WebSearch':
+    case 'google_web_search': {
       const query = (toolInput.query as string) ?? ''
       return (
         <div className="perm-card__preview-file">
@@ -135,8 +142,9 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
       )
     }
 
-    case 'WebFetch': {
-      const url = (toolInput.url as string) ?? ''
+    case 'WebFetch':
+    case 'web_fetch': {
+      const url = (toolInput.url as string) ?? (toolInput.prompt as string) ?? ''
       return (
         <div className="perm-card__preview-file">
           <span>{'🔗'}</span>
