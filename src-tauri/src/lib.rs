@@ -3746,6 +3746,7 @@ fn pet_origin_is_visible_on_any_monitor(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pet_window_rect_has_visible_area(
     monitor_x: f64,
     monitor_y: f64,
