@@ -30,7 +30,7 @@ use crate::webhook::{self, templates::NotificationEvent};
 
 const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
 const SESSION_END_CLEANUP_SECS: u64 = 5;
-const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 120 * 60;
+const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 300;
 const DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 300;
 const HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 21_600;
 const RECENT_TOOL_CACHE_TTL_MS: u64 = 2 * 60 * 1000;
@@ -303,7 +303,10 @@ impl HookServer {
             .get("agent")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let seconds = if matches!(agent, "codex" | "openai.codex" | "claude-code" | "claude") {
+        let seconds = if matches!(
+            agent,
+            "codex" | "openai.codex" | "claude-code" | "claude" | "opencode"
+        ) {
             HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS
         } else {
             DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS
@@ -1502,6 +1505,17 @@ impl HookServer {
         config_store: &Arc<std::sync::Mutex<Option<ConfigStore>>>,
     ) {
         Self::update_session_metadata_from_raw(store, _raw);
+
+        let done_cleanup_secs = config_store
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .map(|c| c.get().idle_timeout_minutes as u64 * 60)
+            })
+            .unwrap_or(DONE_SESSION_HISTORY_CLEANUP_SECS);
+
         match event {
             AgentEvent::SessionStart {
                 session_id,
@@ -1824,11 +1838,7 @@ impl HookServer {
                     session_id.clone(),
                     None,
                 );
-                Self::schedule_done_session_cleanup(
-                    store,
-                    session_id,
-                    DONE_SESSION_HISTORY_CLEANUP_SECS,
-                );
+                Self::schedule_done_session_cleanup(store, session_id, done_cleanup_secs);
             }
             AgentEvent::AssistantResponseComplete { session_id, text } => {
                 let truncated = Self::resolve_completion_summary(
@@ -1899,9 +1909,11 @@ impl HookServer {
                     session_id.clone(),
                     None,
                 );
+                Self::schedule_done_session_cleanup(store, session_id, done_cleanup_secs);
             }
             AgentEvent::Interrupt { session_id } => {
                 store.update_phase(session_id, SessionPhase::Interrupted);
+                Self::schedule_done_session_cleanup(store, session_id, done_cleanup_secs);
             }
             AgentEvent::TokenUsage {
                 session_id,
@@ -1959,7 +1971,15 @@ impl HookServer {
                 message,
                 status,
             } => {
-                Self::process_notification(store, session_id, message, status, sound, _raw);
+                Self::process_notification(
+                    store,
+                    session_id,
+                    message,
+                    status,
+                    sound,
+                    _raw,
+                    done_cleanup_secs,
+                );
             }
             AgentEvent::SubagentStart {
                 session_id,
@@ -1975,6 +1995,8 @@ impl HookServer {
                     description,
                     session_id
                 );
+                // Ensure parent session exists (may not exist yet due to event ordering)
+                store.get_or_create_session(session_id, "opencode", "", "", "");
                 store.add_subagent(
                     session_id,
                     agent_id,
@@ -2243,6 +2265,7 @@ impl HookServer {
         status: &Option<String>,
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         raw: &serde_json::Value,
+        done_cleanup_secs: u64,
     ) {
         let lower = message.to_lowercase();
         let notification_type = raw
@@ -2301,11 +2324,7 @@ impl HookServer {
                 s.last_response = Some(summary.clone());
             });
             Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
-            Self::schedule_done_session_cleanup(
-                store,
-                session_id,
-                DONE_SESSION_HISTORY_CLEANUP_SECS,
-            );
+            Self::schedule_done_session_cleanup(store, session_id, done_cleanup_secs);
             return;
         }
 
@@ -2460,7 +2479,9 @@ impl HookServer {
             let should_remove = store_for_cleanup
                 .get_session(&session_id_for_cleanup)
                 .map(|session| {
-                    session.phase == SessionPhase::Done
+                    (session.phase == SessionPhase::Done
+                        || session.phase == SessionPhase::Error
+                        || session.phase == SessionPhase::Interrupted)
                         && session.pending_permission.is_none()
                         && session.pending_question.is_none()
                         && session.pending_plan.is_none()
@@ -3241,11 +3262,21 @@ mod tests {
 
     #[test]
     fn non_codex_interaction_timeout_keeps_existing_window() {
-        let raw = serde_json::json!({ "agent": "opencode" });
+        let raw = serde_json::json!({ "agent": "gemini" });
 
         assert_eq!(
             HookServer::interaction_response_timeout(&raw),
             Duration::from_secs(DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn opencode_interaction_timeout_uses_long_window() {
+        let raw = serde_json::json!({ "agent": "opencode" });
+
+        assert_eq!(
+            HookServer::interaction_response_timeout(&raw),
+            Duration::from_secs(HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS)
         );
     }
 

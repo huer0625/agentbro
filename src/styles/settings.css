@@ -2750,13 +2750,24 @@
   font-size: 14px;
 }
 
+.update-dialog__status {
+  flex: 0 0 auto;
+  padding: 14px 28px;
+  border-top: 1px solid rgba(30, 41, 59, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+}
+
 .update-dialog__progress,
 .update-dialog__ready {
-  margin-top: 18px;
   padding: 14px 16px;
   border: 1px solid rgba(10, 132, 255, 0.14);
   border-radius: 12px;
   background: rgba(10, 132, 255, 0.06);
+}
+
+.update-dialog__status .update-dialog__progress + .update-dialog__ready,
+.update-dialog__status .update-dialog__ready + .update-dialog__ready {
+  margin-top: 10px;
 }
 
 .update-dialog__progress-row {
