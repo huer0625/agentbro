@@ -2,22 +2,22 @@
 
 ## English
 
-This release substantially expands OpenCode support and makes the in-app update panel easier to read during an update.
+This release improves Gemini and OpenCode hook handling, permission detail rendering, chat history recovery, and external-display notch hit testing.
 
 ### Highlights
 
-- **Expand OpenCode event coverage** - AgentBro now maps 17 OpenCode event types, including prompt submission, session errors, compaction, subagent lifecycle, shell execution, token usage, agent thoughts, tool failures, retries, and todo updates.
-- **Keep OpenCode subagents grouped under the parent session** - Subagent tool calls and notifications are attributed back to the parent session, so the session list stays focused and conversation detail shows the full tool activity.
-- **Improve OpenCode cleanup and reliability** - Completed OpenCode sessions now respect the configured idle timeout, plugin unload cleans up tracked sessions, and notification throttling/null handling is more robust.
-- **Keep update status separate from release notes** - The download, ready-to-restart, and Homebrew status cards now sit outside the scrollable notes area so the changelog and contributor list remain readable.
+- **Improve Gemini hook events and permission flow** - Gemini hook payloads now include matchers, map blocking permission requests more accurately, and extract prompt and response fields for richer session history.
+- **Improve OpenCode tool details and session history** - OpenCode permission inputs, tool labels, pending permission reconciliation, and raw-event chat history fallback are more robust.
+- **Add hook diagnostics and auto-repair coverage** - Hook Doctor now checks Claude Code bare mode and Gemini folder trust, and hook setup can repair Gemini trusted folder configuration.
+- **Fix notch hit testing on external displays** - The notch window now relies on CSS pointer events and monitor-relative coordinates so hover and click behavior works better on secondary displays.
 
 ### New Contributors
 
-- Welcome @huer0625 for their first contribution in #12.
+- Welcome @nicobeyond for their contribution in #13.
 
 ### Contributors
 
-- @huer0625
+- @nicobeyond
 - @shirenchuang
 
 ### Install And Update
@@ -40,22 +40,22 @@ This release substantially expands OpenCode support and makes the in-app update 
 
 ## 中文
 
-这个版本大幅扩展了 OpenCode 支持，并让应用内更新面板在更新过程中更容易阅读。
+这个版本改进了 Gemini 与 OpenCode 的 Hook 处理、权限详情展示、会话历史恢复，以及外接显示器上的灵动岛命中检测。
 
 ### 亮点
 
-- **扩展 OpenCode 事件覆盖** - AgentBro 现在映射 17 类 OpenCode 事件，包括提示词提交、会话错误、上下文压缩、子代理生命周期、Shell 执行、Token 用量、Agent 思考、工具失败、重试和 todo 更新。
-- **把 OpenCode 子代理归并到父会话** - 子代理的工具调用和通知会归属到父会话，避免会话列表被拆散，同时会话详情能看到完整工具活动。
-- **提升 OpenCode 清理和可靠性** - 已完成的 OpenCode 会话现在遵循设置里的空闲超时；插件卸载会清理已追踪会话；通知节流和空值处理也更稳。
-- **将更新状态与版本说明分离** - 下载进度、重启就绪和 Homebrew 状态卡片现在固定在滚动说明区域之外，更新日志和贡献者列表会保持可读。
+- **改进 Gemini Hook 事件与权限流程** - Gemini Hook 载荷现在包含 matcher，阻塞式权限请求映射更准确，并会提取 prompt 和响应字段用于更完整的会话历史。
+- **改进 OpenCode 工具详情与会话历史** - OpenCode 权限输入、工具标签、待处理权限同步，以及原始事件兜底会话历史更加稳健。
+- **增加 Hook 诊断与自动修复覆盖** - Hook Doctor 现在会检查 Claude Code bare mode 和 Gemini 文件夹信任；Hook 安装流程也能修复 Gemini trusted folder 配置。
+- **修复外接显示器上的灵动岛命中检测** - 灵动岛窗口现在依赖 CSS pointer events 与相对当前显示器的坐标计算，让副屏上的 hover 和点击行为更稳定。
 
 ### 新贡献者
 
-- 欢迎 @huer0625 在 #12 中完成首次贡献。
+- 欢迎 @nicobeyond 在 #13 中贡献改进。
 
 ### 贡献者
 
-- @huer0625
+- @nicobeyond
 - @shirenchuang
 
 ### 安装与更新
