@@ -124,38 +124,43 @@ export function UpdateDialog({
             </div>
           )}
 
-          {isDownloading && (
-            <div className="update-dialog__progress">
-              <div className="update-dialog__progress-row">
-                <span>{t('update.downloading')}</span>
-                <span>{progressLabel}</span>
-              </div>
-              <div className="update-dialog__progress-track">
-                <div
-                  className="update-dialog__progress-bar"
-                  style={{ width: progressPercent === null ? '36%' : `${progressPercent}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {isReady && (
-            <div className="update-dialog__ready">
-              {restartBlockedByActivity
-                ? t('update.restartWhenIdleHint', { count: blockingSessionCount, defaultValue: 'The update is ready. AgentBro will restart automatically after active sessions become idle.' })
-                : restartPending
-                  ? t('update.restartSoonHint', { defaultValue: 'The update is ready. AgentBro will restart automatically after a short idle window.' })
-                  : t('update.restartHint')}
-            </div>
-          )}
-
-          {isHomebrew && (
-            <div className="update-dialog__ready">
-              {t('update.homebrewHint')}
-              <code className="update-dialog__command">{HOMEBREW_UPDATE_COMMAND}</code>
-            </div>
-          )}
         </div>
+
+        {(isDownloading || isReady || isHomebrew) && (
+          <div className="update-dialog__status">
+            {isDownloading && (
+              <div className="update-dialog__progress">
+                <div className="update-dialog__progress-row">
+                  <span>{t('update.downloading')}</span>
+                  <span>{progressLabel}</span>
+                </div>
+                <div className="update-dialog__progress-track">
+                  <div
+                    className="update-dialog__progress-bar"
+                    style={{ width: progressPercent === null ? '36%' : `${progressPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {isReady && (
+              <div className="update-dialog__ready">
+                {restartBlockedByActivity
+                  ? t('update.restartWhenIdleHint', { count: blockingSessionCount, defaultValue: 'The update is ready. AgentBro will restart automatically after active sessions become idle.' })
+                  : restartPending
+                    ? t('update.restartSoonHint', { defaultValue: 'The update is ready. AgentBro will restart automatically after a short idle window.' })
+                    : t('update.restartHint')}
+              </div>
+            )}
+
+            {isHomebrew && (
+              <div className="update-dialog__ready">
+                {t('update.homebrewHint')}
+                <code className="update-dialog__command">{HOMEBREW_UPDATE_COMMAND}</code>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="update-dialog__footer">
           <button className="update-dialog__button" onClick={handleSecondaryClick}>

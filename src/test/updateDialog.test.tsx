@@ -12,6 +12,7 @@ vi.mock('react-i18next', () => ({
         'update.install': 'Install & Restart',
         'update.downloading': 'Downloading...',
         'update.restart': 'Restart Now',
+        'update.restartHint': 'Update ready. Restart to finish installation.',
         'update.downloadInBackground': 'Download in Background',
         'update.miniReadyRestart': 'Update ready — click to restart',
       }
@@ -115,5 +116,15 @@ describe('UpdateDialog non-blocking download', () => {
     fireEvent.click(close)
     expect(props.onDismiss).toHaveBeenCalledTimes(1)
     expect(props.onMinimize).not.toHaveBeenCalled()
+  })
+
+  it('keeps the ready hint outside the scrollable release notes area', () => {
+    const props = baseProps()
+    const { container } = render(<UpdateDialog {...props} status="ready" downloadProgress={null} />)
+    const status = container.querySelector('.update-dialog__status')
+    const body = container.querySelector('.update-dialog__body')
+
+    expect(status).toHaveTextContent('Update ready. Restart to finish installation.')
+    expect(body).not.toHaveTextContent('Update ready. Restart to finish installation.')
   })
 })
