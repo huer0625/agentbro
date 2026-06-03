@@ -3734,56 +3734,83 @@ fn pet_origin_is_visible_on_any_monitor(
         let pos = monitor.position();
         let size = monitor.size();
         pet_window_rect_has_visible_area(
-            pos.x as f64,
-            pos.y as f64,
-            size.width as f64,
-            size.height as f64,
-            window_width,
-            window_height,
-            x,
-            y,
+            Rect {
+                x: pos.x as f64,
+                y: pos.y as f64,
+                width: size.width as f64,
+                height: size.height as f64,
+            },
+            Rect {
+                x,
+                y,
+                width: window_width,
+                height: window_height,
+            },
         )
     })
 }
 
-fn pet_window_rect_has_visible_area(
-    monitor_x: f64,
-    monitor_y: f64,
-    monitor_width: f64,
-    monitor_height: f64,
-    window_width: f64,
-    window_height: f64,
+#[derive(Clone, Copy)]
+struct Rect {
     x: f64,
     y: f64,
-) -> bool {
-    if monitor_width <= 0.0 || monitor_height <= 0.0 || window_width <= 0.0 || window_height <= 0.0
+    width: f64,
+    height: f64,
+}
+
+fn pet_window_rect_has_visible_area(monitor: Rect, window: Rect) -> bool {
+    if monitor.width <= 0.0 || monitor.height <= 0.0 || window.width <= 0.0 || window.height <= 0.0
     {
         return false;
     }
 
-    let visible_width = (x + window_width).min(monitor_x + monitor_width) - x.max(monitor_x);
-    let visible_height = (y + window_height).min(monitor_y + monitor_height) - y.max(monitor_y);
-    let required_width = window_width.min(64.0);
-    let required_height = window_height.min(64.0);
+    let visible_width =
+        (window.x + window.width).min(monitor.x + monitor.width) - window.x.max(monitor.x);
+    let visible_height =
+        (window.y + window.height).min(monitor.y + monitor.height) - window.y.max(monitor.y);
+    let required_width = window.width.min(64.0);
+    let required_height = window.height.min(64.0);
 
     visible_width >= required_width && visible_height >= required_height
 }
 
 #[cfg(test)]
 mod pet_window_tests {
-    use super::pet_window_rect_has_visible_area;
+    use super::{pet_window_rect_has_visible_area, Rect};
 
     #[test]
     fn saved_pet_window_origin_must_leave_visible_area_on_screen() {
         assert!(!pet_window_rect_has_visible_area(
-            0.0, 0.0, 1728.0, 1117.0, 820.0, 360.0, 2185.0, -1098.0,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1728.0,
+                height: 1117.0,
+            },
+            Rect {
+                x: 2185.0,
+                y: -1098.0,
+                width: 820.0,
+                height: 360.0,
+            },
         ));
     }
 
     #[test]
     fn saved_pet_window_origin_can_live_on_monitor_above_primary() {
         assert!(pet_window_rect_has_visible_area(
-            0.0, -1117.0, 1728.0, 1117.0, 820.0, 360.0, 864.0, -1098.0,
+            Rect {
+                x: 0.0,
+                y: -1117.0,
+                width: 1728.0,
+                height: 1117.0,
+            },
+            Rect {
+                x: 864.0,
+                y: -1098.0,
+                width: 820.0,
+                height: 360.0,
+            },
         ));
     }
 }
