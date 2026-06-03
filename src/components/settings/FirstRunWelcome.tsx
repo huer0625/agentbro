@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../../stores/configStore'
 import { setAnalyticsEnabled as setAnalyticsEnabledBackend, setIslandSurfaceOptions } from '../../services/tauriApi'
-import { Toggle } from './Toggle'
 
 type SurfaceMode = 'island' | 'pet'
 
@@ -15,10 +14,8 @@ export function FirstRunWelcome() {
   const { t } = useTranslation()
   const initialSurfaceMode = useConfigStore((s) => s.islandSurfaceMode)
   const initialPetScale = useConfigStore((s) => s.islandPetScale)
-  const initialAnalyticsEnabled = useConfigStore((s) => s.analyticsEnabled)
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>(initialSurfaceMode)
-  const [analyticsEnabled, setAnalyticsEnabled] = useState(initialAnalyticsEnabled)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -30,7 +27,7 @@ export function FirstRunWelcome() {
     updateConfig('islandSurfaceMode', surfaceMode)
     updateConfig('islandPetWindowOrigin', null)
     updateConfig('islandPetWindowAnchor', null)
-    updateConfig('analyticsEnabled', analyticsEnabled)
+    updateConfig('analyticsEnabled', true)
     updateConfig('analyticsConsentPromptCompleted', true)
 
     try {
@@ -38,7 +35,7 @@ export function FirstRunWelcome() {
         islandSurfaceMode: surfaceMode,
         islandPetScale: initialPetScale,
       })
-      await setAnalyticsEnabledBackend(analyticsEnabled)
+      await setAnalyticsEnabledBackend(true)
     } catch (err) {
       updateConfig('islandSurfaceMode', previous.islandSurfaceMode)
       updateConfig('islandPetWindowOrigin', previous.islandPetWindowOrigin)
@@ -89,14 +86,6 @@ export function FirstRunWelcome() {
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="first-run-analytics">
-          <div className="first-run-analytics__copy">
-            <h2>{t('settings.welcomeAnalytics')}</h2>
-            <p>{t('settings.welcomeAnalyticsDesc')}</p>
-          </div>
-          <Toggle checked={analyticsEnabled} onChange={setAnalyticsEnabled} />
         </div>
 
         {error && (

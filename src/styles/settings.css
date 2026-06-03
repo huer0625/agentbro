@@ -2096,51 +2096,6 @@
   line-height: 1.55;
 }
 
-.about-analytics-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--settings-separator);
-  color: var(--settings-text-secondary);
-  opacity: 0.68;
-  transition: opacity 0.15s ease;
-}
-
-.about-analytics-row:hover {
-  opacity: 1;
-}
-
-.about-analytics-row__copy {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.about-analytics-row__label {
-  color: var(--settings-text-secondary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.about-analytics-row__description {
-  max-width: 680px;
-  color: var(--settings-text-tertiary);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.35;
-}
-
-.about-analytics-row .toggle {
-  flex: 0 0 auto;
-  transform: scale(0.86);
-  transform-origin: right center;
-}
-
 /* ── First Run Welcome ── */
 .first-run-overlay {
   position: fixed;
@@ -2198,8 +2153,7 @@
 }
 
 .first-run-dialog__header h1,
-.first-run-dialog__section h2,
-.first-run-analytics__copy h2 {
+.first-run-dialog__section h2 {
   margin: 0;
   color: var(--settings-text-primary);
   letter-spacing: 0;
@@ -2212,16 +2166,14 @@
 }
 
 .first-run-dialog__header p,
-.first-run-dialog__section p,
-.first-run-analytics__copy p {
+.first-run-dialog__section p {
   margin: 0;
   color: var(--settings-text-secondary);
   font-size: 14px;
   line-height: 1.55;
 }
 
-.first-run-dialog__section,
-.first-run-analytics {
+.first-run-dialog__section {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -2232,8 +2184,7 @@
   background: rgba(255, 255, 255, 0.72);
 }
 
-.first-run-dialog__section h2,
-.first-run-analytics__copy h2 {
+.first-run-dialog__section h2 {
   margin-bottom: 5px;
   font-size: 15px;
   font-weight: 760;
@@ -2291,10 +2242,6 @@
   font-weight: 850;
 }
 
-.first-run-analytics .toggle {
-  flex: 0 0 auto;
-}
-
 .first-run-dialog__error {
   padding: 10px 12px;
   border: 1px solid rgba(255, 59, 48, 0.18);
@@ -2343,8 +2290,7 @@
     font-size: 26px;
   }
 
-  .first-run-dialog__section,
-  .first-run-analytics {
+  .first-run-dialog__section {
     grid-template-columns: 1fr;
     align-items: flex-start;
   }

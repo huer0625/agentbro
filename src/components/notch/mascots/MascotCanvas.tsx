@@ -16,7 +16,6 @@ import piIcon from '../../../assets/cli-icons/pi.png'
 import qoderIcon from '../../../assets/cli-icons/qoder.png'
 import qwenIcon from '../../../assets/cli-icons/qwen.png'
 import stepfunIcon from '../../../assets/cli-icons/stepfun.png'
-import traeIcon from '../../../assets/cli-icons/trae.png'
 import workbuddyIcon from '../../../assets/cli-icons/workbuddy.png'
 import kiroIcon from '../../../assets/kiro.png'
 import './MascotCanvas.css'
@@ -53,9 +52,6 @@ const MASCOT_ASSETS: Record<string, MascotAsset> = {
   'factory': { src: factoryIcon, inset: 3 },
   'cline': { src: clineIcon, inset: 3 },
   'copilot': { src: copilotIcon, inset: 3 },
-  'trae': { src: traeIcon, inset: 3 },
-  'traecli': { src: traeIcon, inset: 3 },
-  'traecn': { src: traeIcon, inset: 3 },
   'qwen': { src: qwenIcon, inset: 3 },
   'kimi': { src: kimiIcon, inset: 3 },
   'stepfun': { src: stepfunIcon, inset: 3 },

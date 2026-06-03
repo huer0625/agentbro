@@ -10,7 +10,6 @@ export function agentAliasIds(agentId: string) {
   if (agentId === 'gemini' || agentId === 'gemini-cli') return ['gemini', 'gemini-cli']
   if (agentId === 'cursor' || agentId === 'cursor-cli') return ['cursor', 'cursor-cli']
   if (agentId === 'droid' || agentId === 'factory-droid') return ['droid', 'factory-droid']
-  if (agentId === 'traecn' || agentId === 'trae-cn') return ['traecn', 'trae-cn']
   if (agentId === 'qoder' || agentId === 'qoder-cli') return ['qoder', 'qoder-cli']
   return [agentId]
 }

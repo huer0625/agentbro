@@ -4,7 +4,6 @@ export type AgentType =
   | 'claude-code' | 'cline' | 'codex' | 'gemini-cli'
   | 'cursor' | 'cursor-cli'
   | 'copilot'
-  | 'trae' | 'traecli' | 'traecn'
   | 'qoder' | 'qoder-cli'
   | 'codebuddy' | 'codebuddycn'
   | 'qwen' | 'kimi' | 'deepseek' | 'opencode'

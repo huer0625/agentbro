@@ -27,9 +27,6 @@ pub mod qoder_cli;
 pub mod qwen;
 pub mod stepfun;
 pub mod toml_hooks;
-pub mod trae;
-pub mod trae_cli;
-pub mod trae_cn;
 pub mod traits;
 pub mod workbuddy;
 
@@ -223,9 +220,6 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(cursor::CursorAdapter::new()),
         Box::new(cursor_cli::CursorCliAdapter::new()),
         Box::new(copilot::CopilotAdapter::new()),
-        Box::new(trae::TraeAdapter::new()),
-        Box::new(trae_cli::TraeCliAdapter::new()),
-        Box::new(trae_cn::TraeCNAdapter::new()),
         Box::new(qoder::QoderAdapter::new()),
         Box::new(qoder_cli::QoderCliAdapter::new()),
         Box::new(codebuddy::CodeBuddyAdapter::new()),
@@ -278,8 +272,5 @@ impl_default_adapter!(
     qoder_cli::QoderCliAdapter,
     qwen::QwenAdapter,
     stepfun::StepFunAdapter,
-    trae::TraeAdapter,
-    trae_cn::TraeCNAdapter,
-    trae_cli::TraeCliAdapter,
     workbuddy::WorkBuddyAdapter,
 );

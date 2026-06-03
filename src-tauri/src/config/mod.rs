@@ -354,7 +354,7 @@ impl Default for AppConfig {
             tips_enabled: true,
             pixel_cursor_enabled: true,
             confetti_enabled: true,
-            analytics_enabled: false,
+            analytics_enabled: true,
             analytics_consent_prompt_completed: false,
             follow_focus: false,
             island_surface_mode: default_island_surface_mode(),
@@ -584,7 +584,7 @@ mod tests {
         assert!(!config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
         assert!(config.boot_sound_default_migrated);
-        assert!(!config.analytics_enabled);
+        assert!(config.analytics_enabled);
         assert!(!config.analytics_consent_prompt_completed);
     }
 

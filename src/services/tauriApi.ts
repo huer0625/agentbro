@@ -571,7 +571,7 @@ export async function getConfig(): Promise<BackendConfig> {
       tipsEnabled: true,
       pixelCursorEnabled: true,
       confettiEnabled: true,
-      analyticsEnabled: false,
+      analyticsEnabled: true,
       analyticsConsentPromptCompleted: false,
       islandSurfaceMode: 'island',
       petVitalsDebugOpen: false,

@@ -3246,6 +3246,9 @@ unsafe extern "C" fn display_reconfig_callback(
             let h = handle.clone();
             let _ = handle.run_on_main_thread(move || {
                 let _ = reposition_notch_to_display(&h, None, None);
+                if let Some(window) = h.get_webview_window("pet") {
+                    apply_pet_window_for_spaces(&window);
+                }
             });
         });
     }
@@ -3311,6 +3314,7 @@ fn apply_notch_window_for_spaces(_window: &tauri::WebviewWindow) {}
 fn apply_pet_window_for_spaces(window: &tauri::WebviewWindow) {
     use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
+    let _ = window.set_always_on_top(true);
     let _ = window.set_visible_on_all_workspaces(true);
     if let Ok(ptr) = window.ns_window() {
         unsafe {
@@ -3349,6 +3353,15 @@ fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("notch") {
             apply_notch_window_for_spaces(&window);
+        }
+    });
+}
+
+fn configure_pet_window_for_spaces(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("pet") {
+            apply_pet_window_for_spaces(&window);
         }
     });
 }
@@ -3668,11 +3681,15 @@ fn position_pet_window(
     saved_origin: Option<&config::WindowOrigin>,
 ) {
     if let Some(origin) = saved_origin {
-        if origin.x.is_finite() && origin.y.is_finite() {
+        if origin.x.is_finite()
+            && origin.y.is_finite()
+            && pet_origin_is_visible_on_any_monitor(window, width, height, origin.x, origin.y)
+        {
             let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
                 origin.x.round() as i32,
                 origin.y.round() as i32,
             )));
+            apply_pet_window_for_spaces(window);
             return;
         }
     }
@@ -3700,6 +3717,75 @@ fn position_pet_window(
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
         x as i32, y as i32,
     )));
+    apply_pet_window_for_spaces(window);
+}
+
+fn pet_origin_is_visible_on_any_monitor(
+    window: &tauri::WebviewWindow,
+    window_width: f64,
+    window_height: f64,
+    x: f64,
+    y: f64,
+) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return false;
+    };
+    monitors.into_iter().any(|monitor| {
+        let pos = monitor.position();
+        let size = monitor.size();
+        pet_window_rect_has_visible_area(
+            pos.x as f64,
+            pos.y as f64,
+            size.width as f64,
+            size.height as f64,
+            window_width,
+            window_height,
+            x,
+            y,
+        )
+    })
+}
+
+fn pet_window_rect_has_visible_area(
+    monitor_x: f64,
+    monitor_y: f64,
+    monitor_width: f64,
+    monitor_height: f64,
+    window_width: f64,
+    window_height: f64,
+    x: f64,
+    y: f64,
+) -> bool {
+    if monitor_width <= 0.0 || monitor_height <= 0.0 || window_width <= 0.0 || window_height <= 0.0
+    {
+        return false;
+    }
+
+    let visible_width = (x + window_width).min(monitor_x + monitor_width) - x.max(monitor_x);
+    let visible_height = (y + window_height).min(monitor_y + monitor_height) - y.max(monitor_y);
+    let required_width = window_width.min(64.0);
+    let required_height = window_height.min(64.0);
+
+    visible_width >= required_width && visible_height >= required_height
+}
+
+#[cfg(test)]
+mod pet_window_tests {
+    use super::pet_window_rect_has_visible_area;
+
+    #[test]
+    fn saved_pet_window_origin_must_leave_visible_area_on_screen() {
+        assert!(!pet_window_rect_has_visible_area(
+            0.0, 0.0, 1728.0, 1117.0, 820.0, 360.0, 2185.0, -1098.0,
+        ));
+    }
+
+    #[test]
+    fn saved_pet_window_origin_can_live_on_monitor_above_primary() {
+        assert!(pet_window_rect_has_visible_area(
+            0.0, -1117.0, 1728.0, 1117.0, 820.0, 360.0, 864.0, -1098.0,
+        ));
+    }
 }
 
 fn current_pet_scale_percent(app: &tauri::AppHandle) -> f64 {

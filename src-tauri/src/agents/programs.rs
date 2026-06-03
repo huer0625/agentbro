@@ -136,13 +136,15 @@ pub async fn agent_open_download(
 pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Result<(), String> {
     let _ = state;
     let meta = metadata_for(&agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
-    let path = meta
-        .app_path
-        .ok_or_else(|| format!("No app path for {agent_id}"))?;
-    if !Path::new(path).exists() {
-        return Err(format!("App is not installed at {path}"));
-    }
-    open_target(path)
+    let path = installed_app_path(&meta).ok_or_else(|| {
+        let paths = app_path_candidates(&meta).join(", ");
+        if paths.is_empty() {
+            format!("No app path for {agent_id}")
+        } else {
+            format!("App is not installed at any known path: {paths}")
+        }
+    })?;
+    open_target(&path)
 }
 
 #[tauri::command]
@@ -237,10 +239,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     let id = seed.id;
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = meta.binary.and_then(which);
-    let app_path = meta
-        .app_path
-        .filter(|path| Path::new(path).exists())
-        .map(ToString::to_string);
+    let app_path = installed_app_path(&meta);
     let installed = binary_path.is_some() || app_path.is_some() || seed.adapter_installed;
     let skills_dir = agent_paths::paths_for_agent(&id)
         .skill_dirs
@@ -274,7 +273,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         latest_version,
         binary_path,
         config_dir: meta.config_dir.map(expand_home),
-        app_path: meta.app_path.map(ToString::to_string),
+        app_path: app_path.or_else(|| meta.app_path.map(ToString::to_string)),
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
         update_command: meta.update_command.map(ToString::to_string),
@@ -574,6 +573,29 @@ fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
+fn app_path_candidates(meta: &ProgramMetadata) -> Vec<&'static str> {
+    let mut paths = Vec::new();
+    if let Some(path) = meta.app_path {
+        paths.push(path);
+    }
+
+    paths.sort_unstable();
+    paths.dedup();
+    if let Some(primary) = meta.app_path {
+        if let Some(index) = paths.iter().position(|path| *path == primary) {
+            paths.swap(0, index);
+        }
+    }
+    paths
+}
+
+fn installed_app_path(meta: &ProgramMetadata) -> Option<String> {
+    app_path_candidates(meta)
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .map(ToString::to_string)
+}
+
 fn default_metadata() -> ProgramMetadata {
     ProgramMetadata {
         kind: AgentProgramKind::Cli,
@@ -603,9 +625,6 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "qoder-cli" => "Qoder CLI",
         "hermes" => "Hermes",
         "antigravity" => "Antigravity",
-        "trae" => "Trae",
-        "traecli" => "TraeCli",
-        "traecn" | "trae-cn" => "Trae CN",
         "qwen" => "Qwen Code",
         "deepseek" => "DeepSeek",
         "kimi" => "Kimi",
@@ -634,7 +653,6 @@ fn display_name_for_agent(id: &str) -> &'static str {
 
 fn icon_for_agent(id: &str) -> String {
     match id {
-        "traecli" | "traecn" | "trae-cn" => "trae".to_string(),
         "codebuddycn" | "codybuddycn" => "codebuddy".to_string(),
         "gemini-cli" => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
@@ -725,27 +743,6 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "/Applications/Visual Studio Code.app",
             "~/Documents/Cline",
             "https://cline.bot",
-        ),
-        "trae" => app(
-            "trae",
-            "/Applications/Trae.app",
-            "~/.trae",
-            "https://www.trae.ai",
-        ),
-        "traecli" => cli_no_uninstall(
-            "traecli",
-            "vendor",
-            "traecli",
-            None,
-            None,
-            "~/.trae",
-            "https://www.trae.ai",
-        ),
-        "traecn" => app(
-            "traecn",
-            "/Applications/TRAE SOLO CN.app",
-            "~/.trae-cn",
-            "https://www.trae.cn/ide/download#solo-download",
         ),
         "qoder" => app(
             "qoder",

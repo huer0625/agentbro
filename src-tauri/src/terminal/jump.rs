@@ -1181,8 +1181,6 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
                 "com.openai.chat" => "com.openai.chat",
                 "com.openai.codex" => "com.openai.codex",
                 "com.todesktop.230313mzl4w4u92" => "com.todesktop.230313mzl4w4u92",
-                "com.trae.app" => "com.trae.app",
-                "cn.trae.solo.app" => "cn.trae.solo.app",
                 "com.qoder.ide" => "com.qoder.ide",
                 "com.factory.app" => "com.factory.app",
                 "com.tencent.codebuddy" => "com.tencent.codebuddy",
@@ -1197,8 +1195,6 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
 
     match ctx.agent_type.as_deref() {
         Some("cursor") => Some("com.todesktop.230313mzl4w4u92"),
-        Some("trae") => Some("com.trae.app"),
-        Some("traecn") => Some("cn.trae.solo.app"),
         Some("qoder") => Some("com.qoder.ide"),
         Some("droid") => Some("com.factory.app"),
         Some("codebuddy") => Some("com.tencent.codebuddy"),
@@ -1217,11 +1213,6 @@ fn native_bundle_matches_context(ctx: &JumpContext, bundle_id: &str) -> bool {
         (Some("codex"), "com.openai.codex")
             | (Some("cursor"), "com.todesktop.230313mzl4w4u92")
             | (Some("cursor-cli"), "com.todesktop.230313mzl4w4u92")
-            | (Some("trae"), "com.trae.app")
-            | (Some("traecn"), "com.trae.app")
-            | (Some("traecn"), "cn.trae.solo.app")
-            | (Some("trae-cli"), "com.trae.app")
-            | (Some("traecli"), "com.trae.app")
             | (Some("qoder"), "com.qoder.ide")
             | (Some("qoder-cli"), "com.qoder.ide")
             | (Some("droid"), "com.factory.app")
@@ -1249,8 +1240,6 @@ fn is_ide_host_bundle(bundle_id: &str) -> bool {
         || lower.contains("panic.nova")
         || lower.contains("android.studio")
         || lower.contains("antigravity")
-        || lower == "com.trae.app"
-        || lower == "cn.trae.solo.app"
         || lower == "com.qoder.ide"
         || lower == "com.qoder.ide.helper"
         || lower == "com.factory.app"
