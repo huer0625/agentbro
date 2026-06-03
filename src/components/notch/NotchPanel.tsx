@@ -1299,17 +1299,14 @@ export function NotchPanel() {
       overlayDismissTimerRef.current = undefined
     }
     const overlay = useSessionStore.getState().activeOverlay
-    if (overlay && isBlockingOverlay(overlay)) {
-      markActiveBlockingOverlayInline()
-    }
-    if (overlay && isNonBlockingOverlay(overlay)) {
+    if (overlay) {
       useSessionStore.getState().dismissOverlay(overlay.id)
     }
     nativeHoverInsideRef.current = true
     setPreparingOpen(false)
     setNotchFocusable(true).catch(() => {})
     setPanelState('hover')
-  }, [markActiveBlockingOverlayInline, setPanelState])
+  }, [setPanelState])
 
   const collapsedWidthScale = useConfigStore((s) => s.collapsedWidthScale)
   const notchHeightMode = useConfigStore((s) => s.notchHeightMode)

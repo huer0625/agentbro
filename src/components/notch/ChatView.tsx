@@ -11,7 +11,7 @@ import { MessageBubble } from './MessageBubble'
 import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
-import type { ChatMessage, SessionState, SubagentInfo } from '../../types/agent'
+import type { ChatMessage, SessionState, SubagentInfo, ToolStatus } from '../../types/agent'
 import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName } from '../../utils/sessionDisplay'
 import './ChatView.css'
@@ -61,7 +61,6 @@ function groupMessages(messages: ChatMessage[]): MessageGroup[] {
 
 function remoteDisplayMessages(session: SessionState): ChatMessage[] {
   const messages = [...session.chatHistory]
-  if (!session.remoteHostId && !session.remoteHostName) return messages
 
   if (!messages.some((message) => message.role === 'user')) {
     const text = session.lastUserMessage?.trim()
@@ -81,6 +80,19 @@ function remoteDisplayMessages(session: SessionState): ChatMessage[] {
         role: 'assistant',
         content: text,
         timestamp: session.taskCompletedAt || session.lastActivityAt || Date.now(),
+      })
+    }
+  }
+
+  for (const tool of (session.activeTools || [])) {
+    if (!messages.some((m) => m.role === 'tool_use' && m.toolName === tool.toolName && m.toolUseId === tool.toolUseId)) {
+      messages.push({
+        role: 'tool_use',
+        toolName: tool.toolName,
+        toolInput: tool.toolInput,
+        status: tool.status as ToolStatus,
+        timestamp: tool.startedAt || tool.completedAt || Date.now(),
+        toolUseId: tool.toolUseId,
       })
     }
   }
