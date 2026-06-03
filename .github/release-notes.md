@@ -2,22 +2,18 @@
 
 ## English
 
-AgentBro is a native macOS desktop tool for AI coding agents. This release improves terminal focus, overlay controls, pet marketplace state, and TRAE CN SOLO detection.
+This is a hotfix release for macOS install and launch reliability.
 
-### Highlights
+### Fixes
 
-- **Better terminal jump behavior** — AgentBro now supports Wave terminal focus and keeps notification dismissal in sync after jumping back to the host terminal or IDE.
-- **TRAE CN SOLO support** — TRAE CN detection now recognizes the SOLO app bundle, app path, config root, and native focus target.
-- **Safer overlay replies** — Sessions that cannot receive direct messages now show a clear locked composer hint instead of an input that cannot deliver the reply.
-- **Cleaner permission prompts** — Common read-only tool approval prompts use a more compact layout while prompts with diffs still keep the larger review surface.
-- **Pet market polish** — Installed market pets are matched more reliably, install/uninstall jobs now stay attached to their pet cards, and the market adds a direct upload entry point.
-- **Island and chat refinements** — Local images render in notch chat, hover/focus behavior is steadier, and the settings window has more room for dense panels.
+- **Fix "damaged app" after update or DMG install** — The release pipeline now notarizes and staples the `AgentBro.app` bundle before creating both the auto-update archive and the DMG. This keeps Gatekeeper validation working even when macOS cannot reach Apple's online notarization service.
+- **Reduce WebKit launch crash risk** — The notch focus handoff now avoids a forceful native order-front path that could trigger a WebKit crash on some macOS versions.
 
 ### Install And Update
 
 - Homebrew supports one-line installation: `brew tap shirenchuang/tap && brew install --cask agentbro`
 - GitHub Releases and in-app auto update use the same release notes.
-- Auto update artifacts continue to include signed `AgentBro.app.tar.gz` and `latest.json`.
+- Auto update artifacts include signed `AgentBro.app.tar.gz` and `latest.json`.
 
 ### Downloads
 
@@ -33,22 +29,18 @@ AgentBro is a native macOS desktop tool for AI coding agents. This release impro
 
 ## 中文
 
-AgentBro 是一个面向 AI Coding Agent 的 macOS 原生桌面工具。这次发布改进了终端聚焦、覆盖层控制、宠物市场状态和 TRAE CN SOLO 识别。
+这是一次 macOS 安装和启动可靠性热修复。
 
-### 主要更新
+### 修复
 
-- **终端跳转更稳** —— AgentBro 现在支持 Wave 终端聚焦,并在跳回终端或 IDE 后同步收起对应通知。
-- **支持 TRAE CN SOLO** —— TRAE CN 识别现在覆盖 SOLO 应用 bundle、应用路径、配置目录和原生聚焦目标。
-- **覆盖层回复更安全** —— 对暂时无法直发消息的会话,现在会显示明确的输入锁定提示,不再展示无法送达的输入框。
-- **权限提示更紧凑** —— 常见只读工具的权限请求会使用更紧凑的布局;带 diff 的请求仍保留更完整的审阅空间。
-- **宠物市场打磨** —— 市场宠物的已安装状态匹配更可靠,安装/卸载进度直接显示在对应卡片上,并新增上传入口。
-- **灵动岛和聊天细节** —— Notch 聊天支持本地图片渲染,悬停和焦点行为更稳定,设置窗口也为密集面板提供了更宽空间。
+- **修复更新后或 DMG 安装后提示应用已损坏** —— 发布流程现在会先对 `AgentBro.app` 本体完成公证并 staple，再生成自动更新包和 DMG。即使 macOS 无法访问 Apple 在线公证服务，Gatekeeper 也能离线验证应用。
+- **降低 WebKit 启动崩溃风险** —— 灵动岛焦点切换不再使用过强的原生置前路径，避免在部分 macOS 版本上触发 WebKit 崩溃。
 
 ### 安装与更新
 
 - Homebrew 支持一行安装:`brew tap shirenchuang/tap && brew install --cask agentbro`
 - GitHub Release 和应用内自动更新会使用同一份版本说明。
-- 自动更新文件继续包含签名的 `AgentBro.app.tar.gz` 与 `latest.json`。
+- 自动更新文件包含签名的 `AgentBro.app.tar.gz` 与 `latest.json`。
 
 ### 下载
 

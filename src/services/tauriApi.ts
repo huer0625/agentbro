@@ -1224,13 +1224,11 @@ export async function endNotchDrag(): Promise<number | null> {
 }
 
 export async function startPetDrag(
-  cursorX?: number,
-  cursorY?: number,
   anchorLeft?: boolean,
   anchorTop?: boolean,
 ): Promise<boolean> {
   if (!isTauri()) return false
-  return invoke<boolean>('start_pet_drag', { cursorX, cursorY, anchorLeft, anchorTop })
+  return invoke<boolean>('start_pet_drag', { anchorLeft, anchorTop })
 }
 
 export interface PetDragResult {

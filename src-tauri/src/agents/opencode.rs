@@ -224,19 +224,21 @@ impl AgentAdapter for OpenCodeAdapter {
                     .to_string(),
                 agent_type: "opencode".to_string(),
             }),
-
             "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
-
-            "Stop" => Ok(AgentEvent::TaskComplete {
-                session_id,
-                summary: raw
+            "Stop" => {
+                let summary = raw
                     .get("summary")
+                    .or_else(|| raw.get("message"))
                     .or_else(|| raw.get("last_assistant_message"))
                     .and_then(|v| v.as_str())
-                    .filter(|t| !t.is_empty())
+                    .filter(|v| !v.trim().is_empty())
                     .unwrap_or("Task completed")
-                    .to_string(),
-            }),
+                    .to_string();
+                Ok(AgentEvent::TaskComplete {
+                    session_id,
+                    summary,
+                })
+            }
 
             "UserPromptSubmit" => {
                 let prompt = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("");

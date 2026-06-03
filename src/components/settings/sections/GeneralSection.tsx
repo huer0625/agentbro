@@ -5,7 +5,8 @@ import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
 import { Toggle } from '../Toggle'
 import { Dropdown } from '../Dropdown'
-import { setLanguage, setLaunchAtLogin } from '../../../services/tauriApi'
+import { quitApp, setLanguage, setLaunchAtLogin } from '../../../services/tauriApi'
+import { GlassButton } from '../../shared'
 
 export function GeneralSection() {
   const { t, i18n } = useTranslation()
@@ -56,6 +57,11 @@ export function GeneralSection() {
               config.updateConfig('launchAtLogin', previous)
             })
           }} />
+        </SettingRow>
+        <SettingRow label={t('settings.quitApp')}>
+          <GlassButton variant="danger" onClick={() => quitApp()}>
+            {t('tray.quit')}
+          </GlassButton>
         </SettingRow>
       </SettingGroup>
     </SettingSection>

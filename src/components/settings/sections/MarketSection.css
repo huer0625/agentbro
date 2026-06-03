@@ -35,6 +35,42 @@
   flex-shrink: 0;
 }
 
+.market-section__refresh-btn {
+  min-width: 92px;
+}
+
+.settings-app .market-section__refresh-btn--refreshing,
+.settings-app .market-section__refresh-btn--success,
+.settings-app .market-section__refresh-btn--failed {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.1);
+  color: var(--settings-accent);
+  box-shadow: 0 8px 20px rgba(10, 132, 255, 0.12);
+}
+
+.settings-app .market-section__refresh-btn--success {
+  border-color: rgba(52, 199, 89, 0.28);
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--settings-status-active);
+  box-shadow: 0 8px 20px rgba(52, 199, 89, 0.1);
+}
+
+.settings-app .market-section__refresh-btn--failed {
+  border-color: rgba(255, 59, 48, 0.28);
+  background: rgba(255, 59, 48, 0.1);
+  color: var(--settings-danger);
+  box-shadow: 0 8px 20px rgba(255, 59, 48, 0.08);
+}
+
+.market-section__refresh-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: market-refresh-spin 0.75s linear infinite;
+}
+
 .market-banner {
   display: flex;
   align-items: center;
@@ -356,5 +392,11 @@
   }
   100% {
     transform: translateX(240%);
+  }
+}
+
+@keyframes market-refresh-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

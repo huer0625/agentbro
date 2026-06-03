@@ -118,7 +118,7 @@ describe('PetSurface (companion)', () => {
     expect(container.querySelector('.pet-surface__pet .sprite-canvas')).toBeInTheDocument()
   })
 
-  it('shows an update dot on the pet when a newer version is available', () => {
+  it('shows an update badge on the pet when a newer version is available', () => {
     usePetStore.setState({ registry: [makePet()], activePetId: 'codex:test' })
 
     const { container, rerender } = render(
@@ -131,6 +131,7 @@ describe('PetSurface (companion)', () => {
     })
     rerender(<PetSurface hidden={false} scale={72} sessions={[session()]} />)
     expect(container.querySelector('.pet-surface__update-dot')).toBeInTheDocument()
+    expect(container.querySelector('.pet-surface__update-label')).toBeInTheDocument()
   })
 
   it('falls back to MascotRouter when no pet registry is loaded', () => {
@@ -267,6 +268,33 @@ describe('PetSurface (companion)', () => {
     expect(container.querySelector('.pet-surface__drawer')).toBeInTheDocument()
     expect(container.querySelector('.pet-surface__drawer')).toHaveAttribute('data-placement', 'left')
     expect(getByText('agentbro · Build pet HUD')).toBeInTheDocument()
+  })
+
+  it('lets the pet session drawer expand to every session', () => {
+    useConfigStore.setState({ maxVisibleSessions: 4 })
+    const sessions = Array.from({ length: 6 }, (_, index) => session({
+      id: `s${index + 1}`,
+      sessionTitle: `Session ${index + 1}`,
+      pid: 2000 + index,
+      tty: `/dev/ttys00${index}`,
+    }))
+
+    const { container, getByText, queryByText } = render(
+      <PetSurface hidden={false} scale={72} sessions={sessions} />,
+    )
+
+    fireEvent.click(container.querySelector('.pet-surface__pet') as HTMLElement)
+
+    expect(getByText('agentbro · Session 1')).toBeInTheDocument()
+    expect(queryByText('agentbro · Session 6')).not.toBeInTheDocument()
+
+    const showAll = Array.from(container.querySelectorAll('button'))
+      .find((button) => /showAllSessions|Show all|显示全部/.test(button.textContent ?? ''))
+    expect(showAll).toBeInTheDocument()
+
+    fireEvent.click(showAll as HTMLElement)
+
+    expect(getByText('agentbro · Session 6')).toBeInTheDocument()
   })
 
   it('keeps the last drag direction while the pointer is held still', () => {

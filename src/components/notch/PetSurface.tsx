@@ -8,6 +8,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { PRIORITY, computePriority, type Priority } from '../../types/priority'
 import { useSessionStore, selectActiveOverlay } from '../../stores/sessionStore'
@@ -46,7 +47,6 @@ import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { usePetSummon } from './usePetSummon'
 import { buildTips, shuffleTips } from './tips'
 import {
-  petStageAnchorFromWindow,
   DEFAULT_PET_STAGE_ANCHOR,
   PET_STAGE_WIDTH,
   PET_STAGE_HEIGHT,
@@ -115,6 +115,7 @@ function clearPermissionAfter(sessionId: string, work: Promise<void>) {
  * around it for sessions, blocking actions, and lightweight completion notices.
  */
 export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
+  const { t } = useTranslation()
   const [dragging, setDragging] = useState(false)
   const [dragDirection, setDragDirection] = useState<DragDirection>(null)
   const [hudOpen, setHudOpen] = useState(false)
@@ -136,6 +137,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
 
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const updateAvailable = useUpdateStore((s) => s.availableVersion)
+  const updateBadgeLabel = t('notch.updateBadgeLabel', { defaultValue: 'Update' })
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const petVitalsEnabled = useConfigStore((s) => s.petVitalsEnabled)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
@@ -161,7 +163,6 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     () => [...sessions].sort((a, b) => computePriority(b) - computePriority(a)),
     [sessions],
   )
-  const visibleSessions = useMemo(() => sortedSessions.slice(0, 4), [sortedSessions])
   const selectedSession = useMemo(
     () => sortedSessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sortedSessions],
@@ -177,7 +178,6 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const savedStageAnchor = useMemo(() => configAnchorToStage(savedPetWindowAnchor), [savedPetWindowAnchor])
   const [stageAnchor, setStageAnchor] = usePetStageAnchor(
     !hidden,
-    displayScale,
     dragging,
     savedStageAnchor,
   )
@@ -206,17 +206,17 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
   const sessionPanelPlacement = useMemo(() => getPetPanelPlacement(
     selectedSession
       ? getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor)
-      : visibleSessions.length > 0
+      : sortedSessions.length > 0
         ? getPetSidePanelWidth(displayScale, PET_SESSION_LIST_WIDTH, stageAnchor)
         : PET_EMPTY_PANEL_WIDTH,
     selectedSession
       ? PET_DETAIL_PANEL_HEIGHT
-      : visibleSessions.length > 0
+      : sortedSessions.length > 0
         ? PET_SESSION_LIST_HEIGHT
         : PET_EMPTY_PANEL_HEIGHT,
     displayScale,
     stageAnchor,
-  ), [displayScale, selectedSession, stageAnchor, visibleSessions.length])
+  ), [displayScale, selectedSession, sortedSessions.length, stageAnchor])
   const blockingOverlayPlacement = useMemo(
     () => getPetPanelPlacement(getPetSidePanelWidth(displayScale, PET_DETAIL_PANEL_WIDTH, stageAnchor), PET_DETAIL_PANEL_HEIGHT, displayScale, stageAnchor),
     [displayScale, stageAnchor],
@@ -582,10 +582,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
     } else {
       updateDragDirection(signedDx, setDragDirection)
     }
-    const dpr = window.devicePixelRatio || 1
     startPetDrag(
-      event.screenX * dpr,
-      event.screenY * dpr,
       stageAnchor.x === 'left',
       stageAnchor.y === 'top',
     )
@@ -655,7 +652,7 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       <div className="pet-surface__stage">
         {showHud && (
           <PetSessionPanel
-            sessions={visibleSessions}
+            sessions={sortedSessions}
             selectedSession={selectedSession}
             placement={sessionPanelPlacement}
             onBack={() => {
@@ -777,7 +774,12 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
               />
             )}
             <PetStatusBadges actionCount={actionCount} sessionCount={activeSessionCount} />
-            {updateAvailable && <span className="pet-surface__update-dot" aria-hidden="true" />}
+            {updateAvailable && (
+              <span className="pet-surface__update-badge" aria-label={updateBadgeLabel}>
+                <span className="pet-surface__update-dot" aria-hidden="true" />
+                <span className="pet-surface__update-label">{updateBadgeLabel}</span>
+              </span>
+            )}
           </span>
         </button>
 
@@ -1276,63 +1278,25 @@ function sessionIsQuiet(session: SessionState): boolean {
 
 function usePetStageAnchor(
   active: boolean,
-  scale: number,
   frozen: boolean,
   savedAnchor: PetStageAnchor | null,
 ): [PetStageAnchor, (a: PetStageAnchor) => void] {
   const [anchor, setAnchor] = useState<PetStageAnchor>(savedAnchor ?? DEFAULT_PET_STAGE_ANCHOR)
-  const anchorRef = useRef(anchor)
 
   useEffect(() => {
-    anchorRef.current = anchor
-  }, [anchor])
-
-  useEffect(() => {
-    if (!active || frozen || !savedAnchor) return
-    setAnchor((current) => (
-      current.x === savedAnchor.x && current.y === savedAnchor.y ? current : savedAnchor
-    ))
+    if (!active) {
+      const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
+      return () => window.clearTimeout(timer)
+    }
+    if (frozen || !savedAnchor) return
+    const timer = window.setTimeout(() => {
+      setAnchor((current) => {
+        if (current.x === savedAnchor.x && current.y === savedAnchor.y) return current
+        return savedAnchor
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [active, frozen, savedAnchor])
-
-  useEffect(() => {
-    if (!active || !isTauri() || frozen) {
-      if (!active || !isTauri()) {
-        const timer = window.setTimeout(() => setAnchor(DEFAULT_PET_STAGE_ANCHOR), 0)
-        return () => window.clearTimeout(timer)
-      }
-      return
-    }
-
-    let cancelled = false
-    let inFlight = false
-    const update = async () => {
-      if (cancelled || inFlight) return
-      inFlight = true
-      try {
-        const { getCurrentWindow, currentMonitor } = await import('@tauri-apps/api/window')
-        const [position, monitor] = await Promise.all([
-          getCurrentWindow().outerPosition(),
-          currentMonitor(),
-        ])
-        if (!monitor || cancelled) return
-        const next = petStageAnchorFromWindow(position.x, position.y, monitor, scale, anchorRef.current)
-        setAnchor((current) => (
-          current.x === next.x && current.y === next.y ? current : next
-        ))
-      } catch {
-        if (!cancelled) setAnchor(DEFAULT_PET_STAGE_ANCHOR)
-      } finally {
-        inFlight = false
-      }
-    }
-
-    void update()
-    const timer = window.setInterval(update, 250)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [active, scale, frozen])
 
   return [anchor, setAnchor]
 }
