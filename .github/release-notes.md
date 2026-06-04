@@ -2,18 +2,12 @@
 
 ## English
 
-This release improves Gemini and OpenCode hook handling, permission detail rendering, chat history recovery, and external-display notch hit testing.
+This hotfix restores reliable notch placement and click-through behavior on external displays, especially Retina/high-DPI setups.
 
-### Highlights
+### Fixes
 
-- **Improve Gemini hook events and permission flow** - Gemini hook payloads now include matchers, map blocking permission requests more accurately, and extract prompt and response fields for richer session history.
-- **Improve OpenCode tool details and session history** - OpenCode permission inputs, tool labels, pending permission reconciliation, and raw-event chat history fallback are more robust.
-- **Add hook diagnostics and auto-repair coverage** - Hook Doctor now checks Claude Code bare mode and Gemini folder trust, and hook setup can repair Gemini trusted folder configuration.
-- **Fix notch hit testing on external displays** - The notch window now relies on CSS pointer events and monitor-relative coordinates so hover and click behavior works better on secondary displays.
-
-### New Contributors
-
-- Welcome @nicobeyond for their contribution in #13.
+- **Fix notch placement on external displays** - Monitor matching now compares cursor and display bounds in the same logical coordinate space, so the notch can appear on the correct screen instead of falling back to the main display.
+- **Restore collapsed click-through behavior** - The notch again toggles cursor-event ignoring dynamically: collapsed state lets clicks pass through, while hover and expanded states capture interaction.
 
 ### Contributors
 
@@ -40,18 +34,12 @@ This release improves Gemini and OpenCode hook handling, permission detail rende
 
 ## 中文
 
-这个版本改进了 Gemini 与 OpenCode 的 Hook 处理、权限详情展示、会话历史恢复，以及外接显示器上的灵动岛命中检测。
+这是一次热修复，恢复外接显示器上的灵动岛定位与点击穿透行为，尤其是 Retina / 高 DPI 屏幕场景。
 
-### 亮点
+### 修复
 
-- **改进 Gemini Hook 事件与权限流程** - Gemini Hook 载荷现在包含 matcher，阻塞式权限请求映射更准确，并会提取 prompt 和响应字段用于更完整的会话历史。
-- **改进 OpenCode 工具详情与会话历史** - OpenCode 权限输入、工具标签、待处理权限同步，以及原始事件兜底会话历史更加稳健。
-- **增加 Hook 诊断与自动修复覆盖** - Hook Doctor 现在会检查 Claude Code bare mode 和 Gemini 文件夹信任；Hook 安装流程也能修复 Gemini trusted folder 配置。
-- **修复外接显示器上的灵动岛命中检测** - 灵动岛窗口现在依赖 CSS pointer events 与相对当前显示器的坐标计算，让副屏上的 hover 和点击行为更稳定。
-
-### 新贡献者
-
-- 欢迎 @nicobeyond 在 #13 中贡献改进。
+- **修复外接显示器上的灵动岛定位** - 显示器匹配现在会在同一套逻辑坐标空间中比较光标和屏幕边界，避免灵动岛错误回落到主屏。
+- **恢复 collapsed 状态点击穿透** - 灵动岛重新动态切换 cursor-event ignore：collapsed 状态允许点击穿透，hover 和 expanded 状态捕获交互。
 
 ### 贡献者
 
